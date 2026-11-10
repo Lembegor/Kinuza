@@ -1,0 +1,65 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Kinuza",
+  "version": "../package.json",
+  "identifier": "com.lembegor.kinuza",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Kinuza",
+        "width": 1400,
+        "height": 880,
+        "minWidth": 1040,
+        "minHeight": 660,
+        "center": true,
+        "decorations": false,
+        "shadow": true,
+        "backgroundColor": "#0a0a0d",
+        "dragDropEnabled": true,
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --enable-blink-features=AudioVideoTracks --autoplay-policy=no-user-gesture-required"
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "createUpdaterArtifacts": true,
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "shortDescription": "Kinuza",
+    "longDescription": "Kinuza - a media library and torrent streaming player",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["Russian", "English"],
+        "displayLanguageSelector": false
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDNDNEMwMzNBQjZBOEY3NUMKUldSYzk2aTJPZ05NUFBKcndNQS9NS3dRdGRFRG5lSU50N1RURldzektTbnA0SnpoOXQzeFVnNmkK",
+      "endpoints": [
+        "https://github.com/Lembegor/Kinuza/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}

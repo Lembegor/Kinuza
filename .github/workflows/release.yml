@@ -1,0 +1,42 @@
+# Builds the signed installer and the update feed when a version tag (v1.2.3) is pushed.
+# Repository secrets required: TAURI_SIGNING_PRIVATE_KEY (contents of kinuza.key), VITE_TMDB_API_KEY.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+          VITE_TMDB_API_KEY: ${{ secrets.VITE_TMDB_API_KEY }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Kinuza __VERSION__"
+          releaseBody: "Новая версия Kinuza."
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: true
