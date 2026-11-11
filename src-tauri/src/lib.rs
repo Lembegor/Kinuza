@@ -3,6 +3,7 @@ mod commands;
 mod engine;
 mod external_player;
 mod launch;
+mod rutracker; // Модуль RuTracker
 mod server;
 mod store;
 
@@ -10,6 +11,7 @@ use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
 };
+use tokio::sync::Mutex as TokioMutex; // Алиас для асинхронного мьютекса RuTracker
 
 use tauri::{Emitter, Manager};
 
@@ -30,6 +32,8 @@ const SESSION_FOLDER_NAME: &str = "session";
 
 pub fn run() {
     tauri::Builder::default()
+        // Инициализация состояния RuTracker
+        .manage(TokioMutex::new(rutracker::RutrackerState::new()))
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.unminimize();
@@ -67,6 +71,11 @@ pub fn run() {
             commands::open_default_apps_settings,
             store::store_get,
             store::store_set,
+            
+            // Новые команды RuTracker
+            rutracker::rutracker_login,
+            rutracker::rutracker_search,
+            rutracker::rutracker_magnet,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Kinuza");

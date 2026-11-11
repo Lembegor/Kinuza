@@ -27,6 +27,11 @@ anyhow = "1"
 bytes = "1"
 winreg = "0.55"
 librqbit = { version = "9", default-features = false, features = ["rust-tls"] }
+reqwest = { version = "0.12", features = ["cookies"] }
+scraper = "0.20"
+encoding_rs = "0.8"
+percent-encoding = "2.3"
+regex = "1.10"
 
 [profile.release]
 opt-level = 3

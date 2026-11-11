@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ExternalLink, FileUp, Landmark, Link2, LoaderCircle, Search, X } from "lucide-react";
-import { searchArchive, type ArchiveItem } from "../lib/archive";
+import { rutracker, type RutrackerItem } from "../lib/rutracker";
 import { backend, describeError, isDesktop, type TorrentFile, type TorrentPreview } from "../lib/backend";
 import { formatBytes, plural } from "../lib/format";
 import { baseName, guessTitleQuery, isMagnetLink, isVideoFile, parseEpisode, parseQuality, parseTags, resolveEpisode } from "../lib/parse";
@@ -35,7 +35,6 @@ function toSource(preview: TorrentPreview, file: TorrentFile): Source {
 
 function videoFiles(preview: TorrentPreview): TorrentFile[] {
   const videos = preview.files.filter((file) => isVideoFile(file.path));
-  // A torrent with no recognisable video still lets the user pick any file.
   return (videos.length > 0 ? videos : preview.files).sort((a, b) =>
     a.path.localeCompare(b.path, undefined, { numeric: true }),
   );
@@ -50,40 +49,107 @@ async function openPage(url: string): Promise<void> {
   await openUrl(url);
 }
 
-/** Free copies of the film from the Internet Archive, found by its original title. */
-function ArchiveResults({ target, onPick }: { target: AddSourceTarget; onPick: (item: ArchiveItem) => void }) {
-  const query = target.originalTitle || target.title.title;
-  const results = useAsync(() => searchArchive(query, target.title.year), [query, target.title.year]);
+function RutrackerResults({ target, onPick }: { target: AddSourceTarget; onPick: (magnet: string) => void }) {
+  const query = `${target.originalTitle || target.title.title} ${target.title.year || ""}`.trim();
+  
+  const [items, setItems] = useState<RutrackerItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [needsAuth, setNeedsAuth] = useState(false);
+  
+  const [user, setUser] = useState("");
+  const [pass, setPass] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
+  const [resolvingId, setResolvingId] = useState<string | null>(null);
+
+  const fetchResults = async () => {
+    setLoading(true);
+    setError(null);
+    setNeedsAuth(false);
+    try {
+      const data = await rutracker.search(query);
+      setItems(data);
+    } catch (err) {
+      if (err === "auth_required") setNeedsAuth(true);
+      else setError("Не удалось выполнить поиск на RuTracker.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void fetchResults();
+  }, [query]);
+
+  const handleLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user || !pass) return;
+    setAuthBusy(true);
+    try {
+      await rutracker.login(user, pass);
+      await fetchResults();
+    } catch (err) {
+      useUi.getState().toast("Неверный логин или пароль", "error");
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const pickItem = async (item: RutrackerItem) => {
+    setResolvingId(item.id);
+    try {
+      const magnet = await rutracker.getMagnet(item.id);
+      onPick(magnet);
+    } catch (err) {
+      useUi.getState().toast("Не удалось получить magnet-ссылку", "error");
+    } finally {
+      setResolvingId(null);
+    }
+  };
 
   return (
     <div className="archive">
       <div className="archive__head">
-        <Landmark size={16} />
-        <strong>Свободные копии</strong>
-        <span>Internet Archive</span>
+        <Search size={16} />
+        <strong>Поиск раздач</strong>
+        <span>RuTracker.org</span>
       </div>
-      {results.loading && <p className="archive__note">Ищем «{query}»…</p>}
-      {results.error !== null && <p className="archive__note">Не удалось связаться с archive.org.</p>}
-      {!results.loading && results.error === null && (results.data ?? []).length === 0 && (
-        <p className="archive__note">
-          Свободной копии этого фильма в архиве нет. Там лежат фильмы в общественном достоянии и под свободными
-          лицензиями.
-        </p>
-      )}
-      {(results.data ?? []).map((item) => (
-        <div key={item.identifier} className="archive__item">
-          <div className="archive__title">
-            <strong>{item.title}</strong>
-            <span>{[item.year, `скачали ${item.downloads.toLocaleString("ru-RU")} раз`].filter(Boolean).join(" · ")}</span>
+
+      {needsAuth ? (
+        <form className="archive__auth" onSubmit={handleLogin} style={{ display: "flex", flexDirection: "column", gap: "10px", marginTop: "10px" }}>
+          <p className="archive__note">Для поиска требуется вход в аккаунт RuTracker.</p>
+          <input className="input" autoFocus placeholder="Логин" value={user} onChange={(e) => setUser(e.target.value)} />
+          <input className="input" type="password" placeholder="Пароль" value={pass} onChange={(e) => setPass(e.target.value)} />
+          <button type="submit" className="button button--primary" disabled={authBusy}>
+            {authBusy ? <LoaderCircle size={16} className="spin" /> : "Войти"}
+          </button>
+        </form>
+      ) : loading ? (
+        <p className="archive__note">Ищем «{query}»…</p>
+      ) : error ? (
+        <p className="archive__note">{error}</p>
+      ) : items.length === 0 ? (
+        <p className="archive__note">По запросу «{query}» на трекере ничего не найдено.</p>
+      ) : (
+        items.map((item) => (
+          <div key={item.id} className="archive__item" style={{ alignItems: "center" }}>
+            <div className="archive__title">
+              <strong style={{ fontSize: "0.9em", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+                {item.title}
+              </strong>
+              <span>
+                {item.size} · Сиды: <strong style={{ color: "var(--color-success)" }}>{item.seeds}</strong>
+              </span>
+            </div>
+            <button className="icon-button" aria-label="Страница раздачи" title="Страница раздачи" onClick={() => void openPage(item.pageUrl)}>
+              <ExternalLink size={15} />
+            </button>
+            <button className="button button--small" disabled={resolvingId !== null} onClick={() => void pickItem(item)}>
+              {resolvingId === item.id ? <LoaderCircle size={15} className="spin" /> : "Выбрать"}
+            </button>
           </div>
-          <button className="icon-button" aria-label="Страница в архиве" title="Страница в архиве" onClick={() => void openPage(item.pageUrl)}>
-            <ExternalLink size={15} />
-          </button>
-          <button className="button button--small" onClick={() => onPick(item)}>
-            Выбрать
-          </button>
-        </div>
-      ))}
+        ))
+      )}
     </div>
   );
 }
@@ -159,7 +225,7 @@ function InputStep({
         </button>
       </div>
       <p className="add-input__hint">Файл .torrent можно просто перетащить в окно приложения.</p>
-      {target?.title.type === "movie" && <ArchiveResults target={target} onPick={(item) => onLink(item.torrentUrl)} />}
+      {target?.title.type === "movie" && <RutrackerResults target={target} onPick={(magnet) => onLink(magnet)} />}
     </div>
   );
 }
@@ -251,7 +317,6 @@ function buildEpisodeRows(preview: TorrentPreview, seasons: SeasonInfo[], defaul
 function MovieMapping({ preview, onConfirm }: { preview: TorrentPreview; onConfirm: (files: TorrentFile[]) => void }) {
   const files = useMemo(() => videoFiles(preview), [preview]);
   const preferred = useMemo(() => {
-    // Archives often carry the same film in several formats; MP4/MKV play in the built-in player.
     const friendly = files.filter((file) => playerFriendlyExtensions.test(file.path));
     const pool = friendly.length > 0 ? friendly : files;
     return pool.reduce((best, file) => (file.length > best.length ? file : best), pool[0]);
@@ -400,7 +465,6 @@ function AddSourceFlow({ request }: { request: AddSourceRequest }) {
 
   useEffect(() => {
     cancelled.current = false;
-    // StrictMode mounts twice in development; the torrent must be inspected once.
     if (!started.current) {
       started.current = true;
       if (request.magnet) void inspect(backend.inspectLink(request.magnet));
@@ -409,7 +473,6 @@ function AddSourceFlow({ request }: { request: AddSourceRequest }) {
     return () => {
       cancelled.current = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
