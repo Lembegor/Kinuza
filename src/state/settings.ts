@@ -1,5 +1,6 @@
 import { create } from "zustand";
-import { backend, isLinux } from "../lib/backend";
+import { backend } from "../lib/backend";
+import { isLinux } from "../lib/platform";
 import { report } from "../lib/journal";
 import type { AppLanguage } from "../lib/languages";
 import { setApiKeyOverride, setCatalogLanguage } from "../lib/tmdb";

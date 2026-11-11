@@ -1,4 +1,4 @@
-import { isWindows } from "./backend";
+import { isWindows } from "./platform";
 
 export interface MpvStatus {
   installed: boolean;
