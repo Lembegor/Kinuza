@@ -121,6 +121,7 @@ const commentaryTrackTitle = /коммент|comment/i;
 const nextEpisodeCountdownSeconds = 8;
 const interpolationLimitSeconds = 1.5;
 const clockStepSeconds = 0.25;
+const naturalStepSeconds = 2;
 const loadWaitMs = 700;
 const upNextTailSeconds = 40;
 const upNextCountdownSeconds = 10;
@@ -435,6 +436,14 @@ function PlayerView({ session }: { session: PlayerSession }) {
       return saved && !isWatched(saved) && saved.position >= minResumeSeconds ? saved.position : 0;
     })(),
   );
+  const playedSeconds = useRef<number>(
+    (() => {
+      const saved = useLibrary.getState().progress[session.unitKey];
+      if (!saved || (saved.duration === 1 && saved.position === 1)) return 0;
+      return saved.played ?? saved.position;
+    })(),
+  );
+  const lastPlayedAt = useRef<number | null>(null);
 
   const seasonEpisodes = useAsync(
     () => (session.season !== undefined ? tmdb.season(session.title.id, session.season) : Promise.resolve([])),
@@ -543,6 +552,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
       season: session.season,
       episode: session.episode,
       episodeName: session.episodeName,
+      played: Math.round(Math.min(length, playedSeconds.current)),
     });
   }, [session, filmTime, filmLength]);
 
@@ -655,6 +665,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
         season: session.season,
         episode: session.episode,
         episodeName: session.episodeName,
+        played: Math.round(Math.min(length, playedSeconds.current)),
       });
     } else {
       saveProgress();
@@ -1195,6 +1206,12 @@ function PlayerView({ session }: { session: PlayerSession }) {
     },
     onTimeUpdate: () => {
       const time = filmTime();
+      const previous = lastPlayedAt.current;
+      lastPlayedAt.current = time;
+      if (previous !== null && playing && !buffering) {
+        const step = time - previous;
+        if (step > 0 && step <= naturalStepSeconds * Math.max(1, rate)) playedSeconds.current += step;
+      }
       if (Math.abs(time - shownTime.current) < clockStepSeconds) return;
       shownTime.current = time;
       setCurrent(time);

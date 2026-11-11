@@ -33,11 +33,18 @@ export interface MediaItem {
   isAnime: boolean;
 }
 
+export interface TitleKeyword {
+  id: number;
+  name: string;
+}
+
 export interface TitleTaste {
   item: MediaItem;
   people: { id: number; name: string; role: "director" | "cast" }[];
   recommendations: MediaItem[];
   similar: MediaItem[];
+  keywords: TitleKeyword[];
+  collectionId: number | null;
 }
 
 export interface PersonRef {
@@ -479,7 +486,7 @@ export const tmdb = {
   },
 
   async taste(type: MediaType, id: number): Promise<TitleTaste> {
-    const raw = await request<Raw>(`/${type}/${id}`, { append_to_response: "credits,recommendations,similar" });
+    const raw = await request<Raw>(`/${type}/${id}`, { append_to_response: "credits,recommendations,similar,keywords" });
     const item = toItem(raw, type);
     if (!item) throw new Error("tmdb_bad_item");
 
@@ -493,7 +500,27 @@ export const tmdb = {
       ],
       recommendations: toItems(raw.recommendations?.results, type),
       similar: toItems(raw.similar?.results, type),
+      keywords: ((raw.keywords?.keywords ?? raw.keywords?.results ?? []) as Raw[]).map((keyword) => ({
+        id: keyword.id as number,
+        name: (keyword.name as string) ?? "",
+      })),
+      collectionId: raw.belongs_to_collection?.id ?? null,
     };
+  },
+
+  byKeywords: (type: MediaType, keywordIds: number[]) =>
+    list(`/discover/${type}`, type, { with_keywords: keywordIds.join("|"), sort_by: "vote_count.desc", "vote_count.gte": 150 }),
+
+  recentByGenres(type: MediaType, genreIds: number[], sinceDays: number): Promise<MediaItem[]> {
+    const since = new Date(Date.now() - sinceDays * 86_400_000).toISOString().slice(0, isoDateLength);
+    const today = new Date().toISOString().slice(0, isoDateLength);
+    return list(`/discover/${type}`, type, {
+      with_genres: genreIds.join("|"),
+      sort_by: "popularity.desc",
+      "vote_count.gte": 40,
+      [`${discoverDateField[type]}.gte`]: since,
+      [`${discoverDateField[type]}.lte`]: today,
+    });
   },
 
   bestOfGenre: (type: MediaType, genreId: number) =>

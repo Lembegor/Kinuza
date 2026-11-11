@@ -486,6 +486,7 @@ pub async fn rutracker_search(
     app: AppHandle,
     state: tauri::State<'_, Mutex<RutrackerState>>,
     query: String,
+    quiet: Option<bool>,
 ) -> Result<Vec<RutrackerItem>, String> {
     let (encoded_query, _, _) = WINDOWS_1251.encode(&query);
     let url = forum_url(&format!(
@@ -496,7 +497,7 @@ pub async fn rutracker_search(
     state
         .lock()
         .await
-        .request(&app, url, SEARCH_EXTRACTOR, false, true, |page| {
+        .request(&app, url, SEARCH_EXTRACTOR, false, !quiet.unwrap_or(false), |page| {
             Some(if page.guest {
                 Err(ERROR_AUTH_REQUIRED.to_owned())
             } else {

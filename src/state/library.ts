@@ -74,6 +74,7 @@ export interface Progress {
   season?: number;
   episode?: number;
   episodeName?: string;
+  played?: number;
 }
 
 type EpisodeContext = Omit<Progress, "position" | "duration" | "updatedAt">;
@@ -110,7 +111,7 @@ interface LibraryState extends LibraryData {
   setWatched: (unitKey: string, watched: boolean, context: EpisodeContext) => void;
   setManyWatched: (entries: { unitKey: string; context: EpisodeContext }[], watched: boolean) => void;
   setTitlePreferences: (title: Pick<TitleRef, "type" | "id">, change: Partial<Omit<TitlePreferences, "updatedAt">>) => void;
-  dismiss: (title: TitleRef) => void;
+  dismiss: (title: TitleRef, detail?: Pick<Dismissal, "reason" | "personId" | "personName">) => void;
   restoreDismissed: (key: string) => void;
   finishOnboarding: (liked: { title: TitleRef; rating: number | null }[]) => void;
   exportAccountData: () => AccountData;
@@ -445,11 +446,13 @@ export const useLibrary = create<LibraryState>((set, get) => {
       });
     },
 
-    dismiss(title) {
+    dismiss(title, detail) {
       update((state) => {
         const key = titleKey(title.type, title.id);
         const { type, id, title: name, poster, backdrop, year } = title;
-        return { dismissed: { ...state.dismissed, [key]: { type, id, title: name, poster, backdrop, year, updatedAt: Date.now() } } };
+        return {
+          dismissed: { ...state.dismissed, [key]: { type, id, title: name, poster, backdrop, year, ...detail, updatedAt: Date.now() } },
+        };
       });
     },
 

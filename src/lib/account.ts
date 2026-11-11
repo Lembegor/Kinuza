@@ -12,6 +12,9 @@ export interface TitlePreferences {
 
 export interface Dismissal extends TitleRef {
   updatedAt: number;
+  reason?: "seen" | "genre" | "person" | "other";
+  personId?: number;
+  personName?: string;
 }
 
 export const accountDataVersion = 2;

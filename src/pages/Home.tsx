@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Check, ChevronLeft, ChevronRight, Info, Play, Star, X } from "lucide-react";
-import { CatalogError, PosterRow, Row, typeLabel } from "../components/Cards";
+import { CatalogError, PosterRow, Row, typeLabel, type DismissDetail } from "../components/Cards";
 import { t, useT } from "../lib/i18n";
 import { imageUrl, tmdb, type MediaItem } from "../lib/tmdb";
 import { useAsync } from "../lib/useAsync";
 import { isNewEpisode, useEpisodeCalendar, type CalendarEpisode } from "../state/calendar";
-import { usePersonalFeed } from "../state/feed";
+import { usePersonalFeed, type FeedItem, type FeedRow } from "../state/feed";
+import { availabilityOf, checkAvailability, useAvailability } from "../state/availability";
 import { entryToRef, isWatched, titleKey, useLibrary, type Progress, type TitleRef } from "../state/library";
 import { useUi } from "../state/ui";
 import { useUpNext, type UpNextEpisode } from "../state/upNext";
@@ -288,13 +289,56 @@ function NewEpisodesRow() {
   return <PosterRow title={t("home.row.newEpisodes")} items={items} />;
 }
 
-function dismissRecommendation(title: TitleRef): void {
+function dismissNote(detail: DismissDetail): string {
+  switch (detail.reason) {
+    case "seen":
+      return t("feed.dismissed.seen");
+    case "genre":
+      return t("feed.dismissed.genre");
+    case "person":
+      return t("feed.dismissed.person", { name: detail.personName ?? "" });
+    default:
+      return t("feed.dismissed.other");
+  }
+}
+
+function dismissRecommendation(title: TitleRef, detail: DismissDetail): void {
   const { dismiss, restoreDismissed } = useLibrary.getState();
-  dismiss(title);
-  useUi.getState().toast(t("feed.dismissed", { title: title.title }), "info", {
+  dismiss(title, detail);
+  useUi.getState().toast(dismissNote(detail), "info", {
     label: t("feed.dismissed.undo"),
     run: () => restoreDismissed(titleKey(title.type, title.id)),
   });
+}
+
+const availabilityChecks = 16;
+const availableRowLimit = 18;
+const shortestAvailableRow = 4;
+
+function AvailableNowRow({ rows }: { rows: FeedRow[] }) {
+  const { t } = useT();
+  const known = useAvailability((state) => state.known);
+  const candidates = useMemo(() => {
+    const seen = new Set<string>();
+    const ordered: FeedItem[] = [];
+    const forYou = rows.find((row) => row.id === "for-you")?.items ?? [];
+    const others = rows.filter((row) => row.id !== "for-you").flatMap((row) => row.items.slice(0, 3));
+    for (const item of [...forYou, ...others]) {
+      const itemKey = titleKey(item.type, item.id);
+      if (seen.has(itemKey)) continue;
+      seen.add(itemKey);
+      ordered.push(item);
+    }
+    return ordered;
+  }, [rows]);
+
+  useEffect(() => {
+    if (candidates.length > 0) checkAvailability(candidates.slice(0, availabilityChecks));
+  }, [candidates]);
+
+  const items = candidates.filter((item) => availabilityOf(known, item) !== null).slice(0, availableRowLimit);
+  if (items.length < shortestAvailableRow) return null;
+  return <PosterRow title={t("feed.availableNow")} items={items} onDismiss={dismissRecommendation} />;
 }
 
 export default function Home() {
@@ -335,6 +379,7 @@ export default function Home() {
         <UpNextRow />
         <NewEpisodesRow />
         {feed.available && feed.rows === null && <PosterRow title={t("feed.forYou")} items={null} />}
+        {feed.rows && <AvailableNowRow rows={feed.rows} />}
         {feed.rows?.map((row) => <PosterRow key={row.id} title={row.title} items={row.items} onDismiss={dismissRecommendation} />)}
         {planned.length > 0 && <PosterRow title={t("home.row.planned")} items={planned} />}
         <PosterRow title={t("home.row.trending")} items={trending.data} />

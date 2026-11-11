@@ -7,6 +7,7 @@ import { t, useT, type MessageKey } from "../lib/i18n";
 import { clearJournal, loadJournal, useJournal, type JournalArea, type JournalEntry } from "../lib/journal";
 import { rutracker, rutrackerErrors } from "../lib/rutracker";
 import { catalogHealth } from "../lib/tmdb";
+import { restoreFeed, tuneWeights, useFeed } from "../state/feed";
 import { useSettings } from "../state/settings";
 import { useUi } from "../state/ui";
 
@@ -269,6 +270,61 @@ function Journal() {
   );
 }
 
+const presetLabels: Record<string, MessageKey> = {
+  balanced: "diagnostics.taste.preset.balanced",
+  similar: "diagnostics.taste.preset.similar",
+  themes: "diagnostics.taste.preset.themes",
+  acclaimed: "diagnostics.taste.preset.acclaimed",
+};
+
+function TasteCheck() {
+  const { t } = useT();
+  const tuning = useFeed((state) => state.tuning);
+  const [running, setRunning] = useState(false);
+  const [note, setNote] = useState("");
+
+  useEffect(() => {
+    void restoreFeed();
+  }, []);
+
+  const run = async () => {
+    setRunning(true);
+    setNote("");
+    try {
+      const result = await tuneWeights();
+      if (!result) setNote(t("diagnostics.taste.notEnough"));
+    } catch (error) {
+      setNote(describeError(error));
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const best = tuning ? tuning.hits[tuning.preset] ?? 0 : 0;
+  return (
+    <section className="settings-group">
+      <h2>{t("diagnostics.taste")}</h2>
+      <div className="setting">
+        <div>
+          <strong>{tuning ? t("diagnostics.taste.result", { found: best, hidden: tuning.hidden }) : t("diagnostics.taste.never")}</strong>
+          <p>
+            {tuning
+              ? t("diagnostics.taste.detail", { preset: t(presetLabels[tuning.preset] ?? "diagnostics.taste.preset.balanced"), date: formatMoment(tuning.testedAt) })
+              : t("diagnostics.taste.note")}
+          </p>
+          {note && <p>{note}</p>}
+        </div>
+        <div className="setting__actions">
+          <button className="button" disabled={running} onClick={() => void run()}>
+            <RefreshCw size={16} className={running ? "spin" : ""} />
+            {t("diagnostics.taste.run")}
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export default function Diagnostics() {
   const { t } = useT();
   const { results, running, run } = useChecks();
@@ -290,6 +346,8 @@ export default function Diagnostics() {
           <CheckRow key={check.id} check={check} result={results[check.id]} />
         ))}
       </section>
+
+      <TasteCheck />
 
       <Journal />
     </div>

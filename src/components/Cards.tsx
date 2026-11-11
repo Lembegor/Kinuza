@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { Check, ChevronLeft, ChevronRight, Clock, CloudOff, Star, ThumbsDown } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, Clock, CloudOff, LoaderCircle, Play, Star, ThumbsDown } from "lucide-react";
+import type { Dismissal } from "../lib/account";
 import { t, useT } from "../lib/i18n";
-import { hasApiKey, imageUrl, type MediaItem } from "../lib/tmdb";
-import { maxRating, statusLabel, titleKey, unitKey, useLibrary, type TitleRef, type TrackEntry, type WatchStatus } from "../state/library";
-import { useUi } from "../state/ui";
+import { cachedCatalog } from "../lib/persistentCache";
+import { hasApiKey, imageUrl, tmdb, type MediaItem } from "../lib/tmdb";
+import { availabilityOf, useAvailability } from "../state/availability";
+import { maxRating, titleKey, unitKey, useLibrary, type TitleRef, type WatchStatus } from "../state/library";
 import { TrackBadge } from "./TrackControls";
 
 type CardItem = TitleRef & Partial<Pick<MediaItem, "rating" | "isAnime">> & { note?: string };
@@ -19,33 +21,18 @@ function refOf(item: CardItem): TitleRef {
   return { type, id, title, poster, backdrop, year };
 }
 
-function restoreEntry(key: string, previous: TrackEntry | undefined): void {
-  const { restoreTracked, removeTracked } = useLibrary.getState();
-  if (previous) restoreTracked(key, previous);
-  else removeTracked(key);
-}
-
 function changeStatus(item: CardItem, status: WatchStatus | null): void {
   const title = refOf(item);
   const key = titleKey(title.type, title.id);
   const state = useLibrary.getState();
   const previous = state.tracked[key];
   const movieKey = unitKey("movie", title.id);
-  const previousProgress = state.progress[movieKey];
+  const leavingCompleted = previous?.status === "completed" && status !== "completed";
   if (status === null && !previous?.rating && !previous?.liked) state.removeTracked(key);
   else state.setStatus(title, status);
-  if (status === "completed" && title.type === "movie") state.setWatched(movieKey, true, { title });
-  const text = status ? t("cards.quick.status", { title: title.title, status: statusLabel(status) }) : t("cards.quick.cleared", { title: title.title });
-  useUi.getState().toast(text, "success", {
-    label: t("feed.dismissed.undo"),
-    run: () => {
-      restoreEntry(key, previous);
-      if (status === "completed" && title.type === "movie") {
-        if (previousProgress) useLibrary.getState().restoreProgress(movieKey, previousProgress);
-        else useLibrary.getState().setWatched(movieKey, false, { title });
-      }
-    },
-  });
+  if (title.type !== "movie") return;
+  if (status === "completed") state.setWatched(movieKey, true, { title });
+  else if (leavingCompleted && state.progress[movieKey]) state.setWatched(movieKey, false, { title });
 }
 
 function QuickActions({ item }: { item: CardItem }) {
@@ -72,15 +59,8 @@ function QuickActions({ item }: { item: CardItem }) {
   }, [rating]);
 
   const rate = (value: number) => {
-    const title = refOf(item);
-    const key = titleKey(title.type, title.id);
-    const previous = useLibrary.getState().tracked[key];
-    useLibrary.getState().setRating(title, value === entry?.rating ? null : value);
+    useLibrary.getState().setRating(refOf(item), value === entry?.rating ? null : value);
     setRating(false);
-    useUi.getState().toast(t("cards.quick.rated", { title: title.title, value }), "success", {
-      label: t("feed.dismissed.undo"),
-      run: () => restoreEntry(key, previous),
-    });
   };
 
   return (
@@ -134,6 +114,20 @@ function QuickActions({ item }: { item: CardItem }) {
   );
 }
 
+export type DismissDetail = Pick<Dismissal, "reason" | "personId" | "personName">;
+
+function AvailableBadge({ item }: { item: CardItem }) {
+  const { t, tn } = useT();
+  const available = useAvailability((state) => availabilityOf(state.known, item));
+  if (!available) return null;
+  return (
+    <span className="poster-card__available" title={tn("cards.available.seeds", available.seeds)}>
+      <Play size={9} fill="currentColor" />
+      {available.quality || t("cards.available")}
+    </span>
+  );
+}
+
 export function PosterCard({ item }: { item: CardItem }) {
   const navigate = useNavigate();
   const poster = imageUrl(item.poster, "w342");
@@ -149,6 +143,7 @@ export function PosterCard({ item }: { item: CardItem }) {
           </span>
         ) : null}
         <TrackBadge type={item.type} id={item.id} />
+        <AvailableBadge item={item} />
       </div>
       <div className="poster-card__title">{item.title}</div>
       <div className="poster-card__meta">
@@ -167,24 +162,99 @@ export function PosterCard({ item }: { item: CardItem }) {
   );
 }
 
-function DismissibleCard({ item, onDismiss }: { item: CardItem; onDismiss: (item: CardItem) => void }) {
+const shownPeople = 4;
+
+function DismissibleCard({ item, onDismiss }: { item: CardItem; onDismiss: (item: CardItem, detail: DismissDetail) => void }) {
   const { t } = useT();
+  const [open, setOpen] = useState(false);
+  const [people, setPeople] = useState<{ id: number; name: string }[] | null>(null);
+  const [loadingPeople, setLoadingPeople] = useState(false);
+  const slotRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointer = (event: MouseEvent) => {
+      if (!slotRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("mousedown", onPointer);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onPointer);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const finish = (detail: DismissDetail) => {
+    const slot = slotRef.current;
+    const neighbour = slot?.nextElementSibling ?? slot?.previousElementSibling;
+    neighbour?.querySelector<HTMLElement>(".poster-card__open")?.focus();
+    setOpen(false);
+    onDismiss(item, detail);
+  };
+
+  const askPeople = async () => {
+    setLoadingPeople(true);
+    try {
+      const taste = await cachedCatalog(`taste:${item.type}:${item.id}`, 14 * 86_400_000, () => tmdb.taste(item.type, item.id));
+      setPeople(taste.people.slice(0, shownPeople).map(({ id, name }) => ({ id, name })));
+    } catch {
+      setPeople([]);
+    } finally {
+      setLoadingPeople(false);
+    }
+  };
+
   return (
-    <div className="poster-slot">
+    <div className={`poster-slot ${open ? "is-asking" : ""}`} ref={slotRef}>
       <PosterCard item={item} />
       <button
         className="poster-slot__dismiss"
         title={t("feed.dismiss")}
         aria-label={t("feed.dismiss.label", { title: item.title })}
-        onClick={(event) => {
-          const slot = event.currentTarget.parentElement;
-          const neighbour = slot?.nextElementSibling ?? slot?.previousElementSibling;
-          neighbour?.querySelector<HTMLElement>(".poster-card__open")?.focus();
-          onDismiss(item);
+        aria-expanded={open}
+        onClick={() => {
+          setPeople(null);
+          setOpen((value) => !value);
         }}
       >
         <ThumbsDown size={15} />
       </button>
+      {open && (
+        <div className="dismiss-menu" role="menu" aria-label={t("feed.dismiss.why")}>
+          <strong>{t("feed.dismiss.why")}</strong>
+          {people === null ? (
+            <>
+              <button role="menuitem" onClick={() => finish({ reason: "seen" })}>
+                {t("feed.dismiss.seen")}
+              </button>
+              <button role="menuitem" onClick={() => finish({ reason: "genre" })}>
+                {t("feed.dismiss.genre")}
+              </button>
+              <button role="menuitem" disabled={loadingPeople} onClick={() => void askPeople()}>
+                {t("feed.dismiss.person")}
+                {loadingPeople && <LoaderCircle size={13} className="spin" />}
+              </button>
+              <button role="menuitem" onClick={() => finish({ reason: "other" })}>
+                {t("feed.dismiss.other")}
+              </button>
+            </>
+          ) : (
+            <>
+              {people.map((person) => (
+                <button key={person.id} role="menuitem" onClick={() => finish({ reason: "person", personId: person.id, personName: person.name })}>
+                  {person.name}
+                </button>
+              ))}
+              <button role="menuitem" onClick={() => finish({ reason: "other" })}>
+                {people.length > 0 ? t("feed.dismiss.nobody") : t("feed.dismiss.other")}
+              </button>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -216,7 +286,15 @@ export function Row({ title, children }: { title: string; children: ReactNode })
   );
 }
 
-export function PosterRow({ title, items, onDismiss }: { title: string; items: CardItem[] | null; onDismiss?: (item: TitleRef) => void }) {
+export function PosterRow({
+  title,
+  items,
+  onDismiss,
+}: {
+  title: string;
+  items: CardItem[] | null;
+  onDismiss?: (item: TitleRef, detail: DismissDetail) => void;
+}) {
   if (items && items.length === 0) return null;
   return (
     <Row title={title}>

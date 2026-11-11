@@ -67,6 +67,7 @@ interface UiState {
 }
 
 let nextToastId = 1;
+const maxToasts = 2;
 
 export const useUi = create<UiState>((set) => ({
   toasts: [],
@@ -78,7 +79,7 @@ export const useUi = create<UiState>((set) => ({
 
   toast(text, kind = "info", action) {
     const id = nextToastId++;
-    set((state) => ({ toasts: [...state.toasts, { id, kind, text, action }] }));
+    set((state) => ({ toasts: [...state.toasts.filter((toast) => toast.kind === "error"), { id, kind, text, action }].slice(-maxToasts) }));
   },
   dismissToast: (id) => set((state) => ({ toasts: state.toasts.filter((toast) => toast.id !== id) })),
 
