@@ -218,6 +218,13 @@
 
 
 .content {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.page-scroller {
+  height: 100%;
   overflow-y: auto;
   overflow-x: hidden;
   scrollbar-gutter: stable;
