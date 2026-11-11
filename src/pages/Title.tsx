@@ -506,6 +506,9 @@ export default function TitlePage() {
     return () => setPageTarget(null);
   }, [target, setPageTarget]);
 
+  // The page may stay alive hidden in the page stack: a trailer must not keep playing behind it.
+  useEffect(() => () => setTrailerTitleId(null), []);
+
   useEffect(() => {
     if (!data || !title) return;
     const regularEpisodes = data.seasons
