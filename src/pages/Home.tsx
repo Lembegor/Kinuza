@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ChevronLeft, ChevronRight, Info, Play, Star } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, Info, Play, Star, X } from "lucide-react";
 import { CatalogError, PosterRow, Row, typeLabel } from "../components/Cards";
 import { t, useT } from "../lib/i18n";
 import { imageUrl, tmdb, type MediaItem } from "../lib/tmdb";
@@ -125,6 +125,23 @@ function ContinueCard({ unitKey, progress }: { unitKey: string; progress: Progre
       : t("common.type.movie");
 
   const openTitle = () => navigate(`/title/${title.type}/${title.id}`);
+  const context = { title, season: progress.season, episode: progress.episode, episodeName: progress.episodeName };
+  const hide = () => {
+    const { setWatched, restoreProgress } = useLibrary.getState();
+    setWatched(unitKey, false, context);
+    useUi.getState().toast(t("home.continue.hidden", { title: title.title }), "info", {
+      label: t("feed.dismissed.undo"),
+      run: () => restoreProgress(unitKey, progress),
+    });
+  };
+  const markWatched = () => {
+    const { setWatched, restoreProgress } = useLibrary.getState();
+    setWatched(unitKey, true, context);
+    useUi.getState().toast(t("home.continue.markedWatched", { title: title.title }), "success", {
+      label: t("feed.dismissed.undo"),
+      run: () => restoreProgress(unitKey, progress),
+    });
+  };
   const resume = () => {
     if (!hasSource) {
       openTitle();
@@ -150,9 +167,17 @@ function ContinueCard({ unitKey, progress }: { unitKey: string; progress: Progre
           <i style={{ width: `${(progress.position / progress.duration) * 100}%` }} />
         </div>
       </button>
-      <button className="continue-card__info" aria-label={t("home.continue.page", { title: title.title })} title={t("common.openPage")} onClick={openTitle}>
-        <Info size={16} />
-      </button>
+      <div className="continue-card__tools">
+        <button className="continue-card__info" aria-label={t("home.continue.markWatched")} title={t("home.continue.markWatched")} onClick={markWatched}>
+          <Check size={16} />
+        </button>
+        <button className="continue-card__info" aria-label={t("home.continue.page", { title: title.title })} title={t("common.openPage")} onClick={openTitle}>
+          <Info size={16} />
+        </button>
+        <button className="continue-card__info" aria-label={t("home.continue.hide")} title={t("home.continue.hide")} onClick={hide}>
+          <X size={16} />
+        </button>
+      </div>
       <button className="continue-card__text" onClick={openTitle}>
         <div className="poster-card__title">{title.title}</div>
         <div className="poster-card__meta">

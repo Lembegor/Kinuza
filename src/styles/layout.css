@@ -165,11 +165,15 @@
   flex-direction: column;
   align-items: center;
   gap: 5px;
-  padding: 11px 0 9px;
+  padding: 11px 4px 9px;
   border-radius: var(--radius-m);
-  color: var(--faint);
-  font-size: 11px;
+  color: var(--muted);
+  font-size: 12px;
   font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+  text-align: center;
+  overflow-wrap: anywhere;
   text-decoration: none;
   transition:
     background 0.15s,
@@ -183,7 +187,12 @@
 
 .sidebar__link.active {
   background: var(--accent-soft);
-  color: #ff8d90;
+  color: #ff9a9c;
+}
+
+.sidebar__link:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: -2px;
 }
 
 .sidebar__badge {
@@ -299,6 +308,25 @@
 
 .toast__action:hover {
   background: rgba(255, 255, 255, 0.1);
+}
+
+.toast__close {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  margin: -4px -8px -4px 0;
+  border-radius: 50%;
+  color: var(--muted);
+}
+
+.toast__close svg {
+  color: inherit !important;
+}
+
+.toast__close:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
 }
 
 .update-notice {
@@ -544,6 +572,60 @@
   min-width: 0;
   border-radius: var(--radius-m);
   text-align: left;
+}
+
+.pick__frame {
+  position: relative;
+}
+
+.pick__main {
+  display: block;
+  width: 100%;
+  border-radius: var(--radius-m);
+}
+
+.pick__main:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 4px;
+}
+
+.pick__title {
+  cursor: pointer;
+}
+
+.pick__rate {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: 6px;
+  display: flex;
+  justify-content: space-between;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 9px;
+  background: rgba(8, 8, 11, 0.82);
+  backdrop-filter: blur(6px);
+  animation: rise 0.2s var(--ease);
+}
+
+.pick__rate button {
+  flex: 1;
+  height: 24px;
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.pick__rate button:hover,
+.pick__rate button:focus-visible {
+  background: rgba(255, 255, 255, 0.14);
+  color: var(--text);
+}
+
+.pick__rate button.is-on {
+  background: var(--accent);
+  color: #fff;
 }
 
 .pick:focus-visible {

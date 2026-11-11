@@ -14,6 +14,7 @@ const statusWeights: Record<WatchStatus, number> = {
   dropped: -0.5,
 };
 const dismissedWeight = -0.2;
+const likedWeight = 0.6;
 const oldestSignalShare = 0.4;
 const tasteHalfLifeDays = 240;
 const weakestSignal = 0.08;
@@ -76,16 +77,18 @@ export function tasteSignals(tracked: Record<string, TrackEntry>, now: number): 
     const stated =
       entry.rating !== null
         ? clamp((entry.rating - neutralRating) / ratingSpan, -1, 1)
-        : entry.status
-          ? statusWeights[entry.status]
-          : 0;
+        : entry.liked
+          ? likedWeight
+          : entry.status
+            ? statusWeights[entry.status]
+            : 0;
     const weight = faded(stated, entry.updatedAt, now);
     if (Math.abs(weight) < weakestSignal) continue;
     const { type, id, title, poster, backdrop, year } = entry;
     signals.push({
       title: { type, id, title, poster, backdrop, year },
       weight,
-      rated: entry.rating !== null,
+      rated: entry.rating !== null || entry.liked === true,
       status: entry.status,
     });
   }

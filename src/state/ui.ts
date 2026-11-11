@@ -2,8 +2,6 @@ import { create } from "zustand";
 import type { SeasonInfo } from "../lib/tmdb";
 import type { TitleRef } from "./library";
 
-const toastLifetimeMs = 5000;
-
 export type ToastKind = "info" | "success" | "error";
 
 export interface ToastAction {
@@ -70,7 +68,7 @@ interface UiState {
 
 let nextToastId = 1;
 
-export const useUi = create<UiState>((set, get) => ({
+export const useUi = create<UiState>((set) => ({
   toasts: [],
   addSource: null,
   confirm: null,
@@ -81,7 +79,6 @@ export const useUi = create<UiState>((set, get) => ({
   toast(text, kind = "info", action) {
     const id = nextToastId++;
     set((state) => ({ toasts: [...state.toasts, { id, kind, text, action }] }));
-    setTimeout(() => get().dismissToast(id), toastLifetimeMs);
   },
   dismissToast: (id) => set((state) => ({ toasts: state.toasts.filter((toast) => toast.id !== id) })),
 

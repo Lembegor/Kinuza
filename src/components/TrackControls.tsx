@@ -1,7 +1,19 @@
 import { useEffect, useRef, useState } from "react";
-import { Ban, Check, ChevronDown, Clock, Eye, ListPlus, Pause, Star, Trash2, type LucideIcon } from "lucide-react";
-import { useT } from "../lib/i18n";
+import { Ban, Check, ChevronDown, Clock, Eye, Heart, ListPlus, Pause, Star, Trash2, type LucideIcon } from "lucide-react";
+import { t, useT } from "../lib/i18n";
 import { maxRating, statusLabel, titleKey, useLibrary, watchStatuses, type TitleRef, type WatchStatus } from "../state/library";
+import { useUi } from "../state/ui";
+
+export function removeTrackedWithUndo(key: string): void {
+  const { tracked, removeTracked, restoreTracked } = useLibrary.getState();
+  const entry = tracked[key];
+  if (!entry) return;
+  removeTracked(key);
+  useUi.getState().toast(t("library.removed", { title: entry.title }), "info", {
+    label: t("feed.dismissed.undo"),
+    run: () => restoreTracked(key, entry),
+  });
+}
 
 export const statusIcons: Record<WatchStatus, LucideIcon> = {
   watching: Eye,
@@ -35,7 +47,7 @@ export function StatusMenu({ title }: { title: TitleRef }) {
   const key = titleKey(title.type, title.id);
   const entry = useLibrary((state) => state.tracked[key]);
   const { t } = useT();
-  const { setStatus, removeTracked } = useLibrary.getState();
+  const { setStatus } = useLibrary.getState();
   const [open, setOpen] = useState(false);
   const ref = useDismiss(open, () => setOpen(false));
 
@@ -72,7 +84,7 @@ export function StatusMenu({ title }: { title: TitleRef }) {
             <button
               className="popover__item popover__item--danger"
               onClick={() => {
-                removeTracked(key);
+                removeTrackedWithUndo(key);
                 setOpen(false);
               }}
             >
@@ -120,16 +132,19 @@ export function RatingStars({ title }: { title: TitleRef }) {
 export function TrackBadge({ type, id }: Pick<TitleRef, "type" | "id">) {
   const entry = useLibrary((state) => state.tracked[titleKey(type, id)]);
   const { t } = useT();
-  if (!entry || (!entry.status && !entry.rating)) return null;
+  if (!entry || (!entry.status && !entry.rating && !entry.liked)) return null;
   const Icon = entry.status ? statusIcons[entry.status] : null;
+  const label = entry.status ? statusLabel(entry.status) : entry.rating ? t("library.rating.mine") : t("library.liked");
   return (
-    <span className={`track-badge ${entry.status ? `track-badge--${entry.status}` : ""}`} title={entry.status ? statusLabel(entry.status) : t("library.rating.mine")}>
+    <span className={`track-badge ${entry.status ? `track-badge--${entry.status}` : ""}`} title={label}>
       {Icon && <Icon size={12} />}
-      {entry.rating && (
+      {entry.rating ? (
         <>
           <Star size={10} fill="currentColor" />
           {entry.rating}
         </>
+      ) : (
+        entry.liked && <Heart size={11} fill="currentColor" />
       )}
     </span>
   );

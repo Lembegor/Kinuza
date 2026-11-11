@@ -330,7 +330,14 @@ export function TrackerSearch({ target, onPick }: { target: AddSourceTarget; onP
       ) : (
         <>
           <form className="tracker-form" onSubmit={submitSearch}>
-            <input className="input" value={queryInput} onChange={(event) => setQueryInput(event.target.value)} placeholder={t("tracker.query.placeholder")} />
+            <input
+              className="input"
+              data-autofocus
+              aria-label={t("tracker.query.placeholder")}
+              value={queryInput}
+              onChange={(event) => setQueryInput(event.target.value)}
+              placeholder={t("tracker.query.placeholder")}
+            />
             <button className="button button--primary" type="submit" disabled={loading}>
               {t("tracker.search")}
             </button>

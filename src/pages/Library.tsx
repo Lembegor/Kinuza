@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
+import { useSearchParams } from "react-router-dom";
 import { ListVideo } from "lucide-react";
 import { EmptyState, PosterGrid } from "../components/Cards";
 import { currentLocale, tn, useT, type MessageKey } from "../lib/i18n";
@@ -31,8 +32,18 @@ export default function Library() {
   const { t } = useT();
   const tracked = useLibrary((state) => state.tracked);
   const progress = useLibrary((state) => state.progress);
-  const [filter, setFilter] = useState<Filter>("all");
-  const [sort, setSort] = useState<Sort>("updated");
+  const [params, setParams] = useSearchParams();
+  const filter: Filter = watchStatuses.find((status) => status.id === params.get("status"))?.id ?? "all";
+  const sort: Sort = sorts.find((item) => item.id === params.get("sort"))?.id ?? "updated";
+  const choose = (change: { status?: Filter; sort?: Sort }) => {
+    const next = { status: change.status ?? filter, sort: change.sort ?? sort };
+    const search = new URLSearchParams();
+    if (next.status !== "all") search.set("status", next.status);
+    if (next.sort !== "updated") search.set("sort", next.sort);
+    setParams(search, { replace: true });
+  };
+  const setFilter = (status: Filter) => choose({ status });
+  const setSort = (value: Sort) => choose({ sort: value });
 
   const entries = useMemo(() => Object.values(tracked), [tracked]);
   const counts = useMemo(() => {

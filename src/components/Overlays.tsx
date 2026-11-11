@@ -1,30 +1,73 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CircleAlert, CircleCheck, Info, RefreshCw, X } from "lucide-react";
 import { useT } from "../lib/i18n";
-import { useUi } from "../state/ui";
+import { isTopDialog, useDialogFocus } from "../lib/useDialogFocus";
+import { useUi, type Toast } from "../state/ui";
 import { useUpdater } from "../state/updater";
 
 const toastIcons = { info: Info, success: CircleCheck, error: CircleAlert };
+const toastLifetimeMs = 5000;
+const errorToastLifetimeMs = 9000;
+const actionToastLifetimeMs = 10000;
+
+function toastLifetime(toast: Toast): number {
+  if (toast.action) return actionToastLifetimeMs;
+  return toast.kind === "error" ? errorToastLifetimeMs : toastLifetimeMs;
+}
+
+function ToastItem({ toast }: { toast: Toast }) {
+  const { t } = useT();
+  const dismiss = useUi((state) => state.dismissToast);
+  const [held, setHeld] = useState(false);
+  const left = useRef(toastLifetime(toast));
+
+  useEffect(() => {
+    if (held) return;
+    const startedAt = Date.now();
+    const timer = setTimeout(() => dismiss(toast.id), left.current);
+    return () => {
+      clearTimeout(timer);
+      left.current = Math.max(1000, left.current - (Date.now() - startedAt));
+    };
+  }, [held, toast.id, dismiss]);
+
+  const Icon = toastIcons[toast.kind];
+  return (
+    <div
+      className={`toast toast--${toast.kind}`}
+      role={toast.kind === "error" ? "alert" : "status"}
+      onMouseEnter={() => setHeld(true)}
+      onMouseLeave={() => setHeld(false)}
+      onFocus={() => setHeld(true)}
+      onBlur={() => setHeld(false)}
+    >
+      <Icon size={18} />
+      <span>{toast.text}</span>
+      {toast.action && (
+        <button
+          className="toast__action"
+          onClick={() => {
+            toast.action?.run();
+            dismiss(toast.id);
+          }}
+        >
+          {toast.action.label}
+        </button>
+      )}
+      <button className="toast__close" aria-label={t("common.close")} onClick={() => dismiss(toast.id)}>
+        <X size={14} />
+      </button>
+    </div>
+  );
+}
 
 export function Toasts() {
   const toasts = useUi((state) => state.toasts);
-  const dismiss = useUi((state) => state.dismissToast);
   return (
-    <div className="toasts">
-      {toasts.map((toast) => {
-        const Icon = toastIcons[toast.kind];
-        return (
-          <div key={toast.id} className={`toast toast--${toast.kind}`} onClick={() => dismiss(toast.id)}>
-            <Icon size={18} />
-            <span>{toast.text}</span>
-            {toast.action && (
-              <button className="toast__action" onClick={toast.action.run}>
-                {toast.action.label}
-              </button>
-            )}
-          </div>
-        );
-      })}
+    <div className="toasts" aria-live="polite">
+      {toasts.map((toast) => (
+        <ToastItem key={toast.id} toast={toast} />
+      ))}
     </div>
   );
 }
@@ -34,24 +77,38 @@ export function ConfirmDialog() {
   const close = useUi((state) => state.closeConfirm);
   const { t } = useT();
   const [optionChecked, setOptionChecked] = useState(false);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(dialogRef, request !== null);
 
   useEffect(() => setOptionChecked(false), [request]);
 
   useEffect(() => {
     if (!request) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") close();
+      if (event.key !== "Escape" || !isTopDialog(dialogRef)) return;
+      event.stopImmediatePropagation();
+      close();
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
   }, [request, close]);
 
   if (!request) return null;
   return (
-    <div className="backdrop" onMouseDown={close}>
-      <div className="dialog dialog--small" onMouseDown={(event) => event.stopPropagation()}>
-        <h2>{request.title}</h2>
-        <p className="dialog__text">{request.message}</p>
+    <div className="backdrop backdrop--top" onMouseDown={close}>
+      <div
+        ref={dialogRef}
+        className="dialog dialog--small"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="confirm-title"
+        aria-describedby="confirm-message"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <h2 id="confirm-title">{request.title}</h2>
+        <p className="dialog__text" id="confirm-message">
+          {request.message}
+        </p>
         {request.optionLabel && (
           <label className="check">
             <input type="checkbox" checked={optionChecked} onChange={(event) => setOptionChecked(event.target.checked)} />
@@ -59,7 +116,7 @@ export function ConfirmDialog() {
           </label>
         )}
         <div className="dialog__actions">
-          <button className="button" onClick={close}>
+          <button className="button" data-autofocus onClick={close}>
             {t("common.cancel")}
           </button>
           <button

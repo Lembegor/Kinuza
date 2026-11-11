@@ -19,6 +19,10 @@ export interface MediaHandlers {
 
 const installPollMs = 300;
 
+function showPicture(shown: boolean): void {
+  document.documentElement.classList.toggle("is-mpv-picture", shown);
+}
+
 export class MpvVideo {
   handlers: Partial<MediaHandlers> = {};
   onTracksChanged: (() => void) | null = null;
@@ -118,6 +122,7 @@ export class MpvVideo {
     this.bufferedRanges = [];
     this.trackList = [];
     this.chapterList = [];
+    showPicture(false);
     await mpv.set("volume", Math.round(this.volumeNow * 100));
     await mpv.set("mute", this.mutedNow);
     await mpv.set("speed", this.rateNow);
@@ -244,6 +249,7 @@ export class MpvVideo {
         const params = data as { dw?: number; dh?: number; w?: number; h?: number } | null;
         this.width = params?.dw ?? params?.w ?? 0;
         this.height = params?.dh ?? params?.h ?? 0;
+        showPicture(this.width > 0);
         this.announceMetadata();
         break;
       }
@@ -285,6 +291,7 @@ export function useMpvVideo(enabled: boolean): { video: MpvVideo; tracks: MediaT
       video.onTracksChanged = null;
       video.stop();
       document.documentElement.classList.remove("is-mpv");
+      showPicture(false);
     };
   }, [enabled, video]);
 

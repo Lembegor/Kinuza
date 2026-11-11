@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import {
   Check,
@@ -12,6 +12,7 @@ import {
   FolderOpen,
   Play,
   Plus,
+  Search,
   Star,
   Trash2,
   X,
@@ -27,6 +28,7 @@ import { t, useT } from "../lib/i18n";
 import { qualityRank } from "../lib/parse";
 import { imageUrl, tmdb, type Details, type Episode, type MediaType } from "../lib/tmdb";
 import { useAsync } from "../lib/useAsync";
+import { localDay } from "../state/calendar";
 import { isWatched, toTitleRef, unitKey, useLibrary, type Source, type TitleRef } from "../state/library";
 import { useSettings } from "../state/settings";
 import { fileOf, fileProgress, useTorrents } from "../state/torrents";
@@ -58,6 +60,15 @@ async function downloadSource(source: Source): Promise<void> {
   } catch (error) {
     useUi.getState().toast(describeError(error), "error");
   }
+}
+
+function removeSourceWithUndo(key: string, source: Source): void {
+  const { removeSource, addSources } = useLibrary.getState();
+  removeSource(key, source.id);
+  useUi.getState().toast(t("title.source.removed", { quality: source.quality || t("common.video") }), "info", {
+    label: t("feed.dismissed.undo"),
+    run: () => addSources([{ unitKey: key, source }]),
+  });
 }
 
 function SourceStatus({ source }: { source: Source }) {
@@ -114,8 +125,8 @@ function QualityChip({ source, onRemove }: { source: Source; onRemove: () => voi
           </button>
         </>
       )}
-      <button aria-label={t("title.source.remove")} onClick={onRemove}>
-        <X size={11} />
+      <button className="quality-chip__remove" aria-label={t("title.source.remove")} title={t("title.source.remove")} onClick={onRemove}>
+        <X size={13} />
       </button>
     </span>
   );
@@ -125,7 +136,6 @@ function MovieSources({ title, target }: { title: TitleRef; target: AddSourceTar
   const key = unitKey("movie", title.id);
   const stored = useLibrary((state) => state.sources[key]);
   const sources = useMemo(() => sortSources(stored ?? []), [stored]);
-  const removeSource = useLibrary((state) => state.removeSource);
   const { play, openAddSource } = useUi.getState();
   const { t } = useT();
 
@@ -169,7 +179,7 @@ function MovieSources({ title, target }: { title: TitleRef; target: AddSourceTar
               <button className="icon-button" aria-label={t("title.source.reveal")} onClick={() => void revealFile(source)}>
                 <FolderOpen size={16} />
               </button>
-              <button className="icon-button" aria-label={t("title.source.remove")} onClick={() => removeSource(key, source.id)}>
+              <button className="icon-button" aria-label={t("title.source.remove")} title={t("title.source.remove")} onClick={() => removeSourceWithUndo(key, source)}>
                 <Trash2 size={16} />
               </button>
             </div>
@@ -180,17 +190,49 @@ function MovieSources({ title, target }: { title: TitleRef; target: AddSourceTar
   );
 }
 
-function EpisodeRow({ title, episode }: { title: TitleRef; episode: Episode }) {
+function Overview({ text }: { text: string }) {
+  const { t } = useT();
+  const [expanded, setExpanded] = useState(false);
+  const [overflows, setOverflows] = useState(false);
+  const textRef = useRef<HTMLParagraphElement>(null);
+
+  useEffect(() => {
+    const element = textRef.current;
+    if (!element || expanded) return;
+    const measure = () => setOverflows(element.scrollHeight > element.clientHeight + 1);
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [expanded, text]);
+
+  return (
+    <>
+      <p ref={textRef} className={`title-hero__overview ${expanded ? "is-expanded" : ""}`}>
+        {text}
+      </p>
+      {(overflows || expanded) && (
+        <button className="text-button title-hero__more" aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>
+          {expanded ? t("person.bio.less") : t("person.bio.more")}
+        </button>
+      )}
+    </>
+  );
+}
+
+function EpisodeRow({ title, episode, target }: { title: TitleRef; episode: Episode; target: AddSourceTarget }) {
   const key = unitKey("tv", title.id, episode.season, episode.episode);
   const stored = useLibrary((state) => state.sources[key]);
   const progress = useLibrary((state) => state.progress[key]);
-  const { removeSource, setWatched } = useLibrary.getState();
+  const { setWatched } = useLibrary.getState();
   const play = useUi((state) => state.play);
+  const openAddSource = useUi((state) => state.openAddSource);
   const { t } = useT();
 
   const sources = useMemo(() => sortSources(stored ?? []), [stored]);
   const watched = isWatched(progress);
   const playable = sources.length > 0;
+  const aired = episode.airDate !== "" && episode.airDate <= localDay(new Date());
+  const findSource = () => openAddSource({ target: { ...target, defaultSeason: episode.season } });
   const still = imageUrl(episode.still, "w300");
   const watchedShare = progress && progress.duration > 0 ? Math.min(1, progress.position / progress.duration) : 0;
 
@@ -205,13 +247,27 @@ function EpisodeRow({ title, episode }: { title: TitleRef; episode: Episode }) {
     });
 
   return (
-    <div className={`episode ${playable ? "is-playable" : ""} ${watched ? "is-watched" : ""}`}>
-      <button className="episode__still" disabled={!playable} onClick={() => start()} aria-label={t("title.episode.watch")}>
+    <div className={`episode ${playable ? "is-playable" : ""} ${watched ? "is-watched" : ""} ${!playable && !aired ? "is-upcoming" : ""}`}>
+      <button
+        className="episode__still"
+        disabled={!playable && !aired}
+        onClick={() => (playable ? start() : findSource())}
+        aria-label={playable ? t("title.episode.watch") : t("title.episode.find")}
+      >
         {still ? <img src={still} alt="" loading="lazy" draggable={false} /> : <div className="episode__blank" />}
         {playable && (
           <span className="episode__play">
             <Play size={20} fill="currentColor" />
           </span>
+        )}
+        {!playable && aired && (
+          <span className="episode__find">
+            <Search size={15} />
+            {t("title.episode.find")}
+          </span>
+        )}
+        {!playable && !aired && (
+          <span className="episode__airs">{episode.airDate ? t("title.episode.airs", { date: formatDate(episode.airDate) }) : t("title.episode.airsUnknown")}</span>
         )}
         {watchedShare > 0 && !watched && (
           <div className="bar bar--thin">
@@ -241,7 +297,7 @@ function EpisodeRow({ title, episode }: { title: TitleRef; episode: Episode }) {
       <div className="episode__side">
         <div className="episode__chips">
           {sources.map((source) => (
-            <QualityChip key={source.id} source={source} onRemove={() => removeSource(key, source.id)} />
+            <QualityChip key={source.id} source={source} onRemove={() => removeSourceWithUndo(key, source)} />
           ))}
         </div>
         <button
@@ -346,7 +402,7 @@ function SeriesEpisodes({
       ) : (
         <div className="episode-list">
           {(episodes.data ?? []).map((episode) => (
-            <EpisodeRow key={episode.episode} title={title} episode={episode} />
+            <EpisodeRow key={episode.episode} title={title} episode={episode} target={target} />
           ))}
         </div>
       )}
@@ -513,7 +569,7 @@ export default function TitlePage() {
               </div>
             )}
             {data.tagline && <div className="title-hero__tagline">{data.tagline}</div>}
-            <p className="title-hero__overview">{data.overview || t("title.noOverview")}</p>
+            <Overview text={data.overview || t("title.noOverview")} />
             <div className="title-hero__actions">
               {canPlay ? (
                 <button className="button button--primary button--large" onClick={playResume}>

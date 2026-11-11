@@ -46,6 +46,18 @@ export interface PersonRef {
   photo: string | null;
 }
 
+export interface FoundPerson extends PersonRef {
+  department: string;
+  knownFor: string[];
+  popularity: number;
+}
+
+export interface SearchPage {
+  items: MediaItem[];
+  people: FoundPerson[];
+  totalPages: number;
+}
+
 export interface CastMember extends PersonRef {
   character: string;
 }
@@ -388,6 +400,23 @@ export const tmdb = {
     }),
 
   search: (query: string) => list("/search/multi", undefined, { query, page: 1 }),
+
+  async searchEverything(query: string, page: number): Promise<SearchPage> {
+    const data = await request<Raw>("/search/multi", { query, page });
+    const results: Raw[] = data.results ?? [];
+    const people = results
+      .filter((raw) => raw.media_type === "person")
+      .map((raw) => ({
+        ...toPersonRef(raw),
+        department: raw.known_for_department ?? "",
+        knownFor: ((raw.known_for ?? []) as Raw[])
+          .map((work) => (work.media_type === "tv" ? work.name : work.title) ?? "")
+          .filter(Boolean)
+          .slice(0, 2),
+        popularity: raw.popularity ?? 0,
+      }));
+    return { items: toItems(results), people, totalPages: data.total_pages ?? 1 };
+  },
 
   async searchByName(type: MediaType, query: string, options: { year?: number | null; language?: string } = {}): Promise<MediaItem[]> {
     const params: Record<string, string | number> = { query, page: 1 };

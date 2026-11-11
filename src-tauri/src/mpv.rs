@@ -39,6 +39,7 @@ const ALLOWED_PROPERTIES: &[&str] = &[
     "sub-delay",
     "sid",
     "aid",
+    "interpolation",
 ];
 const LOADFILE_FLAGS: &[&str] = &["replace", "append"];
 
@@ -385,6 +386,14 @@ pub async fn mpv_command(
         return Err("mpv_command_refused".to_owned());
     }
     send(&app, &mpv, &state.data_dir, json!({ "command": command })).await
+}
+
+#[tauri::command]
+pub async fn mpv_warm(app: AppHandle, state: State<'_, AppState>, mpv: State<'_, MpvState>) -> Result<(), String> {
+    if executable(&state.data_dir).is_none() {
+        return Ok(());
+    }
+    send(&app, &mpv, &state.data_dir, json!({ "command": ["get_property", "idle-active"] })).await
 }
 
 #[tauri::command]

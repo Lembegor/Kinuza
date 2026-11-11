@@ -60,8 +60,112 @@
 }
 
 .poster-card {
+  position: relative;
   width: 168px;
   text-align: left;
+}
+
+.poster-card__open {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border-radius: var(--radius-m);
+}
+
+.poster-actions {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  aspect-ratio: 2 / 3;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  pointer-events: none;
+  opacity: 0;
+  transition:
+    opacity 0.2s,
+    transform 0.25s var(--ease);
+}
+
+.poster-card:hover .poster-actions,
+.poster-card:focus-within .poster-actions,
+.poster-actions.is-open {
+  opacity: 1;
+}
+
+.poster-card:hover .poster-actions {
+  transform: translateY(-5px);
+}
+
+.poster-actions__bar,
+.poster-actions__rating {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 999px;
+  background: rgba(8, 8, 11, 0.84);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  pointer-events: auto;
+}
+
+.poster-actions__bar button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-width: 32px;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 999px;
+  color: var(--text);
+}
+
+.poster-actions__bar button small {
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.poster-actions__bar button:hover,
+.poster-actions__bar button:focus-visible {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.poster-actions__bar button.is-on {
+  background: var(--accent);
+  color: #fff;
+}
+
+.poster-actions__rating {
+  flex-wrap: wrap;
+  justify-content: center;
+  max-width: 100%;
+  border-radius: 14px;
+  animation: rise 0.18s var(--ease);
+}
+
+.poster-actions__rating button {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.poster-actions__rating button:hover,
+.poster-actions__rating button:focus-visible {
+  background: rgba(255, 255, 255, 0.16);
+  color: var(--text);
+}
+
+.poster-actions__rating button.is-on {
+  background: var(--accent);
+  color: #fff;
 }
 
 .poster-card__art {
@@ -271,6 +375,22 @@
 
 .continue-card__info:hover {
   background: rgba(255, 255, 255, 0.24);
+}
+
+.continue-card__tools {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: flex;
+  gap: 6px;
+}
+
+.continue-card__tools .continue-card__info {
+  position: static;
+}
+
+.continue-card__tools:focus-within .continue-card__info {
+  opacity: 1;
 }
 
 .continue-card__text {
@@ -584,11 +704,59 @@
   user-select: text;
 }
 
+.title-hero__overview.is-expanded {
+  display: block;
+  -webkit-line-clamp: unset;
+  overflow: visible;
+}
+
+.title-hero__more {
+  margin-top: 6px;
+}
+
 .title-hero__actions {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
   margin-top: 24px;
+}
+
+@media (max-height: 780px) {
+  .title-hero {
+    min-height: 0;
+    padding-top: 58px;
+    padding-bottom: 22px;
+  }
+
+  .title-hero__body {
+    gap: 24px;
+  }
+
+  .title-hero__poster {
+    width: 150px;
+  }
+
+  .title-hero h1 {
+    font-size: clamp(24px, 2.4vw, 32px);
+  }
+
+  .title-hero__meta,
+  .title-hero__genres,
+  .title-hero__crew {
+    margin-top: 10px;
+  }
+
+  .title-hero__tagline {
+    display: none;
+  }
+
+  .title-hero__overview:not(.is-expanded) {
+    -webkit-line-clamp: 3;
+  }
+
+  .title-hero__actions {
+    margin-top: 16px;
+  }
 }
 
 .section {
@@ -749,6 +917,19 @@
   background: rgba(255, 255, 255, 0.16);
 }
 
+.quality-chip .quality-chip__remove {
+  width: 22px;
+  height: 22px;
+  margin-left: 4px;
+  border-left: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 0 5px 5px 0;
+}
+
+.quality-chip .quality-chip__remove:hover {
+  background: rgba(226, 58, 63, 0.22);
+  color: #ff8d90;
+}
+
 
 .episode-list {
   display: flex;
@@ -797,7 +978,49 @@
 }
 
 .episode:not(.is-playable) .episode__still img {
-  filter: saturate(0.35) brightness(0.6);
+  filter: saturate(0.6) brightness(0.75);
+}
+
+.episode.is-upcoming .episode__still img {
+  filter: grayscale(1) brightness(0.4);
+}
+
+.episode.is-upcoming .episode__title,
+.episode.is-upcoming .episode__meta {
+  color: var(--faint);
+}
+
+.episode__find,
+.episode__airs {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.episode__find {
+  background: rgba(243, 239, 232, 0.92);
+  color: #101014;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.episode:hover .episode__find,
+.episode__still:focus-visible .episode__find {
+  opacity: 1;
+}
+
+.episode__airs {
+  background: rgba(8, 8, 11, 0.78);
+  color: var(--muted);
+  border: 1px dashed rgba(255, 255, 255, 0.22);
 }
 
 .episode__blank {
@@ -1058,6 +1281,80 @@
 
 .settings-group {
   margin-bottom: 34px;
+  scroll-margin-top: 16px;
+}
+
+.settings-nav {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: -6px 0 22px;
+  padding: 8px 0;
+  background: var(--bg);
+}
+
+.setting.setting--details {
+  display: block;
+}
+
+.setting--details summary {
+  display: block;
+  cursor: pointer;
+  list-style: none;
+}
+
+.setting--details summary::-webkit-details-marker {
+  display: none;
+}
+
+.setting--details summary p {
+  margin-top: 4px;
+}
+
+.setting--details[open] summary {
+  margin-bottom: 14px;
+}
+
+.hotkeys {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 8px 24px;
+}
+
+.hotkeys__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.hotkeys dt {
+  display: flex;
+  flex: none;
+  gap: 4px;
+  min-width: 96px;
+}
+
+.hotkeys dd {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.hotkeys kbd {
+  min-width: 26px;
+  padding: 3px 7px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--line-strong);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-align: center;
+  white-space: nowrap;
 }
 
 .settings-group h2 {

@@ -1,19 +1,22 @@
-import { useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
-import { SearchX } from "lucide-react";
+import { useMemo } from "react";
+import { Link, useSearchParams } from "react-router-dom";
+import { SearchX, UserRound } from "lucide-react";
 import { CatalogError, EmptyState, PosterGrid } from "../components/Cards";
 import { useT, type MessageKey } from "../lib/i18n";
-import { tmdb, type MediaItem } from "../lib/tmdb";
+import { imageUrl, tmdb, type FoundPerson, type MediaItem } from "../lib/tmdb";
 import { useAsync } from "../lib/useAsync";
 
-type Filter = "all" | "movie" | "tv" | "anime";
+type Filter = "all" | "movie" | "tv" | "anime" | "people";
 
 const filters: { id: Filter; label: MessageKey }[] = [
   { id: "all", label: "search.filter.all" },
   { id: "movie", label: "search.filter.movies" },
   { id: "tv", label: "search.filter.series" },
   { id: "anime", label: "search.filter.anime" },
+  { id: "people", label: "search.filter.people" },
 ];
+
+const peopleInAll = 8;
 
 function matches(item: MediaItem, filter: Filter): boolean {
   if (filter === "all") return true;
@@ -21,14 +24,76 @@ function matches(item: MediaItem, filter: Filter): boolean {
   return item.type === filter && !item.isAnime;
 }
 
+function readFilter(value: string | null): Filter {
+  return filters.find((item) => item.id === value)?.id ?? "all";
+}
+
+function readPages(value: string | null): number {
+  const pages = Number(value);
+  return Number.isInteger(pages) && pages > 1 ? pages : 1;
+}
+
+function uniqueByKey<T>(items: T[], keyOf: (item: T) => string): T[] {
+  return [...new Map(items.map((item) => [keyOf(item), item])).values()];
+}
+
+function PeopleRow({ people }: { people: FoundPerson[] }) {
+  return (
+    <div className="cast search-people">
+      {people.map((person) => {
+        const photo = imageUrl(person.photo, "w185");
+        return (
+          <Link key={person.id} className="cast__person" to={`/person/${person.id}`} draggable={false}>
+            <div className="cast__photo">{photo ? <img src={photo} alt="" loading="lazy" draggable={false} /> : <UserRound size={28} />}</div>
+            <strong>{person.name}</strong>
+            <span>{person.knownFor.join(", ")}</span>
+          </Link>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function Search() {
   const { t } = useT();
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
   const query = (params.get("q") ?? "").trim();
-  const [filter, setFilter] = useState<Filter>("all");
-  const results = useAsync(() => (query ? tmdb.search(query) : Promise.resolve([])), [query]);
+  const filter = readFilter(params.get("type"));
+  const pages = readPages(params.get("pages"));
 
-  const visible = useMemo(() => (results.data ?? []).filter((item) => matches(item, filter)), [results.data, filter]);
+  const results = useAsync(
+    async () => {
+      if (!query) return { items: [], people: [], hasMore: false };
+      const loaded = await Promise.all(Array.from({ length: pages }, (_, index) => tmdb.searchEverything(query, index + 1)));
+      return {
+        items: uniqueByKey(
+          loaded.flatMap((page) => page.items),
+          (item) => `${item.type}:${item.id}`,
+        ),
+        people: uniqueByKey(
+          loaded.flatMap((page) => page.people),
+          (person) => String(person.id),
+        ).sort((a, b) => b.popularity - a.popularity),
+        hasMore: pages < (loaded[0]?.totalPages ?? 1),
+      };
+    },
+    [query, pages],
+    `search:${query}:${pages}`,
+  );
+
+  const change = (next: { type?: Filter; pages?: number }) => {
+    const search = new URLSearchParams();
+    if (query) search.set("q", query);
+    const type = next.type ?? filter;
+    if (type !== "all") search.set("type", type);
+    const count = next.pages ?? (next.type !== undefined ? 1 : pages);
+    if (count > 1) search.set("pages", String(count));
+    setParams(search, { replace: true });
+  };
+
+  const visible = useMemo(() => (filter === "people" ? [] : (results.data?.items ?? []).filter((item) => matches(item, filter))), [results.data, filter]);
+  const people = filter === "people" ? (results.data?.people ?? []) : filter === "all" ? (results.data?.people ?? []).slice(0, peopleInAll) : [];
+  const nothing = visible.length === 0 && people.length === 0;
 
   return (
     <div className="page">
@@ -36,11 +101,7 @@ export default function Search() {
         <h1>{query ? t("search.query", { query }) : t("search.title")}</h1>
         <div className="chips">
           {filters.map((item) => (
-            <button
-              key={item.id}
-              className={`chip ${filter === item.id ? "is-active" : ""}`}
-              onClick={() => setFilter(item.id)}
-            >
+            <button key={item.id} className={`chip ${filter === item.id ? "is-active" : ""}`} aria-pressed={filter === item.id} onClick={() => change({ type: item.id })}>
               {t(item.label)}
             </button>
           ))}
@@ -49,20 +110,48 @@ export default function Search() {
 
       {results.error ? (
         <CatalogError onRetry={results.reload} />
-      ) : results.loading ? (
+      ) : results.loading && !results.data ? (
         <div className="poster-grid">
           {Array.from({ length: 12 }, (_, index) => (
             <div key={index} className="poster-card poster-card--skeleton" />
           ))}
         </div>
-      ) : visible.length > 0 ? (
-        <PosterGrid items={visible} />
-      ) : (
+      ) : nothing ? (
         <EmptyState
           icon={<SearchX size={40} />}
           title={query ? t("search.empty.title") : t("search.prompt.title")}
           text={query ? t("search.empty.text") : t("search.prompt.text")}
         />
+      ) : (
+        <>
+          {people.length > 0 && (
+            <section className="section section--first">
+              {filter === "all" && (
+                <div className="section__head">
+                  <h2>{t("search.people")}</h2>
+                </div>
+              )}
+              <PeopleRow people={people} />
+            </section>
+          )}
+          {visible.length > 0 && (
+            <section className={`section ${people.length === 0 ? "section--first" : ""}`}>
+              {filter === "all" && people.length > 0 && (
+                <div className="section__head">
+                  <h2>{t("search.titles")}</h2>
+                </div>
+              )}
+              <PosterGrid items={visible} />
+            </section>
+          )}
+          {results.data?.hasMore && (
+            <div className="browse-more">
+              <button className="button button--large" disabled={results.loading} onClick={() => change({ pages: pages + 1 })}>
+                {t("browse.more")}
+              </button>
+            </div>
+          )}
+        </>
       )}
     </div>
   );

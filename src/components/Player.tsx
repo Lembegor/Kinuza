@@ -60,6 +60,7 @@ import { fileProgress, useTorrents } from "../state/torrents";
 import { useUi, type PlayerSession } from "../state/ui";
 import { report } from "../lib/journal";
 import { mpv } from "../lib/mpv";
+import { HotkeyList } from "./HotkeyList";
 import { WindowButtons } from "./Shell";
 import { useConvertedAudio } from "./useConvertedAudio";
 import { useEmbeddedSubtitles, useMediaTracks, type MediaTracksState } from "./useMediaTracks";
@@ -113,11 +114,14 @@ function playsUnconverted(track: AudioTrackInfo): boolean {
   return builtInAudioCodecs.has(track.codec) || track.codec.startsWith("pcm_");
 }
 const minResumeSeconds = 15;
-const originalLanguageWaitMs = 2500;
+const originalLanguageWaitMs = 4000;
 const probeWaitMs = 3000;
 const originalTrackTitle = /оригинал|original|\borig\b/i;
 const commentaryTrackTitle = /коммент|comment/i;
 const nextEpisodeCountdownSeconds = 8;
+const interpolationLimitSeconds = 1.5;
+const clockStepSeconds = 0.25;
+const loadWaitMs = 700;
 const upNextTailSeconds = 40;
 const upNextCountdownSeconds = 10;
 const upNextMinDurationSeconds = 5 * 60;
@@ -222,17 +226,50 @@ function SeekBar({
   duration,
   buffered,
   chapters,
+  advancing,
+  rate,
   onSeek,
 }: {
   current: number;
   duration: number;
   buffered: { start: number; end: number }[];
   chapters: Chapter[];
+  advancing: boolean;
+  rate: number;
   onSeek: (time: number) => void;
 }) {
   const trackRef = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<number | null>(null);
   const [drag, setDrag] = useState<number | null>(null);
+  const anchor = useRef({ time: current, at: performance.now() });
+
+  useEffect(() => {
+    anchor.current = { time: current, at: performance.now() };
+  }, [current]);
+
+  useEffect(() => {
+    const track = trackRef.current;
+    if (!track) return;
+    const safe = duration > 0 ? duration : 1;
+    const paint = (time: number) => track.style.setProperty("--played", String(Math.min(1, Math.max(0, time / safe))));
+    if (drag !== null) {
+      track.style.setProperty("--played", String(drag));
+      return;
+    }
+    if (!advancing) {
+      paint(current);
+      return;
+    }
+    let frame = 0;
+    const step = () => {
+      const { time, at } = anchor.current;
+      const elapsed = Math.min(interpolationLimitSeconds, (performance.now() - at) / 1000);
+      paint(time + elapsed * rate);
+      frame = requestAnimationFrame(step);
+    };
+    step();
+    return () => cancelAnimationFrame(frame);
+  }, [advancing, rate, duration, drag, current]);
 
   const ratioAt = (clientX: number) => {
     const rect = trackRef.current?.getBoundingClientRect();
@@ -256,7 +293,6 @@ function SeekBar({
   };
 
   const safeDuration = duration > 0 ? duration : 1;
-  const playedRatio = drag ?? current / safeDuration;
 
   return (
     <div
@@ -275,11 +311,11 @@ function SeekBar({
             style={{ left: `${(range.start / safeDuration) * 100}%`, width: `${((range.end - range.start) / safeDuration) * 100}%` }}
           />
         ))}
-        <i className="seek__played" style={{ width: `${playedRatio * 100}%` }} />
+        <i className="seek__played" />
         {chapters.slice(1).map((chapter) => (
           <i key={chapter.start} className="seek__chapter" style={{ left: `${(chapter.start / safeDuration) * 100}%` }} />
         ))}
-        <i className="seek__thumb" style={{ left: `${playedRatio * 100}%` }} />
+        <i className="seek__thumb" />
       </div>
       {hover !== null && duration > 0 && (
         <span className="seek__tooltip" style={{ left: `${hover * 100}%` }}>
@@ -314,6 +350,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
   const [playing, setPlaying] = useState(false);
   const [buffering, setBuffering] = useState(true);
   const [current, setCurrent] = useState(0);
+  const shownTime = useRef(0);
   const [duration, setDuration] = useState(0);
   const [buffered, setBuffered] = useState<{ start: number; end: number }[]>([]);
   const [failed, setFailed] = useState(false);
@@ -334,11 +371,12 @@ function PlayerView({ session }: { session: PlayerSession }) {
   const [muted, setMuted] = useState(settings.muted);
   const externalPlayer = useAsync(getAppInfo, []).data?.externalPlayer ?? null;
 
+  const [metadataReady, setMetadataReady] = useState(false);
   const mpvChoice = useMpvMode();
   const usingMpv = mpvChoice.mode === "ready";
   const mpvPlayer = useMpvVideo(usingMpv);
   if (usingMpv) (videoRef as { current: VideoWithExtras | null }).current = mpvPlayer.video as unknown as VideoWithExtras;
-  const htmlMedia = useMediaTracks(mpvChoice.mode === "unavailable" || usingMpv ? (source ?? null) : null);
+  const htmlMedia = useMediaTracks(mpvChoice.mode === "unavailable" || (usingMpv && metadataReady) ? (source ?? null) : null);
   const probed = htmlMedia.tracks;
   const mpvTracks = useMemo(() => {
     const own = mpvPlayer.tracks;
@@ -351,15 +389,20 @@ function PlayerView({ session }: { session: PlayerSession }) {
   const titleDetails = useAsync(() => tmdb.details(session.title.type, session.title.id), [session.title.type, session.title.id]);
   const originalLanguage = languageCode(titleDetails.data?.language);
   const [originalWaitOver, setOriginalWaitOver] = useState(false);
+  const [loadWaitOver, setLoadWaitOver] = useState(false);
   useEffect(() => {
     const timer = setTimeout(() => setOriginalWaitOver(true), originalLanguageWaitMs);
-    return () => clearTimeout(timer);
+    const quick = setTimeout(() => setLoadWaitOver(true), loadWaitMs);
+    return () => {
+      clearTimeout(timer);
+      clearTimeout(quick);
+    };
   }, []);
   const originalSettled = !titleDetails.loading || originalWaitOver;
+  const loadSettled = !titleDetails.loading || loadWaitOver;
   const [audioTrack, setAudioTrack] = useState<number | null>(null);
   const [convertedTrack, setConvertedTrack] = useState<number | null>(null);
   const [embeddedSubtitle, setEmbeddedSubtitle] = useState<number | null>(null);
-  const [metadataReady, setMetadataReady] = useState(false);
   const preferencesKey = titleKey(session.title.type, session.title.id);
   const preferences = useLibrary((state) => state.preferences[preferencesKey]);
   const rememberForTitle = useLibrary((state) => state.setTitlePreferences);
@@ -383,6 +426,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
   const subtitlesDecided = useRef(false);
   const [hint, setHint] = useState<{ text: string; id: number } | null>(null);
   const [onlinePanel, setOnlinePanel] = useState(false);
+  const [hotkeysShown, setHotkeysShown] = useState(false);
   const [onlineLanguage, setOnlineLanguage] = useState("");
 
   const resumeAt = useRef<number>(
@@ -463,7 +507,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
   useEffect(() => {
     if (!usingMpv || !url || loadedUrl.current === url) return;
     const asked = preferences?.audioLanguage || settings.audioLanguage;
-    if (!asked && !originalSettled) return;
+    if (!asked && !loadSettled) return;
     loadedUrl.current = url;
     const wanted = asked || originalLanguage;
     void mpv.set("alang", wanted ? [wanted, ...threeLetterCodes(wanted)].join(",") : "");
@@ -473,7 +517,11 @@ function PlayerView({ session }: { session: PlayerSession }) {
       setFailed(true);
       setBuffering(false);
     });
-  }, [usingMpv, url, originalSettled]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [usingMpv, url, loadSettled]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (usingMpv) void mpv.set("interpolation", settings.smoothMotion);
+  }, [usingMpv, settings.smoothMotion]);
 
   useEffect(() => {
     if (usingMpv) void mpv.set("audio-delay", audioDelay);
@@ -767,8 +815,10 @@ function PlayerView({ session }: { session: PlayerSession }) {
         s: () => {
           if (skippable) seekTo(skippable.end);
         },
+        "?": () => setHotkeysShown((value) => !value),
         Escape: () => {
-          if (onlinePanel) setOnlinePanel(false);
+          if (hotkeysShown) setHotkeysShown(false);
+          else if (onlinePanel) setOnlinePanel(false);
           else if (menu) setMenu(null);
           else if (fullscreen) toggleFullscreen();
           else close();
@@ -783,7 +833,8 @@ function PlayerView({ session }: { session: PlayerSession }) {
       }
       const sameKeys: Record<string, string> = { "а": "f", "ь": "m", "л": "k", "о": "j", "д": "l", "т": "n", "с": "c", "ф": "a", "х": "[", "ъ": "]", "п": "g", "р": "h", "ы": "s", "ш": "i" };
       const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
-      const handler = handlers[event.key] ?? handlers[key] ?? handlers[sameKeys[key] ?? ""];
+      const asksForHelp = event.shiftKey && event.code === "Slash";
+      const handler = asksForHelp ? handlers["?"] : (handlers[event.key] ?? handlers[key] ?? handlers[sameKeys[key] ?? ""]);
       if (!handler) return;
       event.preventDefault();
       handler();
@@ -791,7 +842,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [togglePlay, seekBy, seekTo, changeVolume, toggleFullscreen, playNext, close, menu, fullscreen, wakeControls, rate, showHint, subtitleDelay, skippable, toggleMini, onlinePanel]);
+  }, [togglePlay, seekBy, seekTo, changeVolume, toggleFullscreen, playNext, close, menu, fullscreen, wakeControls, rate, showHint, subtitleDelay, skippable, toggleMini, onlinePanel, hotkeysShown]);
 
 
   useEffect(() => {
@@ -1142,7 +1193,12 @@ function PlayerView({ session }: { session: PlayerSession }) {
       const video = videoRef.current;
       if (video && conversionRef.current === null) setDuration(video.duration);
     },
-    onTimeUpdate: () => setCurrent(filmTime()),
+    onTimeUpdate: () => {
+      const time = filmTime();
+      if (Math.abs(time - shownTime.current) < clockStepSeconds) return;
+      shownTime.current = time;
+      setCurrent(time);
+    },
     onProgress: () => {
       if (usingMpv) {
         setBuffered(mpvPlayer.video.bufferedRanges.map((range) => ({ start: range.start, end: range.end })));
@@ -1420,6 +1476,18 @@ function PlayerView({ session }: { session: PlayerSession }) {
         </div>
       )}
 
+      {hotkeysShown && (
+        <div className="player__panel player__hotkeys" role="dialog" aria-label={t("settings.hotkeys")}>
+          <div className="player__hotkeys-head">
+            <strong>{t("settings.hotkeys")}</strong>
+            <button className="icon-button" aria-label={t("common.close")} onClick={() => setHotkeysShown(false)}>
+              <X size={16} />
+            </button>
+          </div>
+          <HotkeyList />
+        </div>
+      )}
+
       {upNextVisible && nextEpisode && (
         <div className="player__up-next">
           {nextEpisode.still && <img src={imageUrl(nextEpisode.still, "w300") ?? undefined} alt="" draggable={false} />}
@@ -1449,9 +1517,22 @@ function PlayerView({ session }: { session: PlayerSession }) {
       )}
 
       <div className="player__bottom">
-        <SeekBar current={current} duration={duration} buffered={bufferedAhead} chapters={chapters} onSeek={seekTo} />
+        <SeekBar
+          current={current}
+          duration={duration}
+          buffered={bufferedAhead}
+          chapters={chapters}
+          advancing={playing && !buffering && !ended}
+          rate={rate}
+          onSeek={seekTo}
+        />
         <div className="player__controls">
-          <button className="player__button player__button--main" aria-label={playing ? t("player.pause") : t("player.play")} onClick={togglePlay}>
+          <button
+            className="player__button player__button--main"
+            aria-label={playing ? t("player.pause") : t("player.play")}
+            title={`${playing ? t("player.pause") : t("player.play")} (${t("hotkeys.key.space")})`}
+            onClick={togglePlay}
+          >
             {playing ? <Pause size={22} fill="currentColor" /> : <Play size={22} fill="currentColor" />}
           </button>
           <button className="player__button" aria-label={t("player.seekBack")} onClick={() => seekBy(-seekStepSeconds)}>
@@ -1461,12 +1542,12 @@ function PlayerView({ session }: { session: PlayerSession }) {
             <RotateCw size={19} />
           </button>
           {nextEpisode && (
-            <button className="player__button" aria-label={t("player.next")} title={t("player.next.named", { name: nextEpisode.name })} onClick={playNext}>
+            <button className="player__button" aria-label={t("player.next")} title={`${t("player.next.named", { name: nextEpisode.name })} (N)`} onClick={playNext}>
               <SkipForward size={19} />
             </button>
           )}
           <div className="player__volume">
-            <button className="player__button" aria-label={t("player.sound")} onClick={() => setMuted((value) => !value)}>
+            <button className="player__button" aria-label={t("player.sound")} title={`${t("player.sound")} (M)`} onClick={() => setMuted((value) => !value)}>
               <VolumeIcon size={19} />
             </button>
             <input
@@ -1489,11 +1570,11 @@ function PlayerView({ session }: { session: PlayerSession }) {
 
           <div className="player__spacer" />
 
-          <button className={`player__button ${cues.length > 0 || (usingMpv && subtitleKey !== null) ? "is-on" : ""}`} aria-label={t("common.subtitles")} onClick={() => setMenu(menu === "subtitles" ? null : "subtitles")}>
+          <button className={`player__button ${cues.length > 0 || (usingMpv && subtitleKey !== null) ? "is-on" : ""}`} aria-label={t("common.subtitles")} title={`${t("common.subtitles")} (C)`} onClick={() => setMenu(menu === "subtitles" ? null : "subtitles")}>
             <Captions size={20} />
           </button>
           {(audio.options.length > 0 || (media.tracks?.audio.length ?? 0) > 1) && (
-            <button className="player__button" aria-label={t("player.audioTrack")} onClick={() => setMenu(menu === "audio" ? null : "audio")}>
+            <button className="player__button" aria-label={t("player.audioTrack")} title={`${t("player.audioTrack")} (A)`} onClick={() => setMenu(menu === "audio" ? null : "audio")}>
               <AudioLines size={19} />
             </button>
           )}
@@ -1510,7 +1591,12 @@ function PlayerView({ session }: { session: PlayerSession }) {
               <PictureInPicture2 size={19} />
             </button>
           )}
-          <button className="player__button" aria-label={fullscreen ? t("player.fullscreen.exit") : t("player.fullscreen.enter")} onClick={toggleFullscreen}>
+          <button
+            className="player__button"
+            aria-label={fullscreen ? t("player.fullscreen.exit") : t("player.fullscreen.enter")}
+            title={`${fullscreen ? t("player.fullscreen.exit") : t("player.fullscreen.enter")} (F)`}
+            onClick={toggleFullscreen}
+          >
             {fullscreen ? <Minimize size={19} /> : <Maximize size={19} />}
           </button>
         </div>

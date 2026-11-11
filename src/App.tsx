@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { HashRouter, Route, Routes, useLocation } from "react-router-dom";
+import { HashRouter, Route, Routes, useLocation, useNavigationType } from "react-router-dom";
 import { FileDown } from "lucide-react";
 import { AddSourceDialog } from "./components/AddSourceDialog";
 import { Onboarding } from "./components/Onboarding";
@@ -9,6 +9,7 @@ import { Sidebar, Titlebar } from "./components/Shell";
 import { backend, describeError, getAppInfo, isDesktop, onLaunchRequest, type LaunchRequest } from "./lib/backend";
 import { t, useT } from "./lib/i18n";
 import { report } from "./lib/journal";
+import { mpv } from "./lib/mpv";
 import { isMagnetLink } from "./lib/parse";
 import Browse from "./pages/Browse";
 import Diagnostics from "./pages/Diagnostics";
@@ -28,6 +29,7 @@ import { notify } from "./state/notifications";
 import { useUpdater } from "./state/updater";
 
 const updateCheckDelayMs = 4000;
+const mpvWarmDelayMs = 2500;
 const updateCheckIntervalMs = 4 * 60 * 60 * 1000;
 
 function isTextField(target: EventTarget | null): boolean {
@@ -139,13 +141,40 @@ function useLinkHandling(ready: boolean): void {
   }, [ready]);
 }
 
+const scrollPositions = new Map<string, number>();
+const scrollRestoreLimitMs = 1500;
+
 function Content() {
   const location = useLocation();
+  const navigationType = useNavigationType();
   const scrollRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
-    scrollRef.current?.scrollTo({ top: 0 });
-  }, [location.pathname]);
+    const element = scrollRef.current;
+    if (!element) return;
+    const key = `${location.key}:${location.pathname}${location.search}`;
+    const remember = () => scrollPositions.set(key, element.scrollTop);
+    element.addEventListener("scroll", remember, { passive: true });
+    const saved = navigationType === "POP" ? scrollPositions.get(key) : undefined;
+    let frame = 0;
+    if (navigationType === "REPLACE") {
+      remember();
+    } else if (saved === undefined) {
+      element.scrollTo({ top: 0 });
+    } else {
+      const startedAt = performance.now();
+      const restore = () => {
+        element.scrollTo({ top: saved });
+        const reached = Math.abs(element.scrollTop - saved) < 2;
+        if (!reached && performance.now() - startedAt < scrollRestoreLimitMs) frame = requestAnimationFrame(restore);
+      };
+      restore();
+    }
+    return () => {
+      cancelAnimationFrame(frame);
+      element.removeEventListener("scroll", remember);
+    };
+  }, [location.key, location.pathname, location.search]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <main className="content" ref={scrollRef}>
@@ -179,7 +208,14 @@ export default function App() {
     void getAppInfo().then((info) => {
       if (info.sessionReset) useUi.getState().toast(t("shell.sessionReset"), "info");
     });
-    return startTorrentPolling();
+    const warm = setTimeout(() => {
+      if (mpv.supported) void mpv.warm().catch(() => undefined);
+    }, mpvWarmDelayMs);
+    const stopPolling = startTorrentPolling();
+    return () => {
+      clearTimeout(warm);
+      stopPolling();
+    };
   }, []);
 
   useEffect(() => {

@@ -25,6 +25,7 @@ export interface Settings {
   muted: boolean;
   subtitleScale: number;
   autoNextEpisode: boolean;
+  smoothMotion: boolean;
   preferredQuality: number;
   handleLinks: boolean;
   linksPrompted: boolean;
@@ -53,6 +54,7 @@ const defaults: Settings = {
   muted: false,
   subtitleScale: 1,
   autoNextEpisode: true,
+  smoothMotion: false,
   preferredQuality: 0,
   handleLinks: false,
   linksPrompted: false,

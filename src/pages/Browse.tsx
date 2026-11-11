@@ -159,7 +159,7 @@ export default function Browse() {
       items: withoutRepeats(pages.flatMap((page) => page.items)),
       hasMore: pageCount < pages[0].totalPages,
     };
-  }, [queryKey, pageCount]);
+  }, [queryKey, pageCount], `browse:${queryKey}:${pageCount}`);
   const shown = results.data && results.data.queryKey === queryKey ? results.data : null;
 
   const filterSearch = toSearch(filters).toString();

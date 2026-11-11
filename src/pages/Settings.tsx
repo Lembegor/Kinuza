@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { FolderOpen, RefreshCw } from "lucide-react";
+import { HotkeyList } from "../components/HotkeyList";
 import { ImportSetting } from "../components/ImportSetting";
 import { LanguageSelect } from "../components/LanguagePicker";
 import { backend, describeError, getAppInfo, isDesktop } from "../lib/backend";
@@ -35,9 +36,9 @@ const qualityOptions = [
   { value: 480, label: "480p" },
 ];
 
-function Toggle({ checked, onChange }: { checked: boolean; onChange: (value: boolean) => void }) {
+function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (value: boolean) => void }) {
   return (
-    <button role="switch" aria-checked={checked} className={`toggle ${checked ? "is-on" : ""}`} onClick={() => onChange(!checked)}>
+    <button role="switch" aria-checked={checked} aria-label={label} className={`toggle ${checked ? "is-on" : ""}`} onClick={() => onChange(!checked)}>
       <i />
     </button>
   );
@@ -46,11 +47,24 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: (value: boo
 const backupMarker = "kinuza-backup";
 const subtitlesOff = "off";
 
-function NumberSetting({ value, step = 1, unit, onChange }: { value: number; step?: number; unit?: string; onChange: (value: number) => void }) {
+function NumberSetting({
+  label,
+  value,
+  step = 1,
+  unit,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  step?: number;
+  unit?: string;
+  onChange: (value: number) => void;
+}) {
   return (
     <>
       <input
         className="input input--number"
+        aria-label={label}
         type="number"
         min={0}
         step={step}
@@ -156,11 +170,27 @@ export default function Settings() {
     if (typeof picked === "string") settings.patch({ downloadDir: picked });
   };
 
+  const sections: { id: string; label: MessageKey }[] = [
+    { id: "settings-viewing", label: "settings.viewing" },
+    { id: "settings-downloads", label: "settings.downloads" },
+    { id: "settings-system", label: "settings.system" },
+    { id: "settings-data", label: "settings.data" },
+    { id: "settings-help", label: "settings.help" },
+  ];
+
   return (
     <div className="page page--narrow">
       <div className="page__head">
         <h1>{t("settings.title")}</h1>
       </div>
+
+      <nav className="settings-nav" aria-label={t("settings.sections")}>
+        {sections.map((section) => (
+          <button key={section.id} className="chip" onClick={() => document.getElementById(section.id)?.scrollIntoView({ behavior: "smooth", block: "start" })}>
+            {t(section.label)}
+          </button>
+        ))}
+      </nav>
 
       <section className="settings-group">
         <div className="setting">
@@ -174,7 +204,104 @@ export default function Settings() {
         </div>
       </section>
 
-      <section className="settings-group">
+      <section className="settings-group" id="settings-viewing">
+        <h2>{t("settings.viewing")}</h2>
+        <div className="setting">
+          <div>
+            <strong>{t("settings.viewing.audio")}</strong>
+            <p>{t("settings.viewing.audio.note")}</p>
+          </div>
+          <div className="setting__actions">
+            <select
+              className="select select--large"
+              aria-label={t("settings.viewing.audio")}
+              value={settings.audioLanguage}
+              onChange={(event) => settings.patch({ audioLanguage: event.target.value })}
+            >
+              <option value="">{t("settings.viewing.audio.original")}</option>
+              {appLanguages.map((code) => (
+                <option key={code} value={code}>
+                  {languageLabel(code)}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <div className="setting">
+          <div>
+            <strong>{t("settings.viewing.subtitles")}</strong>
+            <p>{t("settings.viewing.subtitles.note")}</p>
+          </div>
+          <div className="setting__actions">
+            <select
+              className="select select--large"
+              aria-label={t("settings.viewing.subtitles")}
+              value={settings.subtitleLanguage}
+              onChange={(event) => settings.patch({ subtitleLanguage: event.target.value })}
+            >
+              <option value="">{t("settings.viewing.subtitles.interface")}</option>
+              <option value={subtitlesOff}>{t("settings.viewing.subtitles.off")}</option>
+              {appLanguages.map((code) => (
+                <option key={code} value={code}>
+                  {languageLabel(code)}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <div className="setting">
+          <div>
+            <strong>{t("settings.player.quality")}</strong>
+            <p>{t("settings.player.quality.note")}</p>
+          </div>
+          <select
+            className="select select--large"
+            aria-label={t("settings.player.quality")}
+            value={settings.preferredQuality}
+            onChange={(event) => settings.patch({ preferredQuality: Number(event.target.value) })}
+          >
+            <option value={bestQuality}>{t("settings.player.quality.max")}</option>
+            {qualityOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="setting">
+          <div>
+            <strong>{t("settings.player.autoNext")}</strong>
+            <p>{t("settings.player.autoNext.note")}</p>
+          </div>
+          <Toggle label={t("settings.player.autoNext")} checked={settings.autoNextEpisode} onChange={(value) => settings.patch({ autoNextEpisode: value })} />
+        </div>
+        <div className="setting">
+          <div>
+            <strong>{t("settings.player.smooth")}</strong>
+            <p>{t("settings.player.smooth.note")}</p>
+          </div>
+          <Toggle label={t("settings.player.smooth")} checked={settings.smoothMotion} onChange={(value) => settings.patch({ smoothMotion: value })} />
+        </div>
+        <div className="setting">
+          <div>
+            <strong>{t("settings.player.external")}</strong>
+            <p>
+              {info.data?.externalPlayer
+                ? t("settings.player.external.found", { player: info.data.externalPlayer })
+                : t("settings.player.external.missing")}
+            </p>
+          </div>
+        </div>
+        <details className="setting setting--details">
+          <summary>
+            <strong>{t("settings.hotkeys")}</strong>
+            <p>{t("settings.hotkeys.note")}</p>
+          </summary>
+          <HotkeyList />
+        </details>
+      </section>
+
+      <section className="settings-group" id="settings-downloads">
         <h2>{t("settings.downloads")}</h2>
         <div className="setting">
           <div>
@@ -222,7 +349,7 @@ export default function Settings() {
                 {t("settings.cache.clear")}
               </button>
             )}
-            <NumberSetting value={settings.cacheLimitGb} step={5} unit={t("settings.cache.unit")} onChange={(value) => settings.patch({ cacheLimitGb: value })} />
+            <NumberSetting label={t("settings.cache")} value={settings.cacheLimitGb} step={5} unit={t("settings.cache.unit")} onChange={(value) => settings.patch({ cacheLimitGb: value })} />
           </div>
         </div>
         <div className="setting">
@@ -230,35 +357,14 @@ export default function Settings() {
             <strong>{t("settings.autoDelete")}</strong>
             <p>{t("settings.autoDelete.note")}</p>
           </div>
-          <Toggle checked={settings.autoDeleteWatched} onChange={(value) => settings.patch({ autoDeleteWatched: value })} />
-        </div>
-        <div className="setting">
-          <div>
-            <strong>{t("settings.tray")}</strong>
-            <p>{t("settings.tray.note")}</p>
-          </div>
-          <Toggle checked={settings.closeToTray} onChange={(value) => settings.patch({ closeToTray: value })} />
-        </div>
-        <div className="setting">
-          <div>
-            <strong>{t("settings.notify")}</strong>
-            <p>{t("settings.notify.note")}</p>
-          </div>
-          <Toggle checked={settings.notifyDownloads} onChange={(value) => settings.patch({ notifyDownloads: value })} />
-        </div>
-        <div className="setting">
-          <div>
-            <strong>{t("settings.notifyEpisodes")}</strong>
-            <p>{t("settings.notifyEpisodes.note")}</p>
-          </div>
-          <Toggle checked={settings.notifyEpisodes} onChange={(value) => settings.patch({ notifyEpisodes: value })} />
+          <Toggle label={t("settings.autoDelete")} checked={settings.autoDeleteWatched} onChange={(value) => settings.patch({ autoDeleteWatched: value })} />
         </div>
         <div className="setting">
           <div>
             <strong>{t("settings.autoAddEpisodes")}</strong>
             <p>{t("settings.autoAddEpisodes.note")}</p>
           </div>
-          <Toggle checked={settings.autoAddEpisodes} onChange={(value) => settings.patch({ autoAddEpisodes: value })} />
+          <Toggle label={t("settings.autoAddEpisodes")} checked={settings.autoAddEpisodes} onChange={(value) => settings.patch({ autoAddEpisodes: value })} />
         </div>
         <div className="setting">
           <div>
@@ -266,7 +372,7 @@ export default function Settings() {
             <p>{t("settings.limits.note")}</p>
           </div>
           <div className="setting__actions">
-            <NumberSetting value={settings.downloadLimit} step={100} unit={t("settings.limits.unit")} onChange={(value) => settings.patch({ downloadLimit: value })} />
+            <NumberSetting label={t("settings.limits.download")} value={settings.downloadLimit} step={100} unit={t("settings.limits.unit")} onChange={(value) => settings.patch({ downloadLimit: value })} />
           </div>
         </div>
         <div className="setting">
@@ -275,7 +381,7 @@ export default function Settings() {
             <p>{t("settings.limits.note")}</p>
           </div>
           <div className="setting__actions">
-            <NumberSetting value={settings.uploadLimit} step={100} unit={t("settings.limits.unit")} onChange={(value) => settings.patch({ uploadLimit: value })} />
+            <NumberSetting label={t("settings.limits.upload")} value={settings.uploadLimit} step={100} unit={t("settings.limits.unit")} onChange={(value) => settings.patch({ uploadLimit: value })} />
           </div>
         </div>
         <div className="setting">
@@ -284,7 +390,7 @@ export default function Settings() {
             <p>{t("settings.queue.note")}</p>
           </div>
           <div className="setting__actions">
-            <NumberSetting value={settings.maxActiveDownloads} onChange={(value) => settings.patch({ maxActiveDownloads: Math.round(value) })} />
+            <NumberSetting label={t("settings.queue")} value={settings.maxActiveDownloads} onChange={(value) => settings.patch({ maxActiveDownloads: Math.round(value) })} />
           </div>
         </div>
         <div className="setting">
@@ -293,75 +399,40 @@ export default function Settings() {
             <p>{t("settings.seeding.note")}</p>
           </div>
           <div className="setting__actions">
-            <NumberSetting value={settings.seedRatio} step={0.5} unit="×" onChange={(value) => settings.patch({ seedRatio: value })} />
+            <NumberSetting label={t("settings.seeding")} value={settings.seedRatio} step={0.5} unit="×" onChange={(value) => settings.patch({ seedRatio: value })} />
           </div>
         </div>
       </section>
 
-      <section className="settings-group">
-        <h2>{t("settings.viewing")}</h2>
+      <section className="settings-group" id="settings-system">
+        <h2>{t("settings.system")}</h2>
         <div className="setting">
           <div>
-            <strong>{t("settings.viewing.audio")}</strong>
-            <p>{t("settings.viewing.audio.note")}</p>
+            <strong>{t("settings.notify")}</strong>
+            <p>{t("settings.notify.note")}</p>
           </div>
-          <div className="setting__actions">
-            <select className="select select--large" value={settings.audioLanguage} onChange={(event) => settings.patch({ audioLanguage: event.target.value })}>
-              <option value="">{t("settings.viewing.audio.original")}</option>
-              {appLanguages.map((code) => (
-                <option key={code} value={code}>
-                  {languageLabel(code)}
-                </option>
-              ))}
-            </select>
-          </div>
+          <Toggle label={t("settings.notify")} checked={settings.notifyDownloads} onChange={(value) => settings.patch({ notifyDownloads: value })} />
         </div>
         <div className="setting">
           <div>
-            <strong>{t("settings.viewing.subtitles")}</strong>
-            <p>{t("settings.viewing.subtitles.note")}</p>
+            <strong>{t("settings.notifyEpisodes")}</strong>
+            <p>{t("settings.notifyEpisodes.note")}</p>
           </div>
-          <div className="setting__actions">
-            <select className="select select--large" value={settings.subtitleLanguage} onChange={(event) => settings.patch({ subtitleLanguage: event.target.value })}>
-              <option value="">{t("settings.viewing.subtitles.interface")}</option>
-              <option value={subtitlesOff}>{t("settings.viewing.subtitles.off")}</option>
-              {appLanguages.map((code) => (
-                <option key={code} value={code}>
-                  {languageLabel(code)}
-                </option>
-              ))}
-            </select>
-          </div>
+          <Toggle label={t("settings.notifyEpisodes")} checked={settings.notifyEpisodes} onChange={(value) => settings.patch({ notifyEpisodes: value })} />
         </div>
-      </section>
-
-      <section className="settings-group">
-        <h2>{t("settings.data")}</h2>
         <div className="setting">
           <div>
-            <strong>{t("settings.backup")}</strong>
-            <p>{t("settings.backup.note")}</p>
+            <strong>{t("settings.tray")}</strong>
+            <p>{t("settings.tray.note")}</p>
           </div>
-          <div className="setting__actions">
-            <button className="button" onClick={() => void restoreBackup()}>
-              {t("settings.backup.restore")}
-            </button>
-            <button className="button" onClick={() => void saveBackup()}>
-              {t("settings.backup.save")}
-            </button>
-          </div>
+          <Toggle label={t("settings.tray")} checked={settings.closeToTray} onChange={(value) => settings.patch({ closeToTray: value })} />
         </div>
-        <ImportSetting />
-      </section>
-
-      <section className="settings-group">
-        <h2>{t("settings.links")}</h2>
         <div className="setting">
           <div>
             <strong>{t("settings.links.open")}</strong>
             <p>{t("settings.links.open.note")}</p>
           </div>
-          <Toggle checked={settings.handleLinks} onChange={(value) => void toggleLinks(value)} />
+          <Toggle label={t("settings.links.open")} checked={settings.handleLinks} onChange={(value) => void toggleLinks(value)} />
         </div>
         {settings.handleLinks && associations.data?.overriddenByWindows && (
           <div className="setting">
@@ -376,49 +447,6 @@ export default function Settings() {
             </div>
           </div>
         )}
-      </section>
-
-      <section className="settings-group">
-        <h2>{t("settings.player")}</h2>
-        <div className="setting">
-          <div>
-            <strong>{t("settings.player.quality")}</strong>
-            <p>{t("settings.player.quality.note")}</p>
-          </div>
-          <select
-            className="select select--large"
-            value={settings.preferredQuality}
-            onChange={(event) => settings.patch({ preferredQuality: Number(event.target.value) })}
-          >
-            <option value={bestQuality}>{t("settings.player.quality.max")}</option>
-            {qualityOptions.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="setting">
-          <div>
-            <strong>{t("settings.player.autoNext")}</strong>
-            <p>{t("settings.player.autoNext.note")}</p>
-          </div>
-          <Toggle checked={settings.autoNextEpisode} onChange={(value) => settings.patch({ autoNextEpisode: value })} />
-        </div>
-        <div className="setting">
-          <div>
-            <strong>{t("settings.player.external")}</strong>
-            <p>
-              {info.data?.externalPlayer
-                ? t("settings.player.external.found", { player: info.data.externalPlayer })
-                : t("settings.player.external.missing")}
-            </p>
-          </div>
-        </div>
-      </section>
-
-      <section className="settings-group">
-        <h2>{t("settings.updates")}</h2>
         <div className="setting">
           <div>
             <strong>{t("settings.updates.version", { version: info.data?.version ?? "…" })}</strong>
@@ -442,12 +470,27 @@ export default function Settings() {
             <strong>{t("settings.updates.auto")}</strong>
             <p>{t("settings.updates.auto.note")}</p>
           </div>
-          <Toggle checked={settings.autoUpdate} onChange={(value) => settings.patch({ autoUpdate: value })} />
+          <Toggle label={t("settings.updates.auto")} checked={settings.autoUpdate} onChange={(value) => settings.patch({ autoUpdate: value })} />
         </div>
       </section>
 
-      <section className="settings-group">
-        <h2>{t("settings.catalog")}</h2>
+      <section className="settings-group" id="settings-data">
+        <h2>{t("settings.data")}</h2>
+        <div className="setting">
+          <div>
+            <strong>{t("settings.backup")}</strong>
+            <p>{t("settings.backup.note")}</p>
+          </div>
+          <div className="setting__actions">
+            <button className="button" onClick={() => void restoreBackup()}>
+              {t("settings.backup.restore")}
+            </button>
+            <button className="button" onClick={() => void saveBackup()}>
+              {t("settings.backup.save")}
+            </button>
+          </div>
+        </div>
+        <ImportSetting />
         <div className="setting setting--stack">
           <div>
             <strong>{t("settings.catalog.key")}</strong>
@@ -456,6 +499,7 @@ export default function Settings() {
           <div className="setting__row">
             <input
               className="input"
+              aria-label={t("settings.catalog.key")}
               value={keyDraft}
               placeholder="API Key (v3 auth)"
               spellCheck={false}
@@ -471,7 +515,7 @@ export default function Settings() {
         </p>
       </section>
 
-      <section className="settings-group">
+      <section className="settings-group" id="settings-help">
         <h2>{t("settings.help")}</h2>
         <div className="setting">
           <div>

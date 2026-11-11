@@ -18,7 +18,7 @@
   --radius-m: 12px;
   --radius-l: 18px;
   --titlebar-height: 52px;
-  --sidebar-width: 84px;
+  --sidebar-width: 96px;
   --page-gutter: 36px;
   --font-ui: "Manrope Variable", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
   --font-display: "Unbounded Variable", "Manrope Variable", "Segoe UI", sans-serif;
@@ -332,6 +332,15 @@ img {
   height: 30px;
   padding: 0 8px;
   text-align: center;
+}
+
+.select:focus-visible,
+.filter-select select:focus-visible,
+.input:focus-visible,
+.toggle:focus-visible,
+.chip:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
 }
 
 .select {

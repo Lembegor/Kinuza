@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { Check, Link2, Play, Search, X, type LucideIcon } from "lucide-react";
+import { Check, Heart, Link2, Play, Search, X, type LucideIcon } from "lucide-react";
 import { useT, type MessageKey } from "../lib/i18n";
 import { imageUrl, tmdb, type DiscoverKind, type MediaItem } from "../lib/tmdb";
 import { useAsync } from "../lib/useAsync";
@@ -16,6 +16,7 @@ const recommendedPicks = 5;
 const searchDebounceMs = 350;
 const warmedPicks = 10;
 const skeletonCardCount = 24;
+const pickRatings = [6, 7, 8, 9, 10];
 
 const startingLists: { kind: DiscoverKind; pages: number; share: number }[] = [
   { kind: "movie", pages: 2, share: 2 },
@@ -66,43 +67,80 @@ function StepLabel({ step }: { step: Step }) {
 function PickCard({
   item,
   picked,
+  rating,
   tabbable,
   onToggle,
+  onRate,
   onFocus,
 }: {
   item: MediaItem;
   picked: boolean;
+  rating: number | null;
   tabbable: boolean;
   onToggle: () => void;
+  onRate: (rating: number | null) => void;
   onFocus: () => void;
 }) {
+  const { t } = useT();
   const poster = imageUrl(item.poster, "w185");
   return (
-    <button className={`pick ${picked ? "is-picked" : ""}`} aria-pressed={picked} tabIndex={tabbable ? 0 : -1} onClick={onToggle} onFocus={onFocus}>
-      <div className="pick__art">
-        {poster && <img src={poster} alt="" loading="lazy" draggable={false} />}
-        <span className="pick__check">
-          <Check size={15} strokeWidth={3} />
-        </span>
+    <div className={`pick ${picked ? "is-picked" : ""}`}>
+      <div className="pick__frame">
+        <button
+          className="pick__main"
+          aria-pressed={picked}
+          aria-label={picked ? t("onboarding.picks.unlike", { title: item.title }) : t("onboarding.picks.like", { title: item.title })}
+          tabIndex={tabbable ? 0 : -1}
+          onClick={onToggle}
+          onFocus={onFocus}
+        >
+          <div className="pick__art">
+            {poster && <img src={poster} alt="" loading="lazy" draggable={false} />}
+            <span className="pick__check">
+              <Heart size={14} fill="currentColor" strokeWidth={2.5} />
+            </span>
+          </div>
+        </button>
+        {picked && (
+          <div className="pick__rate" role="group" aria-label={t("onboarding.picks.rate", { title: item.title })}>
+            {pickRatings.map((value) => (
+              <button
+                key={value}
+                className={rating === value ? "is-on" : ""}
+                aria-pressed={rating === value}
+                title={t("library.rating.value", { value })}
+                onClick={() => onRate(rating === value ? null : value)}
+              >
+                {value}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
-      <div className="pick__title">{item.title}</div>
+      <div className="pick__title" onClick={onToggle}>
+        {item.title}
+      </div>
       <div className="pick__meta">
         {item.year && <span>{item.year}</span>}
         <span>{typeLabel(item)}</span>
       </div>
-    </button>
+    </div>
   );
 }
 
 function PicksStep({
   picks,
+  ratings,
   onToggle,
+  onRate,
   onBack,
   onSkip,
   onContinue,
 }: {
   picks: Map<string, MediaItem>;
+  ratings: Map<string, number>;
   onToggle: (item: MediaItem) => void;
+  onRate: (item: MediaItem, rating: number | null) => void;
   onBack: () => void;
   onSkip: () => void;
   onContinue: () => void;
@@ -137,7 +175,8 @@ function PicksStep({
 
   const focusCard = (index: number) => {
     const card = gridRef.current?.children[Math.max(0, Math.min(items.length - 1, index))];
-    if (card instanceof HTMLElement) card.focus();
+    const main = card?.querySelector(".pick__main");
+    if (main instanceof HTMLElement) main.focus();
   };
 
   const onGridKey = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -237,8 +276,10 @@ function PicksStep({
                   key={key}
                   item={item}
                   picked={picks.has(key)}
+                  rating={ratings.get(key) ?? null}
                   tabbable={index === Math.min(cursor, items.length - 1)}
                   onToggle={() => toggle(item)}
+                  onRate={(value) => onRate(item, value)}
                   onFocus={() => setCursor(index)}
                 />
               );
@@ -317,6 +358,15 @@ export function Onboarding() {
   const firstRun = useLibrary((state) => state.firstRun);
   const [step, setStep] = useState<Step>(language ? "picks" : "language");
   const [picks, setPicks] = useState<Map<string, MediaItem>>(new Map());
+  const [ratings, setRatings] = useState<Map<string, number>>(new Map());
+  const rate = (item: MediaItem, rating: number | null) =>
+    setRatings((current) => {
+      const next = new Map(current);
+      const key = titleKey(item.type, item.id);
+      if (rating === null) next.delete(key);
+      else next.set(key, rating);
+      return next;
+    });
   const [picksSkipped, setPicksSkipped] = useState(false);
   const liked = useMemo(() => (picksSkipped ? [] : [...picks.values()]), [picks, picksSkipped]);
 
@@ -328,7 +378,10 @@ export function Onboarding() {
       return next;
     });
 
-  const finish = () => useLibrary.getState().finishOnboarding(liked.map(toTitleRef));
+  const finish = () =>
+    useLibrary.getState().finishOnboarding(
+      liked.map((item) => ({ title: toTitleRef(item), rating: ratings.get(titleKey(item.type, item.id)) ?? null })),
+    );
   const leavePicks = (skipped: boolean) => {
     setPicksSkipped(skipped);
     setStep("howTo");
@@ -349,7 +402,9 @@ export function Onboarding() {
       ) : step === "picks" ? (
         <PicksStep
           picks={picks}
+          ratings={ratings}
           onToggle={toggle}
+          onRate={rate}
           onBack={() => setStep("language")}
           onSkip={() => leavePicks(true)}
           onContinue={() => leavePicks(false)}

@@ -20,7 +20,6 @@ const saveDelayMs = 500;
 const specialsSeason = 0;
 export const watchedThreshold = 0.92;
 export const maxRating = 10;
-export const likedPickRating = 8;
 
 export interface TitleRef {
   type: MediaType;
@@ -49,6 +48,7 @@ export function statusLabel(status: WatchStatus): string {
 export interface TrackEntry extends TitleRef {
   status: WatchStatus | null;
   rating: number | null;
+  liked?: boolean;
   totalEpisodes?: number;
   addedAt: number;
   updatedAt: number;
@@ -96,9 +96,11 @@ interface LibraryState extends LibraryData {
   loaded: boolean;
   firstRun: boolean;
   load: () => Promise<void>;
-  setStatus: (title: TitleRef, status: WatchStatus) => void;
+  setStatus: (title: TitleRef, status: WatchStatus | null) => void;
   setRating: (title: TitleRef, rating: number | null) => void;
   removeTracked: (key: string) => void;
+  restoreTracked: (key: string, entry: TrackEntry) => void;
+  restoreProgress: (key: string, progress: Progress) => void;
   noteTitleDetails: (title: TitleRef, totalEpisodes: number | undefined) => void;
   addSources: (entries: { unitKey: string; source: Source }[]) => void;
   removeSource: (unitKey: string, sourceId: string) => void;
@@ -110,7 +112,7 @@ interface LibraryState extends LibraryData {
   setTitlePreferences: (title: Pick<TitleRef, "type" | "id">, change: Partial<Omit<TitlePreferences, "updatedAt">>) => void;
   dismiss: (title: TitleRef) => void;
   restoreDismissed: (key: string) => void;
-  finishOnboarding: (liked: TitleRef[]) => void;
+  finishOnboarding: (liked: { title: TitleRef; rating: number | null }[]) => void;
   exportAccountData: () => AccountData;
   mergeAccountData: (other: AccountData) => void;
 }
@@ -329,6 +331,22 @@ export const useLibrary = create<LibraryState>((set, get) => {
       });
     },
 
+    restoreTracked(key, entry) {
+      update((state) => {
+        const removed = { ...state.removed };
+        delete removed[trackedRemovalKey(key)];
+        return { tracked: { ...state.tracked, [key]: { ...entry, updatedAt: Date.now() } }, removed };
+      });
+    },
+
+    restoreProgress(key, item) {
+      update((state) => {
+        const removed = { ...state.removed };
+        delete removed[progressRemovalKey(key)];
+        return { progress: { ...state.progress, [key]: { ...item, updatedAt: Date.now() } }, removed };
+      });
+    },
+
     noteTitleDetails(title, totalEpisodes) {
       const key = titleKey(title.type, title.id);
       const entry = get().tracked[key];
@@ -449,9 +467,9 @@ export const useLibrary = create<LibraryState>((set, get) => {
       update((state) => {
         const now = Date.now();
         const tracked = { ...state.tracked };
-        for (const title of liked) {
+        for (const { title, rating } of liked) {
           const key = titleKey(title.type, title.id);
-          tracked[key] ??= { ...title, status: null, rating: likedPickRating, addedAt: now, updatedAt: now };
+          tracked[key] ??= { ...title, status: null, rating, liked: true, addedAt: now, updatedAt: now };
         }
         return { tracked, onboardedAt: state.onboardedAt ?? now };
       });

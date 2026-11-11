@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Download, FileUp, Link2, LoaderCircle, Play, Search, X } from "lucide-react";
+import { ArrowLeft, ChevronDown, Download, FileUp, Link2, LoaderCircle, Play, Search, X } from "lucide-react";
 import { backend, describeError, isDesktop, type TorrentFile, type TorrentPreview } from "../lib/backend";
 import { formatBytes } from "../lib/format";
 import { useT } from "../lib/i18n";
@@ -7,6 +7,7 @@ import { baseName, guessTitleQuery, isMagnetLink, isVideoFile, parseEpisode, par
 import { toSource } from "../lib/releaseUpdate";
 import { imageUrl, tmdb, type MediaItem, type SeasonInfo } from "../lib/tmdb";
 import { useAsync } from "../lib/useAsync";
+import { isTopDialog, useDialogFocus } from "../lib/useDialogFocus";
 import { toTitleRef, unitKey, useLibrary } from "../state/library";
 import { useReleaseWatch } from "../state/releaseWatch";
 import { useSettings } from "../state/settings";
@@ -30,18 +31,23 @@ function InputStep({
   busy,
   error,
   target,
+  suggested,
   onLink,
   onRelease,
   onFile,
+  onChooseTitle,
 }: {
   busy: boolean;
   error: string;
   target: AddSourceTarget | null;
+  suggested: AddSourceTarget | null;
   onLink: (link: string) => void;
   onRelease: (release: Promise<TorrentPreview>, topicId: string) => void;
   onFile: (path: string) => void;
+  onChooseTitle: (target: AddSourceTarget) => void;
 }) {
   const [value, setValue] = useState("");
+  const [linkOpen, setLinkOpen] = useState(false);
   const valid = isMagnetLink(value);
   const { t } = useT();
 
@@ -67,6 +73,20 @@ function InputStep({
 
   return (
     <div className="add-input">
+      {error && <p className="add-input__warning add-input__warning--top">{error}</p>}
+      {target ? (
+        <TrackerSearch target={target} onPick={onRelease} />
+      ) : (
+        <TitlePicker initialQuery="" guessedSeason={null} suggested={suggested} question={t("addSource.tracker.chooseTitle")} onPick={onChooseTitle} />
+      )}
+      <div className={`add-link ${linkOpen ? "is-open" : ""}`}>
+        <button className="add-link__toggle" aria-expanded={linkOpen} onClick={() => setLinkOpen((open) => !open)}>
+          <Link2 size={16} />
+          {t("addSource.link.toggle")}
+          <ChevronDown size={16} className="add-link__chevron" />
+        </button>
+        {linkOpen && (
+          <div className="add-link__body">
       <label className="add-input__field">
         <Link2 size={18} />
         <input
@@ -89,7 +109,6 @@ function InputStep({
         />
       </label>
       {value && !valid && <p className="add-input__warning">{t("addSource.magnet.invalid")}</p>}
-      {error && <p className="add-input__warning">{error}</p>}
       <div className="add-input__actions">
         <button className="button" onClick={() => void pickFile()}>
           <FileUp size={16} />
@@ -100,21 +119,27 @@ function InputStep({
         </button>
       </div>
       <p className="add-input__hint">{t("addSource.file.dropHint")}</p>
-      {target && <TrackerSearch target={target} onPick={onRelease} />}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
 
 function TitlePicker({
-  preview,
+  initialQuery,
+  guessedSeason,
   suggested,
+  question,
   onPick,
 }: {
-  preview: TorrentPreview;
+  initialQuery: string;
+  guessedSeason: number | null;
   suggested: AddSourceTarget | null;
+  question: string;
   onPick: (target: AddSourceTarget) => void;
 }) {
-  const [query, setQuery] = useState(() => guessTitleQuery(preview.name));
+  const [query, setQuery] = useState(initialQuery);
   const [debounced, setDebounced] = useState(query);
   const [resolving, setResolving] = useState<number | null>(null);
   const { t } = useT();
@@ -132,7 +157,7 @@ function TitlePicker({
       let seasons: SeasonInfo[] = [];
       if (item.type === "tv") seasons = (await tmdb.details("tv", item.id)).seasons;
       const firstRegular = seasons.find((season) => season.seasonNumber > 0)?.seasonNumber ?? 1;
-      const guessed = parseEpisode(preview.name).season;
+      const guessed = guessedSeason;
       onPick({
         title: toTitleRef(item),
         originalTitle: item.originalTitle,
@@ -148,7 +173,7 @@ function TitlePicker({
 
   return (
     <div className="title-picker">
-      <p className="dialog__text">{t("addSource.title.question")}</p>
+      <p className="dialog__text">{question}</p>
       <label className="add-input__field">
         <Search size={18} />
         <input autoFocus value={query} placeholder={t("addSource.title.placeholder")} spellCheck={false} onChange={(event) => setQuery(event.target.value)} />
@@ -352,6 +377,41 @@ function AddSourceFlow({ request }: { request: AddSourceRequest }) {
   const started = useRef(false);
   const cancelled = useRef(false);
   const topic = useRef<string | null>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(dialogRef);
+
+  const attemptClose = () => {
+    if (!preview || busy) {
+      close();
+      return;
+    }
+    useUi.getState().askConfirm({
+      title: t("addSource.close.title"),
+      message: t("addSource.close.message"),
+      confirmLabel: t("addSource.close.confirm"),
+      danger: true,
+      onConfirm: close,
+    });
+  };
+
+  const back = () => {
+    setError("");
+    if (preview && target && !request.target && !chosenFirst.current) {
+      setTarget(null);
+      return;
+    }
+    if (preview) {
+      topic.current = null;
+      setPreview(null);
+      return;
+    }
+    if (target && !request.target) {
+      chosenFirst.current = false;
+      setTarget(null);
+    }
+  };
+  const chosenFirst = useRef(false);
+  const canGoBack = !busy && (preview !== null || (target !== null && !request.target));
 
   const inspect = async (action: Promise<TorrentPreview>) => {
     setBusy(true);
@@ -380,11 +440,11 @@ function AddSourceFlow({ request }: { request: AddSourceRequest }) {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") close();
+      if (event.key === "Escape" && isTopDialog(dialogRef) && !useUi.getState().confirm) attemptClose();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [close]);
+  });
 
   const commit = async (entries: { unitKey: string; file: TorrentFile }[], mode: AddMode) => {
     if (!preview || !target) return;
@@ -421,14 +481,27 @@ function AddSourceFlow({ request }: { request: AddSourceRequest }) {
   const heading = !preview ? t("common.addTorrent") : target ? target.title.title : t("addSource.whose");
 
   return (
-    <div className="backdrop" onMouseDown={close}>
-      <div className={`dialog ${dialogSize}`} onMouseDown={(event) => event.stopPropagation()}>
+    <div className="backdrop" onMouseDown={attemptClose}>
+      <div
+        ref={dialogRef}
+        className={`dialog ${dialogSize}`}
+        role="dialog"
+        aria-modal="true"
+        aria-label={heading}
+        tabIndex={-1}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
         <div className="dialog__head">
-          <div>
+          {canGoBack && (
+            <button className="icon-button dialog__back" aria-label={t("common.back")} title={t("common.back")} onClick={back}>
+              <ArrowLeft size={18} />
+            </button>
+          )}
+          <div className="dialog__titles">
             <h2>{heading}</h2>
             {preview && <div className="dialog__sub">{preview.name}</div>}
           </div>
-          <button className="icon-button" aria-label={t("common.close")} onClick={close}>
+          <button className="icon-button" aria-label={t("common.close")} onClick={attemptClose}>
             <X size={18} />
           </button>
         </div>
@@ -438,6 +511,11 @@ function AddSourceFlow({ request }: { request: AddSourceRequest }) {
             busy={busy}
             error={error}
             target={target}
+            suggested={request.suggested ?? null}
+            onChooseTitle={(chosen) => {
+              chosenFirst.current = true;
+              setTarget(chosen);
+            }}
             onLink={(link) => {
               topic.current = null;
               void inspect(backend.inspectLink(link));
@@ -453,7 +531,15 @@ function AddSourceFlow({ request }: { request: AddSourceRequest }) {
           />
         )}
 
-        {preview && !target && <TitlePicker preview={preview} suggested={request.suggested ?? null} onPick={setTarget} />}
+        {preview && !target && (
+          <TitlePicker
+            initialQuery={guessTitleQuery(preview.name)}
+            guessedSeason={parseEpisode(preview.name).season}
+            suggested={request.suggested ?? null}
+            question={t("addSource.title.question")}
+            onPick={setTarget}
+          />
+        )}
 
         {preview && target && error && <p className="add-input__warning">{error}</p>}
 

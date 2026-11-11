@@ -271,11 +271,16 @@
 
 .seek__played {
   left: 0;
+  width: 100%;
   background: var(--accent);
+  transform: scaleX(var(--played, 0));
+  transform-origin: left center;
+  will-change: transform;
 }
 
 .seek__thumb {
   position: absolute;
+  left: calc(var(--played, 0) * 100%);
   top: 50%;
   width: 14px;
   height: 14px;
@@ -709,11 +714,15 @@
   display: none;
 }
 
-html.is-mpv,
-html.is-mpv body,
-html.is-mpv #root,
-html.is-mpv .app,
 html.is-mpv .player {
+  background: #000;
+}
+
+html.is-mpv.is-mpv-picture,
+html.is-mpv.is-mpv-picture body,
+html.is-mpv.is-mpv-picture #root,
+html.is-mpv.is-mpv-picture .app,
+html.is-mpv.is-mpv-picture .player {
   background: transparent !important;
 }
 
@@ -726,6 +735,17 @@ html.is-mpv .content {
 .player__surface {
   position: absolute;
   inset: 0;
+}
+
+.player__hotkeys {
+  overflow-y: auto;
+}
+
+.player__hotkeys-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
 }
 
 .player__up-next {

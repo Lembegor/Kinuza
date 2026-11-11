@@ -43,6 +43,7 @@ export const mpv = {
   supported: isDesktop && navigator.userAgent.includes("Windows"),
   status: () => invoke<MpvStatus>("mpv_status"),
   install: () => invoke<void>("mpv_install"),
+  warm: () => invoke<void>("mpv_warm"),
   command: (...command: unknown[]) => invoke<void>("mpv_command", { command }),
   set: (name: string, value: unknown) => invoke<void>("mpv_set", { name, value }),
   addSubtitleText: (text: string, title: string) => invoke<void>("mpv_add_subtitle_text", { text, title }),

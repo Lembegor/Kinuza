@@ -1,9 +1,10 @@
-import { useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { ChevronLeft, ChevronRight, CloudOff, Star, ThumbsDown } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, Clock, CloudOff, Star, ThumbsDown } from "lucide-react";
 import { t, useT } from "../lib/i18n";
 import { hasApiKey, imageUrl, type MediaItem } from "../lib/tmdb";
-import type { TitleRef } from "../state/library";
+import { maxRating, statusLabel, titleKey, unitKey, useLibrary, type TitleRef, type TrackEntry, type WatchStatus } from "../state/library";
+import { useUi } from "../state/ui";
 import { TrackBadge } from "./TrackControls";
 
 type CardItem = TitleRef & Partial<Pick<MediaItem, "rating" | "isAnime">> & { note?: string };
@@ -13,11 +14,132 @@ export function typeLabel(item: Pick<CardItem, "type" | "isAnime">): string {
   return item.type === "movie" ? t("common.type.movie") : t("common.type.series");
 }
 
+function refOf(item: CardItem): TitleRef {
+  const { type, id, title, poster, backdrop, year } = item;
+  return { type, id, title, poster, backdrop, year };
+}
+
+function restoreEntry(key: string, previous: TrackEntry | undefined): void {
+  const { restoreTracked, removeTracked } = useLibrary.getState();
+  if (previous) restoreTracked(key, previous);
+  else removeTracked(key);
+}
+
+function changeStatus(item: CardItem, status: WatchStatus | null): void {
+  const title = refOf(item);
+  const key = titleKey(title.type, title.id);
+  const state = useLibrary.getState();
+  const previous = state.tracked[key];
+  const movieKey = unitKey("movie", title.id);
+  const previousProgress = state.progress[movieKey];
+  if (status === null && !previous?.rating && !previous?.liked) state.removeTracked(key);
+  else state.setStatus(title, status);
+  if (status === "completed" && title.type === "movie") state.setWatched(movieKey, true, { title });
+  const text = status ? t("cards.quick.status", { title: title.title, status: statusLabel(status) }) : t("cards.quick.cleared", { title: title.title });
+  useUi.getState().toast(text, "success", {
+    label: t("feed.dismissed.undo"),
+    run: () => {
+      restoreEntry(key, previous);
+      if (status === "completed" && title.type === "movie") {
+        if (previousProgress) useLibrary.getState().restoreProgress(movieKey, previousProgress);
+        else useLibrary.getState().setWatched(movieKey, false, { title });
+      }
+    },
+  });
+}
+
+function QuickActions({ item }: { item: CardItem }) {
+  const { t } = useT();
+  const entry = useLibrary((state) => state.tracked[titleKey(item.type, item.id)]);
+  const [rating, setRating] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const status = entry?.status ?? null;
+
+  useEffect(() => {
+    if (!rating) return;
+    const onPointer = (event: MouseEvent) => {
+      if (!ref.current?.contains(event.target as Node)) setRating(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setRating(false);
+    };
+    window.addEventListener("mousedown", onPointer);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onPointer);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [rating]);
+
+  const rate = (value: number) => {
+    const title = refOf(item);
+    const key = titleKey(title.type, title.id);
+    const previous = useLibrary.getState().tracked[key];
+    useLibrary.getState().setRating(title, value === entry?.rating ? null : value);
+    setRating(false);
+    useUi.getState().toast(t("cards.quick.rated", { title: title.title, value }), "success", {
+      label: t("feed.dismissed.undo"),
+      run: () => restoreEntry(key, previous),
+    });
+  };
+
+  return (
+    <div className={`poster-actions ${rating ? "is-open" : ""}`} ref={ref}>
+      {rating && (
+        <div className="poster-actions__rating" role="group" aria-label={t("library.rating.mine")}>
+          {Array.from({ length: maxRating }, (_, index) => index + 1).map((value) => (
+            <button
+              key={value}
+              className={entry?.rating === value ? "is-on" : ""}
+              aria-pressed={entry?.rating === value}
+              title={t("library.rating.value", { value })}
+              onClick={() => rate(value)}
+            >
+              {value}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="poster-actions__bar">
+        <button
+          className={status === "planned" ? "is-on" : ""}
+          aria-pressed={status === "planned"}
+          aria-label={t("cards.quick.planned", { title: item.title })}
+          title={t("status.planned")}
+          onClick={() => changeStatus(item, status === "planned" ? null : "planned")}
+        >
+          <Clock size={15} />
+        </button>
+        <button
+          className={status === "completed" ? "is-on" : ""}
+          aria-pressed={status === "completed"}
+          aria-label={t("cards.quick.completed", { title: item.title })}
+          title={t("status.completed")}
+          onClick={() => changeStatus(item, status === "completed" ? null : "completed")}
+        >
+          <Check size={15} />
+        </button>
+        <button
+          className={entry?.rating ? "is-on" : ""}
+          aria-expanded={rating}
+          aria-label={t("cards.quick.rate", { title: item.title })}
+          title={entry?.rating ? t("library.rating.outOf", { value: entry.rating, max: maxRating }) : t("library.rating.mine")}
+          onClick={() => setRating((open) => !open)}
+        >
+          <Star size={15} fill={entry?.rating ? "currentColor" : "none"} />
+          {entry?.rating ? <small>{entry.rating}</small> : null}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function PosterCard({ item }: { item: CardItem }) {
   const navigate = useNavigate();
   const poster = imageUrl(item.poster, "w342");
   return (
-    <button className="poster-card" onClick={() => navigate(`/title/${item.type}/${item.id}`)}>
+    <div className="poster-card">
+      <button className="poster-card__open" onClick={() => navigate(`/title/${item.type}/${item.id}`)}>
       <div className="poster-card__art">
         {poster ? <img src={poster} alt="" loading="lazy" draggable={false} /> : <div className="poster-card__blank">{item.title}</div>}
         {item.rating ? (
@@ -39,7 +161,9 @@ export function PosterCard({ item }: { item: CardItem }) {
           </>
         )}
       </div>
-    </button>
+      </button>
+      <QuickActions item={item} />
+    </div>
   );
 }
 
@@ -55,7 +179,7 @@ function DismissibleCard({ item, onDismiss }: { item: CardItem; onDismiss: (item
         onClick={(event) => {
           const slot = event.currentTarget.parentElement;
           const neighbour = slot?.nextElementSibling ?? slot?.previousElementSibling;
-          neighbour?.querySelector<HTMLElement>(".poster-card")?.focus();
+          neighbour?.querySelector<HTMLElement>(".poster-card__open")?.focus();
           onDismiss(item);
         }}
       >
