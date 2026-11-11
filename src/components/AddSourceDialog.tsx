@@ -1,7 +1,7 @@
 // Adds a torrent: magnet link or .torrent file -> file list -> which movie or episodes the files are.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ExternalLink, FileUp, Landmark, Link2, LoaderCircle, Search, X } from "lucide-react";
+import { ExternalLink, FileUp, Link2, LoaderCircle, Search, X } from "lucide-react";
 import { rutracker, type RutrackerItem } from "../lib/rutracker";
 import { backend, describeError, isDesktop, type TorrentFile, type TorrentPreview } from "../lib/backend";
 import { formatBytes, plural } from "../lib/format";
@@ -50,7 +50,10 @@ async function openPage(url: string): Promise<void> {
 }
 
 function RutrackerResults({ target, onPick }: { target: AddSourceTarget; onPick: (magnet: string) => void }) {
-  const query = `${target.originalTitle || target.title.title} ${target.title.year || ""}`.trim();
+  // Формируем изначальный запрос, но теперь мы можем его редактировать
+  const defaultQuery = `${target.originalTitle || target.title.title} ${target.title.year || ""}`.trim();
+  const [queryInput, setQueryInput] = useState(defaultQuery);
+  const [activeQuery, setActiveQuery] = useState(defaultQuery);
   
   const [items, setItems] = useState<RutrackerItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -63,15 +66,16 @@ function RutrackerResults({ target, onPick }: { target: AddSourceTarget; onPick:
   const [resolvingId, setResolvingId] = useState<string | null>(null);
 
   const fetchResults = async () => {
+    if (!activeQuery) return;
     setLoading(true);
     setError(null);
     setNeedsAuth(false);
     try {
-      const data = await rutracker.search(query);
+      const data = await rutracker.search(activeQuery);
       setItems(data);
     } catch (err) {
       if (err === "auth_required") setNeedsAuth(true);
-      else setError("Не удалось выполнить поиск на RuTracker.");
+      else setError(typeof err === "string" ? err : "Не удалось выполнить поиск на RuTracker.");
     } finally {
       setLoading(false);
     }
@@ -79,7 +83,7 @@ function RutrackerResults({ target, onPick }: { target: AddSourceTarget; onPick:
 
   useEffect(() => {
     void fetchResults();
-  }, [query]);
+  }, [activeQuery]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -124,31 +128,42 @@ function RutrackerResults({ target, onPick }: { target: AddSourceTarget; onPick:
             {authBusy ? <LoaderCircle size={16} className="spin" /> : "Войти"}
           </button>
         </form>
-      ) : loading ? (
-        <p className="archive__note">Ищем «{query}»…</p>
-      ) : error ? (
-        <p className="archive__note">{error}</p>
-      ) : items.length === 0 ? (
-        <p className="archive__note">По запросу «{query}» на трекере ничего не найдено.</p>
       ) : (
-        items.map((item) => (
-          <div key={item.id} className="archive__item" style={{ alignItems: "center" }}>
-            <div className="archive__title">
-              <strong style={{ fontSize: "0.9em", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
-                {item.title}
-              </strong>
-              <span>
-                {item.size} · Сиды: <strong style={{ color: "var(--color-success)" }}>{item.seeds}</strong>
-              </span>
+        <>
+          <form onSubmit={(e) => { e.preventDefault(); setActiveQuery(queryInput); }} style={{ display: "flex", gap: "8px", margin: "10px 0" }}>
+            <input className="input" value={queryInput} onChange={(e) => setQueryInput(e.target.value)} style={{ flex: 1 }} placeholder="Что ищем?" />
+            <button className="button button--primary" type="submit" disabled={loading}>Найти</button>
+          </form>
+
+          {loading ? (
+            <p className="archive__note">Ищем «{activeQuery}»…</p>
+          ) : error ? (
+            <p className="archive__note">{error}</p>
+          ) : items.length === 0 ? (
+            <p className="archive__note">По запросу «{activeQuery}» на трекере ничего не найдено.</p>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+              {items.map((item) => (
+                <div key={item.id} className="archive__item" style={{ alignItems: "center" }}>
+                  <div className="archive__title">
+                    <strong style={{ fontSize: "0.9em", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+                      {item.title}
+                    </strong>
+                    <span>
+                      {item.size} · Сиды: <strong style={{ color: "var(--color-success)" }}>{item.seeds}</strong>
+                    </span>
+                  </div>
+                  <button className="icon-button" aria-label="Страница раздачи" title="Страница раздачи" onClick={() => void openPage(item.pageUrl)}>
+                    <ExternalLink size={15} />
+                  </button>
+                  <button className="button button--small" disabled={resolvingId !== null} onClick={() => void pickItem(item)}>
+                    {resolvingId === item.id ? <LoaderCircle size={15} className="spin" /> : "Выбрать"}
+                  </button>
+                </div>
+              ))}
             </div>
-            <button className="icon-button" aria-label="Страница раздачи" title="Страница раздачи" onClick={() => void openPage(item.pageUrl)}>
-              <ExternalLink size={15} />
-            </button>
-            <button className="button button--small" disabled={resolvingId !== null} onClick={() => void pickItem(item)}>
-              {resolvingId === item.id ? <LoaderCircle size={15} className="spin" /> : "Выбрать"}
-            </button>
-          </div>
-        ))
+          )}
+        </>
       )}
     </div>
   );
