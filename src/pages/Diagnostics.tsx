@@ -3,8 +3,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { CircleAlert, CircleCheck, Copy, Info, LoaderCircle, RefreshCw, Trash2 } from "lucide-react";
-import { backend, describeError, getAppInfo } from "../lib/backend";
+import { CircleAlert, CircleCheck, Copy, FolderOpen, Info, LoaderCircle, RefreshCw, Trash2 } from "lucide-react";
+import { backend, describeError, getAppInfo, isDesktop } from "../lib/backend";
 import { formatBytes, formatMoment } from "../lib/format";
 import { t, useT, type MessageKey } from "../lib/i18n";
 import { clearJournal, loadJournal, useJournal, type JournalArea, type JournalEntry } from "../lib/journal";
@@ -251,6 +251,12 @@ function Journal() {
     <section className="settings-group">
       <div className="journal__head">
         <h2>{t("diagnostics.journal")}</h2>
+        {isDesktop && (
+          <button className="text-button" onClick={() => void backend.openLogs().catch(() => toast(t("diagnostics.logs.failed"), "error"))}>
+            <FolderOpen size={14} />
+            {t("diagnostics.logs.open")}
+          </button>
+        )}
         {newestFirst.length > 0 && (
           <>
             <button className="text-button" onClick={() => void copy()}>

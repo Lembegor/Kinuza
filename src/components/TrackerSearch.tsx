@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ArrowUp, ExternalLink, HardDrive, LoaderCircle, Monitor, Search, Sparkles } from "lucide-react";
 import { animeInfo } from "../lib/anilist";
-import { isDesktop } from "../lib/backend";
+import { isDesktop, type TorrentPreview } from "../lib/backend";
 import { t, useT, type MessageKey } from "../lib/i18n";
 import {
   isVideoRelease,
@@ -164,7 +164,7 @@ function toggled<T>(list: readonly T[], value: T): T[] {
   return list.includes(value) ? list.filter((item) => item !== value) : [...list, value];
 }
 
-export function TrackerSearch({ target, onPick }: { target: AddSourceTarget; onPick: (magnet: string, topicId: string) => void }) {
+export function TrackerSearch({ target, onPick }: { target: AddSourceTarget; onPick: (release: Promise<TorrentPreview>, topicId: string) => void }) {
   const initialQuery = useMemo(() => defaultQuery(target), [target]);
   const [queryInput, setQueryInput] = useState(initialQuery);
   const [activeQuery, setActiveQuery] = useState(initialQuery);
@@ -305,15 +305,13 @@ export function TrackerSearch({ target, onPick }: { target: AddSourceTarget; onP
     }
   };
 
-  const pickItem = async (item: RutrackerItem) => {
+  const pickItem = (item: RutrackerItem) => {
+    // The dialog shows the reading of the release and any failure from here on.
     setResolvingId(item.id);
-    try {
-      onPick(await rutracker.getMagnet(item.id), item.id);
-    } catch {
-      useUi.getState().toast(t("tracker.error.magnetFailed"), "error");
-    } finally {
-      setResolvingId(null);
-    }
+    const release = rutracker.inspectRelease(item.id);
+    // A failure is shown by the dialog; the list becomes usable again for another pick.
+    release.catch(() => undefined).finally(() => setResolvingId(null));
+    onPick(release, item.id);
   };
 
   // Anime releases are titled in romaji, which the catalog does not carry: "Shingeki no Kyojin",
@@ -479,7 +477,7 @@ export function TrackerSearch({ target, onPick }: { target: AddSourceTarget; onP
                   pageSizeLoading={sizeLookupIds.has(row.item.id)}
                   resolving={resolvingId === row.item.id}
                   disabled={resolvingId !== null}
-                  onPick={() => void pickItem(row.item)}
+                  onPick={() => pickItem(row.item)}
                 />
               ))}
             </div>

@@ -251,6 +251,10 @@ export const backend = {
   writeTextFile: (path: string, contents: string) => call<void>("write_text_file", { path, contents }),
   setDownloadPolicy: (policy: DownloadPolicy) => call<void>("torrent_set_policy", { policy }),
   storageInfo: (downloadDir: string | null) => call<StorageInfo>("storage_info", { downloadDir }),
+  /** Writes a line to the app's log file. */
+  logWrite: (level: "info" | "warn" | "error", message: string) => call<void>("log_write", { level, message }),
+  /** Opens the folder with the app's log files. */
+  openLogs: () => call<void>("logs_open"),
   /** Deletes what was kept from online viewings, except the film playing now; resolves to the bytes freed. */
   clearStreamCache: () => call<number>("stream_cache_clear"),
   takeLaunchRequest: () => call<LaunchRequest | null>("take_launch_request"),
@@ -283,6 +287,12 @@ const errorMessages: Record<string, MessageKey> = {
   file_unreadable: "errors.fileUnreadable",
   bad_info_hash: "errors.badInfoHash",
   bad_link: "errors.badLink",
+  // From the tracker search, when a picked release cannot be read.
+  auth_required: "errors.trackerAuth",
+  magnet_not_found: "errors.releaseUnavailable",
+  torrent_file_unavailable: "errors.releaseUnavailable",
+  timeout: "errors.releaseUnavailable",
+  cancelled: "errors.trackerCancelled",
 };
 
 /** Turns a backend error code into text for the user. */

@@ -94,12 +94,19 @@ export function useMediaTracks(source: { infoHash: string; fileIndex: number } |
 /**
  * Subtitles are read one stretch of the film at a time: in most files they are scattered among
  * the video, so reading them means reading (and, when watching online, downloading) the video too.
+ * A stretch starts where playback is, not at a round minute: after a seek to 15:34 a stretch from
+ * 15:00 would first download half a minute of film nobody watches before reaching a line that
+ * is said now.
  */
-const windowSeconds = 60;
+const stretchSeconds = 80;
+/** A stretch starts this much before the moment playback is at, for a line already being said. */
+const leadSeconds = 3;
 /** The next stretch is fetched when playback gets this close to the end of the current one. */
 const fetchAheadSeconds = 25;
-/** Stretches overlap by this much, so a line near the border is not lost to an imprecise cut. */
-const overlapSeconds = 20;
+/** The next stretch starts this much before the end of the current one, so no line falls between. */
+const overlapSeconds = 5;
+/** Two copies of one line closer than this, or overlapping, are the same line. */
+const sameLineGapSeconds = 0.3;
 const checkIntervalMs = 2000;
 const publishDelayMs = 250;
 
@@ -120,39 +127,47 @@ export function useEmbeddedSubtitles(
     setCues([]);
     if (track === null || !source) return;
     let cancelled = false;
-    /** Cues by start time and text: a line on the border of two stretches arrives with both. */
-    const loaded = new Map<string, Cue>();
-    const requested = new Set<number>();
+    /**
+     * Cues by text. Stretches overlap, so a line near a border arrives twice, and not always with
+     * the same times: the stretch that starts in the middle of it gives it a start cut to its own.
+     */
+    const loaded = new Map<string, Cue[]>();
+    const keep = (cue: Cue) => {
+      const same = loaded.get(cue.text);
+      const copy = same?.find((known) => known.start <= cue.end + sameLineGapSeconds && cue.start <= known.end + sameLineGapSeconds);
+      if (!copy) {
+        loaded.set(cue.text, [...(same ?? []), { ...cue }]);
+        return;
+      }
+      copy.start = Math.min(copy.start, cue.start);
+      copy.end = Math.max(copy.end, cue.end);
+    };
+    /** Stretches asked for, read or being read; one that playback has left is dropped while it is read. */
+    const stretches: { from: number; to: number; abort: AbortController; done: boolean }[] = [];
+    const drop = (stretch: (typeof stretches)[number]) => {
+      const index = stretches.indexOf(stretch);
+      if (index >= 0) stretches.splice(index, 1);
+    };
+    const covering = (time: number) => stretches.find((stretch) => stretch.from <= time && time < stretch.to);
 
-    /** Requests in flight by stretch, so one that playback has left can be dropped. */
-    const reading = new Map<number, AbortController>();
     let publishTimer: ReturnType<typeof setTimeout> | undefined;
     // Lines arrive in bursts; the list shown is refreshed a few times a second at most.
     const publish = () => {
       if (publishTimer !== undefined) return;
       publishTimer = setTimeout(() => {
         publishTimer = undefined;
-        if (!cancelled) setCues([...loaded.values()].sort((a, b) => a.start - b.start));
+        if (!cancelled) setCues([...loaded.values()].flat().map((cue) => ({ ...cue })).sort((a, b) => a.start - b.start));
       }, publishDelayMs);
     };
 
-    const load = async (windowIndex: number) => {
+    const load = async (from: number) => {
       const filmSeconds = clock().duration;
-      if (windowIndex < 0 || requested.has(windowIndex) || !Number.isFinite(filmSeconds) || filmSeconds <= 0) return;
-      requested.add(windowIndex);
-      const start = windowIndex * windowSeconds;
-      const abort = new AbortController();
-      reading.set(windowIndex, abort);
+      if (!Number.isFinite(filmSeconds) || filmSeconds <= 0 || from >= filmSeconds) return;
+      const stretch = { from, to: Math.min(filmSeconds, from + stretchSeconds), abort: new AbortController(), done: false };
+      stretches.push(stretch);
       try {
-        const url = await subtitleWindowUrl(
-          source.infoHash,
-          source.fileIndex,
-          track,
-          start,
-          windowSeconds + overlapSeconds,
-          filmSeconds,
-        );
-        const response = await fetch(url, { signal: abort.signal });
+        const url = await subtitleWindowUrl(source.infoHash, source.fileIndex, track, from, stretch.to - from, filmSeconds);
+        const response = await fetch(url, { signal: stretch.abort.signal });
         if (!response.ok || !response.body) throw new Error(`subtitles_${response.status}`);
 
         // The lines come as they are read from the file (while watching online, as it downloads),
@@ -167,8 +182,8 @@ export function useEmbeddedSubtitles(
           if (lastBreak > 0) {
             // Times in the response count from the start of the stretch.
             for (const cue of parseSubtitles(pending.slice(0, lastBreak))) {
-              const shifted = { ...cue, start: cue.start + start, end: cue.end + start };
-              loaded.set(`${shifted.start.toFixed(1)}|${shifted.text}`, shifted);
+              const shifted = { ...cue, start: cue.start + from, end: cue.end + from };
+              keep(shifted);
               lastStart = Math.max(lastStart, shifted.start);
             }
             pending = pending.slice(lastBreak);
@@ -176,27 +191,33 @@ export function useEmbeddedSubtitles(
           }
           if (done) break;
         }
+        stretch.done = true;
         // Some files keep their subtitles apart from the video and hand over everything at once;
-        // the stretches that covers need no request of their own.
-        for (let covered = windowIndex + 1; (covered + 1) * windowSeconds <= lastStart; covered++) requested.add(covered);
+        // what that covers needs no request of its own.
+        stretch.to = Math.max(stretch.to, lastStart);
       } catch (error) {
-        if (!abort.signal.aborted) report("player", "journal.subtitles.read", error);
-        // Allows another try the next time playback is here.
-        requested.delete(windowIndex);
-      } finally {
-        reading.delete(windowIndex);
+        if (!stretch.abort.signal.aborted) report("player", "journal.subtitles.read", error);
+        // Another try the next time playback is here.
+        drop(stretch);
       }
     };
 
     const check = () => {
-      const { time } = clock();
-      const current = Math.floor(time / windowSeconds);
-      // After a seek the old stretch is of no use, and reading it would download what nobody watches.
-      for (const [windowIndex, abort] of reading) {
-        if (windowIndex < current || windowIndex > current + 1) abort.abort();
+      const { time, duration } = clock();
+      // After a seek a stretch being read elsewhere is of no use, and reading on would download
+      // film nobody watches.
+      for (const stretch of [...stretches]) {
+        if (!stretch.done && (time < stretch.from - leadSeconds || time >= stretch.to)) {
+          stretch.abort.abort();
+          drop(stretch);
+        }
       }
-      void load(current);
-      if (time - current * windowSeconds > windowSeconds - fetchAheadSeconds) void load(current + 1);
+      const current = covering(time);
+      if (!current) {
+        void load(Math.max(0, time - leadSeconds));
+      } else if (current.to - time < fetchAheadSeconds && current.to < duration && !covering(current.to)) {
+        void load(Math.max(0, current.to - overlapSeconds));
+      }
     };
     check();
     const timer = setInterval(check, checkIntervalMs);
@@ -204,7 +225,7 @@ export function useEmbeddedSubtitles(
       cancelled = true;
       clearInterval(timer);
       clearTimeout(publishTimer);
-      for (const abort of reading.values()) abort.abort();
+      for (const stretch of stretches) stretch.abort.abort();
     };
   }, [sourceKey, track]); // eslint-disable-line react-hooks/exhaustive-deps
 

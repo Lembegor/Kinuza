@@ -83,7 +83,7 @@ pub async fn start(engine: Arc<Engine>, token: String, data_dir: std::path::Path
 
     tokio::spawn(async move {
         if let Err(error) = axum::serve(listener, router).await {
-            eprintln!("server: stopped with error: {error}");
+            tracing::warn!("server: stopped with error: {error}");
         }
     });
     Ok(base_url)
@@ -258,7 +258,7 @@ async fn read_subtitles(
     let Some(executable) = ffmpeg::executable(&state.data_dir) else {
         return (StatusCode::SERVICE_UNAVAILABLE, "ffmpeg_missing").into_response();
     };
-    let total = match state.engine.prepare_stream(&info_hash).await.and_then(|handle| {
+    let total = match state.engine.prepare_stream(&info_hash, Some(file_index)).await.and_then(|handle| {
         Ok(handle.with_metadata(|metadata| metadata.file_infos.get(file_index).map(|file| file.len))?)
     }) {
         Ok(Some(total)) => total,
@@ -314,13 +314,14 @@ async fn read_subtitles(
 }
 
 async fn serve_range(
-    engine: &Engine,
+    engine: &Arc<Engine>,
     info_hash: &str,
     file_index: usize,
     headers: &HeaderMap,
     until: Option<u64>,
 ) -> anyhow::Result<Response> {
-    let handle = engine.prepare_stream(info_hash).await?;
+    let handle = engine.prepare_stream(info_hash, Some(file_index)).await?;
+    engine.watch_file(&handle, file_index).await;
     let file_name = engine.file_name(info_hash, file_index).unwrap_or_default();
     let mut stream = handle.stream(file_index).await?;
     let total = stream.len();

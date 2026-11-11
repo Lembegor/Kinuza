@@ -224,7 +224,7 @@ pub async fn open_external(
     let player = external_player::find().ok_or_else(|| "no_external_player".to_owned())?;
     state
         .engine
-        .prepare_stream(&info_hash)
+        .prepare_stream(&info_hash, Some(file_index))
         .await
         .map_err(to_message)?;
 

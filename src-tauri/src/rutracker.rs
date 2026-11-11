@@ -39,6 +39,8 @@ const MAX_SIZE_LOOKUPS: usize = 20;
 /// Параметры `tracker.php`: сортировать по числу сидов (`o=10`) по убыванию (`s=2`).
 const SEARCH_ORDER: &str = "o=10&s=2";
 const MAGNET_PREFIX: &str = "magnet:?xt=urn:btih:";
+/// .torrent раздачи скачать не удалось (форум ответил не файлом).
+const ERROR_TORRENT_FILE: &str = "torrent_file_unavailable";
 /// Сколько страниц раздач запрашивать одновременно: больше — быстрее, но похоже на атаку на сайт.
 const PARALLEL_TOPIC_FETCHES: usize = 4;
 const TOPIC_FETCH_TIMEOUT: Duration = Duration::from_secs(8);
@@ -92,9 +94,44 @@ const SEARCH_EXTRACTOR: &str = r##"() => {
   };
 }"##;
 
+// Ссылка целиком, с адресами трекера (`&tr=`): без них раздачу можно искать только через DHT,
+// а он на RuTracker находит одного-двух участников вместо десятков.
 const MAGNET_EXTRACTOR: &str = r##"() => {
-  const match = document.documentElement.innerHTML.match(/magnet:\?xt=urn:btih:[a-zA-Z0-9]+/);
-  return match ? match[0] : null;
+  const link = document.querySelector('a.magnet-link[href^="magnet:"], a[href^="magnet:"]');
+  if (link) return link.getAttribute('href');
+  const match = document.documentElement.innerHTML.match(/magnet:\?xt=urn:btih:[^"'<>\s]+/);
+  return match ? match[0].replace(/&amp;/g, '&') : null;
+}"##;
+
+/// Скачивает .torrent раздачи `__ID__` так, как его получает вошедший пользователь (`dl.php`).
+/// В таком файле адрес трекера личный (с ключом пользователя), и трекер отдаёт по нему полный
+/// список раздающих; анонимный адрес из magnet-ссылки отдаёт одни и те же три десятка участников,
+/// почти все за NAT. Так раздачи берёт и qBittorrent. Файл приходит шестнадцатеричной строкой:
+/// вызов скрипта возвращает только JSON.
+const TORRENT_FILE_EXTRACTOR: &str = r##"() => {
+  const job = (window.__kinuzaTorrent__ID__ ||= { started: false, done: false, data: null, error: null });
+  if (!job.started) {
+    job.started = true;
+    (async () => {
+      try {
+        const response = await fetch("dl.php?t=__ID__", { credentials: "same-origin", signal: AbortSignal.timeout(__FETCH_TIMEOUT_MS__) });
+        const bytes = new Uint8Array(await response.arrayBuffer());
+        // Файл .torrent начинается со словаря ("d"); вместо него может прийти страница с отказом.
+        if (!response.ok || bytes.length === 0 || bytes[0] !== 0x64) {
+          job.error = "not_a_torrent:" + response.status;
+          return;
+        }
+        let hex = "";
+        for (const byte of bytes) hex += byte.toString(16).padStart(2, "0");
+        job.data = hex;
+      } catch (error) {
+        job.error = String(error);
+      } finally {
+        job.done = true;
+      }
+    })();
+  }
+  return job.done ? { pending: false, data: job.data, error: job.error } : { pending: true };
 }"##;
 
 /// Читает размер кадра со страниц раздач `__IDS__`. Открыта страница первой из них; остальные
@@ -450,8 +487,10 @@ fn is_topic_id(id: &str) -> bool {
 }
 
 fn is_magnet_link(link: &str) -> bool {
-    link.strip_prefix(MAGNET_PREFIX)
-        .is_some_and(|hash| !hash.is_empty() && hash.chars().all(|c| c.is_ascii_alphanumeric()))
+    link.strip_prefix(MAGNET_PREFIX).is_some_and(|rest| {
+        let hash = rest.split('&').next().unwrap_or_default();
+        !hash.is_empty() && hash.chars().all(|c| c.is_ascii_alphanumeric())
+    })
 }
 
 fn parse_search_page(data: Value) -> Result<Vec<RutrackerItem>, String> {
@@ -550,6 +589,60 @@ pub async fn rutracker_magnet(
             })
         })
         .await
+}
+
+#[derive(Deserialize)]
+struct TorrentFileLookup {
+    #[serde(default)]
+    pending: bool,
+    data: Option<String>,
+    error: Option<String>,
+}
+
+fn decode_hex(text: &str) -> Option<Vec<u8>> {
+    if text.len() % 2 != 0 {
+        return None;
+    }
+    (0..text.len()).step_by(2).map(|index| u8::from_str_radix(text.get(index..index + 2)?, 16).ok()).collect()
+}
+
+/// Разбирает .torrent раздачи `id`, скачанный с форума под учётной записью пользователя (см.
+/// `TORRENT_FILE_EXTRACTOR`), и возвращает список её файлов, как `torrent_inspect_link`.
+#[tauri::command]
+pub async fn rutracker_torrent_inspect(
+    app: AppHandle,
+    state: tauri::State<'_, Mutex<RutrackerState>>,
+    app_state: tauri::State<'_, crate::AppState>,
+    id: String,
+    // Как у `rutracker_magnet`: запрос в фоне не показывает окно форума.
+    quiet: Option<bool>,
+) -> Result<crate::engine::TorrentPreview, String> {
+    if !is_topic_id(&id) {
+        return Err(ERROR_MAGNET_NOT_FOUND.to_owned());
+    }
+    let url = forum_url(&format!("viewtopic.php?t={id}"));
+    let extractor = TORRENT_FILE_EXTRACTOR
+        .replace("__ID__", &id)
+        .replace("__FETCH_TIMEOUT_MS__", &TOPIC_FETCH_TIMEOUT.as_millis().to_string());
+    let bytes = state
+        .lock()
+        .await
+        .request(&app, url, &extractor, false, !quiet.unwrap_or(false), |page| {
+            if page.guest {
+                return Some(Err(ERROR_AUTH_REQUIRED.to_owned()));
+            }
+            match serde_json::from_value::<TorrentFileLookup>(page.data) {
+                Ok(lookup) if lookup.pending => None,
+                Ok(TorrentFileLookup { data: Some(hex), .. }) => Some(decode_hex(&hex).ok_or_else(|| ERROR_TORRENT_FILE.to_owned())),
+                Ok(TorrentFileLookup { error, .. }) => {
+                    tracing::warn!("rutracker: the .torrent of {id} could not be had: {}", error.unwrap_or_default());
+                    Some(Err(ERROR_TORRENT_FILE.to_owned()))
+                }
+                Err(_) => Some(Err(ERROR_TORRENT_FILE.to_owned())),
+            }
+        })
+        .await?;
+    app_state.engine.inspect_torrent_file(bytes::Bytes::from(bytes)).await.map_err(|error| error.to_string())
 }
 
 /// Размер кадра раздач `ids`, прочитанный с их страниц. Раздач, где его найти не удалось, в ответе нет.

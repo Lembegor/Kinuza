@@ -1,4 +1,4 @@
-import { isDesktop } from "./backend";
+import { backend, isDesktop, type TorrentPreview } from "./backend";
 
 export interface RutrackerItem {
   id: string;
@@ -48,6 +48,20 @@ export const rutracker = {
   login: () => call<void>("rutracker_login_window"),
   /** `quiet`: asked in the background; the forum's window is never shown, the request fails instead. */
   getMagnet: (id: string, quiet = false) => call<string>("rutracker_magnet", { id, quiet }),
+  /**
+   * The release's files, read from its .torrent as the forum gives it to the signed-in user: that
+   * file names the user's own tracker address, which hands out the full list of seeders (the
+   * magnet link's anonymous address gives a few, mostly unreachable). If the file cannot be had,
+   * the magnet link is used.
+   */
+  inspectRelease: async (id: string, quiet = false): Promise<TorrentPreview> => {
+    try {
+      return await call<TorrentPreview>("rutracker_torrent_inspect", { id, quiet });
+    } catch (error) {
+      if (String(error).includes(rutrackerErrors.authRequired) || String(error).includes(rutrackerErrors.cancelled)) throw error;
+      return backend.inspectLink(await rutracker.getMagnet(id, quiet));
+    }
+  },
   /** Frame sizes read from the releases' own pages; releases whose page does not state one are left out. */
   videoSizes: (ids: string[]) => call<Record<string, VideoSize>>("rutracker_video_sizes", { ids }),
 };

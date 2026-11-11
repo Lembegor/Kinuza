@@ -90,6 +90,8 @@ function scheduleSave(): void {
 export function report(area: JournalArea, message: MessageKey, detail?: unknown): void {
   console.error(`${area}: ${message}`, detail ?? "");
   const text = detailText(detail);
+  // Also into the log file, next to what the engine was doing at that moment.
+  void backend.logWrite("error", `${area}: ${message}${text ? ` (${text})` : ""}`).catch(() => undefined);
   const time = Date.now();
   useJournal.setState((state) => {
     const last = state.entries.at(-1);

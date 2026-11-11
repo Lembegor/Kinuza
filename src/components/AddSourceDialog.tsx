@@ -33,13 +33,15 @@ function InputStep({
   error,
   target,
   onLink,
+  onRelease,
   onFile,
 }: {
   busy: boolean;
   error: string;
   target: AddSourceTarget | null;
-  /** `topicId`: the tracker topic the link was taken from, when it came from the tracker search. */
-  onLink: (link: string, topicId?: string) => void;
+  onLink: (link: string) => void;
+  /** A release picked in the tracker search, being read, and the topic it comes from. */
+  onRelease: (release: Promise<TorrentPreview>, topicId: string) => void;
   onFile: (path: string) => void;
 }) {
   const [value, setValue] = useState("");
@@ -101,7 +103,7 @@ function InputStep({
         </button>
       </div>
       <p className="add-input__hint">{t("addSource.file.dropHint")}</p>
-      {target && <TrackerSearch target={target} onPick={onLink} />}
+      {target && <TrackerSearch target={target} onPick={onRelease} />}
     </div>
   );
 }
@@ -443,9 +445,13 @@ function AddSourceFlow({ request }: { request: AddSourceRequest }) {
             busy={busy}
             error={error}
             target={target}
-            onLink={(link, topicId) => {
-              topic.current = topicId ?? null;
+            onLink={(link) => {
+              topic.current = null;
               void inspect(backend.inspectLink(link));
+            }}
+            onRelease={(release, topicId) => {
+              topic.current = topicId;
+              void inspect(release);
             }}
             onFile={(path) => {
               topic.current = null;

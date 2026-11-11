@@ -81,6 +81,8 @@ export async function mockInvoke(command: string, args: Record<string, unknown> 
     case "online_subtitles_search":
       return [];
     case "tray_configure":
+    case "log_write":
+    case "logs_open":
     case "torrent_set_policy":
     case "write_text_file":
       return null;
@@ -101,6 +103,8 @@ export async function mockInvoke(command: string, args: Record<string, unknown> 
       // One release states its frame size on the page, the other does not.
       await new Promise((resolve) => setTimeout(resolve, 1500));
       return { [demoTrackerItems[3].id]: { width: 1024, height: 426 } };
+    case "rutracker_torrent_inspect":
+      return demoPreview;
     case "rutracker_magnet":
       return `magnet:?xt=urn:btih:${demoPreview.infoHash}`;
     case "app_info":

@@ -62,7 +62,7 @@ pub async fn imdb_rating(
             match refresh(&index).await {
                 Ok(()) => *last_failure = None,
                 Err(error) => {
-                    eprintln!("imdb: refresh failed: {error}");
+                    tracing::warn!("imdb: refresh failed: {error}");
                     *last_failure = Some(SystemTime::now());
                 }
             }

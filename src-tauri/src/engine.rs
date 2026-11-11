@@ -95,6 +95,8 @@ const CACHE_MAX_AGE: Duration = Duration::from_secs(14 * 24 * 60 * 60);
 /// The cache is measured and trimmed every this many policy checks.
 const CACHE_CHECK_EVERY: u32 = 6;
 const BYTES_PER_GIBIBYTE: f64 = 1024.0 * 1024.0 * 1024.0;
+/// While a film plays online, its swarm is written to the log every this many policy checks.
+const SWARM_LOG_EVERY: u32 = 2;
 const CACHE_DATA_FOLDER_NAME: &str = "data";
 /// State reported for a parked torrent.
 const STATE_PARKED: &str = "parked";
@@ -123,12 +125,58 @@ const POLICY_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 /// How long a reader waits for a freshly added torrent to become readable.
 const STREAM_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// The file an online viewing is playing, held open.
+///
+/// An online torrent has no files selected for download, and librqbit counts such a torrent as
+/// complete. Whenever no stream is open (between two range requests of the player, or while the
+/// player's buffer is full) it then drops every seeder as no longer needed and does not take
+/// them back. One stream kept open on the file makes the torrent "still needed" through every
+/// gap. It is placed at the very end of the file, so that it asks for nothing itself.
+struct Watch {
+    file: usize,
+    /// Never read: it only exists. Dropping it closes the stream.
+    _keepalive: Box<dyn std::any::Any + Send>,
+}
+
+/// How long an online torrent keeps its played file selected after it starts: long enough for
+/// the announces it makes on starting, which tell the trackers how much is left (see
+/// `prepare_stream`). Kept longer, the background download of the film would hold the pieces the
+/// player needs behind it: librqbit takes such a piece back from a slow peer quickly only when it
+/// has nothing else to fetch.
+const ANNOUNCE_SELECTION: Duration = Duration::from_secs(10);
+
+/// Trackers every torrent also announces to. Torrents added from RuTracker before its links were
+/// read in full have no tracker at all and find a peer or two through DHT; the forum's own
+/// retracker returns dozens. The public ones help everything else. A tracker that does not
+/// know a torrent just answers with no peers.
+const EXTRA_TRACKERS: &[&str] = &[
+    "http://bt.t-ru.org/ann?magnet",
+    "http://bt2.t-ru.org/ann?magnet",
+    "http://bt3.t-ru.org/ann?magnet",
+    "http://bt4.t-ru.org/ann?magnet",
+    "udp://tracker.opentrackr.org:1337/announce",
+    "udp://open.stealth.si:80/announce",
+    "udp://tracker.torrent.eu.org:451/announce",
+    "udp://exodus.desync.com:6969/announce",
+];
+
+/// How long a peer may stay silent before it counts as gone. librqbit's 10 s drops every seeder
+/// the moment the player has its buffer full and asks for nothing (a peer with nothing to send
+/// speaks only every two minutes). Much longer, and a connection that died quietly (common behind
+/// home routers) keeps its peer counted as connected.
+const PEER_SILENCE_TIMEOUT: Duration = Duration::from_secs(60);
+/// How often we tell peers we are still here when we have nothing else to say; well inside the
+/// two minutes after which other clients drop a silent peer.
+const PEER_KEEP_ALIVE: Duration = Duration::from_secs(30);
+
 /// Metadata resolved by `inspect` and kept until the user confirms the add.
 struct PendingTorrent {
     torrent_bytes: Bytes,
     seen_peers: Vec<SocketAddr>,
     name: String,
     file_count: usize,
+    /// The trackers its .torrent file names; empty for a magnet link.
+    trackers: Vec<String>,
 }
 
 pub struct Engine {
@@ -152,6 +200,11 @@ pub struct Engine {
     last_played: Mutex<HashMap<String, u64>>,
     /// Whether the settings have said how large the cache may be. Until then nothing is trimmed.
     policy_known: std::sync::atomic::AtomicBool,
+    /// Online torrents being played or lingering after a viewing, with the file they play.
+    watching: Mutex<HashMap<String, Watch>>,
+    /// Online torrents that have told their trackers about the file being played since they
+    /// last started (see `prepare_stream`).
+    announced: Mutex<HashSet<String>>,
 }
 
 impl Engine {
@@ -162,11 +215,23 @@ impl Engine {
 
         let options = SessionOptions {
             fastresume: true,
+            trackers: EXTRA_TRACKERS.iter().filter_map(|tracker| reqwest::Url::parse(tracker).ok()).collect(),
             persistence: Some(SessionPersistenceConfig::Json {
                 folder: Some(persistence_dir),
             }),
             listen: Some(ListenerOptions {
+                // uTP (BitTorrent over UDP) as well as TCP: on RuTracker two of five reachable
+                // seeders answered only over uTP.
+                mode: librqbit::ListenerMode::TcpAndUtp,
                 enable_upnp_port_forwarding: true,
+                ..Default::default()
+            }),
+            connect: Some(librqbit::ConnectionOptions {
+                peer_opts: Some(librqbit::PeerConnectionOptions {
+                    read_write_timeout: Some(PEER_SILENCE_TIMEOUT),
+                    keep_alive_interval: Some(PEER_KEEP_ALIVE),
+                    ..Default::default()
+                }),
                 ..Default::default()
             }),
             ..Default::default()
@@ -174,6 +239,7 @@ impl Engine {
         let session = Session::new_with_opts(default_output, options)
             .await
             .context("failed to start the torrent session")?;
+        tracing::info!("session listening on {:?}, announcing port {:?}", session.listen_addr(), session.announce_port());
 
         let parked = std::fs::read_to_string(cache_dir.join(PARKED_INDEX_NAME))
             .ok()
@@ -196,6 +262,8 @@ impl Engine {
             released: Mutex::new(HashMap::new()),
             last_played: Mutex::new(last_played),
             policy_known: std::sync::atomic::AtomicBool::new(false),
+            watching: Mutex::new(HashMap::new()),
+            announced: Mutex::new(HashSet::new()),
         });
 
         let keeper = engine.clone();
@@ -206,6 +274,9 @@ impl Engine {
                 keeper.enforce_policy().await;
                 keeper.rest_released().await;
                 tick = tick.wrapping_add(1);
+                if tick % SWARM_LOG_EVERY == 0 {
+                    keeper.log_swarms();
+                }
                 if tick % CACHE_CHECK_EVERY == 0 {
                     keeper.trim_cache().await;
                 }
@@ -313,6 +384,8 @@ impl Engine {
     /// .torrent so that it can be added again elsewhere (as a download).
     async fn park(&self, handle: &TorrentHandle) -> Result<()> {
         let info_hash = handle.info_hash().as_string();
+        self.watching.lock().unwrap().remove(&info_hash);
+        self.announced.lock().unwrap().remove(&info_hash);
         let torrent_bytes = handle.with_metadata(|metadata| metadata.torrent_bytes.clone())?;
         std::fs::write(self.torrent_file(&info_hash), &torrent_bytes)?;
         let files = file_views(handle, &[])
@@ -344,6 +417,63 @@ impl Engine {
         Ok(())
     }
 
+    /// Writes to the log how the swarm of every online viewing looks now: peers by state (found,
+    /// connecting, live, dead, not needed), connection attempts and errors, speed, trackers.
+    fn log_swarms(&self) {
+        let hashes: Vec<String> = {
+            let played = self.played.lock().unwrap();
+            let released = self.released.lock().unwrap();
+            played.iter().chain(released.keys()).cloned().collect()
+        };
+        for info_hash in hashes {
+            let Ok(handle) = self.find(&info_hash) else { continue };
+            let stats = handle.stats();
+            let speed = stats.live.as_ref().map(|live| live.download_speed.mbps).unwrap_or(0.0);
+            let aggregate = stats
+                .live
+                .as_ref()
+                .and_then(|live| serde_json::to_string(&live.snapshot.peer_stats).ok())
+                .unwrap_or_default();
+            let mut by_state: std::collections::BTreeMap<String, usize> = Default::default();
+            let (mut attempts, mut connections, mut errors, mut incoming, mut fetched) = (0u64, 0u64, 0u64, 0u64, 0u64);
+            if let Some(live) = handle.live() {
+                if let Some(filter) = serde_json::from_value(serde_json::json!({ "state": "all" })).ok() {
+                    let snapshot = live.per_peer_stats_snapshot(filter);
+                    if let Ok(serde_json::Value::Object(peers)) = serde_json::to_value(&snapshot.peers) {
+                        for peer in peers.values() {
+                            *by_state.entry(peer["state"].as_str().unwrap_or("?").to_owned()).or_default() += 1;
+                            let counter = |name: &str| peer["counters"][name].as_u64().unwrap_or(0);
+                            attempts += counter("connection_attempts");
+                            connections += counter("connections");
+                            errors += counter("errors");
+                            incoming += counter("incoming_connections");
+                            fetched += counter("fetched_bytes");
+                        }
+                    }
+                }
+            }
+            tracing::info!(
+                "swarm {} state={:?} paused={} only_files={:?} have={}MB selected_total={}MB speed={:.2}MiB/s peers_by_state={:?} aggregate={} attempts={} connections={} errors={} incoming={} fetched={}MB trackers={} watching={}",
+                &info_hash[..8],
+                stats.state,
+                handle.is_paused(),
+                handle.only_files(),
+                stats.progress_bytes >> 20,
+                stats.total_bytes >> 20,
+                speed,
+                by_state,
+                aggregate,
+                attempts,
+                connections,
+                errors,
+                incoming,
+                fetched >> 20,
+                handle.shared().trackers.len(),
+                self.watching.lock().unwrap().get(&info_hash).map(|watch| watch.file).map_or("-".to_owned(), |file| file.to_string()),
+            );
+        }
+    }
+
     fn save_last_played(&self) {
         let last_played = self.last_played.lock().unwrap();
         if let Ok(text) = serde_json::to_string(&*last_played) {
@@ -357,6 +487,8 @@ impl Engine {
     }
 
     fn forget_cached(&self, info_hash: &str) {
+        self.watching.lock().unwrap().remove(info_hash);
+        self.announced.lock().unwrap().remove(info_hash);
         self.released.lock().unwrap().remove(info_hash);
         if self.last_played.lock().unwrap().remove(info_hash).is_some() {
             self.save_last_played();
@@ -385,9 +517,13 @@ impl Engine {
 
     /// Pauses a resting online torrent: it stops talking to the swarm and keeps what it fetched.
     async fn rest(&self, handle: &TorrentHandle) {
+        let info_hash = handle.info_hash().as_string();
+        self.watching.lock().unwrap().remove(&info_hash);
+        self.announced.lock().unwrap().remove(&info_hash);
+        self.deselect(handle).await;
         if !handle.is_paused() {
             if let Err(error) = self.session.pause(handle).await {
-                eprintln!("engine: could not pause {}: {error}", handle.info_hash().as_string());
+                tracing::warn!("engine: could not pause {}: {error}", handle.info_hash().as_string());
             }
         }
     }
@@ -484,7 +620,7 @@ impl Engine {
                     total = total.saturating_sub(size);
                     freed += size;
                 }
-                Err(error) => eprintln!("engine: could not drop {info_hash} from the cache: {error}"),
+                Err(error) => tracing::warn!("engine: could not drop {info_hash} from the cache: {error}"),
             }
         }
         freed
@@ -514,7 +650,11 @@ impl Engine {
         } else {
             download_dir.to_path_buf()
         };
+        // An online torrent starts when it is first played, with the played file selected: that
+        // is what its first announce tells the trackers (see `prepare_stream`).
+        let paused = files.is_empty();
         let options = AddTorrentOptions {
+            paused,
             only_files: Some(files),
             overwrite: true,
             output_folder: Some(output_folder.to_string_lossy().into_owned()),
@@ -575,6 +715,7 @@ impl Engine {
                         seen_peers: listed.seen_peers,
                         name: name.clone(),
                         file_count: files.len(),
+                        trackers: Vec::new(),
                     },
                 );
                 Ok(TorrentPreview {
@@ -595,14 +736,70 @@ impl Engine {
         }
     }
 
+    /// `inspect` for the contents of a .torrent file, remembering the trackers it names: a torrent
+    /// already added from a magnet link takes them on when it is added again (see `add`).
+    pub async fn inspect_torrent_file(&self, bytes: Bytes) -> Result<TorrentPreview> {
+        let trackers: Vec<String> = librqbit::torrent_from_bytes(&bytes)
+            .map(|torrent| {
+                torrent
+                    .iter_announce()
+                    .filter_map(|tracker| std::str::from_utf8(tracker.as_ref()).ok().and_then(|url| reqwest::Url::parse(url).ok()))
+                    .map(|url| url.to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let preview = self.inspect(AddTorrent::from_bytes(bytes)).await?;
+        if let Some(pending) = self.pending.lock().unwrap().get_mut(&preview.info_hash) {
+            pending.trackers = trackers;
+        }
+        Ok(preview)
+    }
+
+    /// An online torrent added from a magnet link knows only the trackers the link named. Added
+    /// again from its .torrent file, it is put back with that file's trackers (a RuTracker file
+    /// names the user's own tracker address, which gives the full list of seeders), and keeps
+    /// what it has fetched. Not while it is played: then the next time.
+    async fn take_file_trackers(&self, info_hash: &str, pending: PendingTorrent) -> Result<()> {
+        let Ok(handle) = self.find(info_hash) else {
+            return Ok(());
+        };
+        let known: HashSet<String> = handle.shared().trackers.iter().map(|tracker| tracker.to_string()).collect();
+        if !self.is_online_only(&handle) || pending.trackers.iter().all(|tracker| known.contains(tracker)) {
+            return Ok(());
+        }
+        let _parking = self.parking.lock().await;
+        if self.played.lock().unwrap().contains(info_hash) {
+            return Ok(());
+        }
+        tracing::info!("engine: {info_hash} takes the trackers of its .torrent file");
+        self.watching.lock().unwrap().remove(info_hash);
+        self.announced.lock().unwrap().remove(info_hash);
+        self.released.lock().unwrap().remove(info_hash);
+        self.session.delete(TorrentIdOrHash::Hash(handle.info_hash()), false).await?;
+        self.add_from_bytes(
+            info_hash,
+            pending.torrent_bytes,
+            &pending.name,
+            pending.file_count,
+            Vec::new(),
+            Path::new(""),
+            pending.seen_peers,
+            Vec::new(),
+        )
+        .await
+    }
+
     /// Adds a previously inspected torrent and starts downloading the given files.
     /// With no files the torrent is only watched online: data is fetched as the player asks for
     /// it, kept apart from the downloads and deleted when the viewing ends.
     pub async fn add(&self, info_hash: &str, files: Vec<usize>, download_dir: &Path) -> Result<()> {
         let known = self.find(info_hash).is_ok() || self.parked.lock().unwrap().contains_key(info_hash);
         if known {
-            self.pending.lock().unwrap().remove(info_hash);
+            let pending = self.pending.lock().unwrap().remove(info_hash);
             if files.is_empty() {
+                if let Some(pending) = pending.filter(|pending| !pending.trackers.is_empty()) {
+                    self.take_file_trackers(info_hash, pending).await?;
+                }
                 return Ok(());
             }
             return self.select_files(info_hash, &files, download_dir).await;
@@ -633,10 +830,19 @@ impl Engine {
             torrents
                 .map(|(_, handle)| {
                     let mut view = torrent_view(handle);
-                    // Between viewings an online torrent is part of the cache, not a download.
-                    let played = self.played.lock().unwrap().contains(&view.info_hash);
-                    if self.is_online_only(handle) && !played {
-                        view.state = STATE_PARKED;
+                    if self.is_online_only(handle) {
+                        // Between viewings an online torrent is part of the cache, not a download.
+                        if !self.played.lock().unwrap().contains(&view.info_hash) {
+                            view.state = STATE_PARKED;
+                        }
+                        // The played file is selected for a moment only, for the trackers' sake
+                        // (see `prepare_stream`); to the app this is still a film watched online.
+                        for file in &mut view.files {
+                            file.included = false;
+                        }
+                        view.finished = false;
+                        view.progress_bytes = 0;
+                        view.total_bytes = 0;
                     }
                     view
                 })
@@ -740,10 +946,17 @@ impl Engine {
         .await
     }
 
-    /// Returns the torrent, running and ready for `stream`. The file does not have to be selected
-    /// for download: a stream fetches the pieces it reads, and only those. A torrent parked after
-    /// an online viewing is brought back first.
-    pub async fn prepare_stream(&self, info_hash: &str) -> Result<TorrentHandle> {
+    /// Returns the torrent, running and ready for `stream`. A torrent parked after an online
+    /// viewing is brought back first.
+    ///
+    /// An online torrent gets `file` selected for download as it starts. Trackers are told how
+    /// much is left of the selected files, and with nothing selected that is zero: to the tracker
+    /// a seeder, and a tracker hands a seeder only the few who are still downloading (RuTracker's
+    /// gave 2 peers that way, 30 when asked as a downloader). The selection is made before the
+    /// torrent starts, or the torrent is restarted once, so that its announces say so, and is
+    /// dropped once they are made (`ANNOUNCE_SELECTION`): from then on only what the player reads
+    /// is fetched.
+    pub async fn prepare_stream(self: &Arc<Self>, info_hash: &str, file: Option<usize>) -> Result<TorrentHandle> {
         let _parking = self.parking.lock().await;
         if self.find(info_hash).is_err() {
             let (torrent_bytes, parked) = self.parked_torrent(info_hash).ok_or_else(|| anyhow!("torrent_not_found"))?;
@@ -760,17 +973,67 @@ impl Engine {
             .await?;
         }
         let handle = self.find(info_hash)?;
-        if self.is_online_only(&handle) {
+        let online = self.is_online_only(&handle);
+        if online {
             self.played.lock().unwrap().insert(info_hash.to_owned());
             self.released.lock().unwrap().remove(info_hash);
             self.touch(info_hash);
         }
-        self.resume_handle(&handle).await?;
-        // A torrent added a moment ago is still checking its files and cannot be read yet.
+        // A torrent added a moment ago is still checking its files: it can be neither read nor
+        // given a selection yet.
         tokio::time::timeout(STREAM_READY_TIMEOUT, handle.wait_until_initialized())
             .await
             .map_err(|_| anyhow!("torrent_not_ready"))??;
+        let announcing = match (online, file) {
+            (true, Some(file)) => self.select_for_announce(&handle, file).await,
+            _ => false,
+        };
+        self.resume_handle(&handle).await?;
+        if announcing {
+            self.announced.lock().unwrap().insert(info_hash.to_owned());
+            let engine = self.clone();
+            let announced = handle.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(ANNOUNCE_SELECTION).await;
+                // Still the online torrent it was (not made a download meanwhile).
+                if engine.is_online_only(&announced) {
+                    engine.deselect(&announced).await;
+                }
+            });
+        }
         Ok(handle)
+    }
+
+    /// Selects the played file for the announces of a start, if this start has not made them yet
+    /// (see `prepare_stream`). A running torrent whose trackers were told it wants nothing is
+    /// paused here, so that resuming it announces again. Returns whether a selection was made.
+    async fn select_for_announce(&self, handle: &TorrentHandle, file: usize) -> bool {
+        let info_hash = handle.info_hash().as_string();
+        if self.announced.lock().unwrap().contains(&info_hash) {
+            return false;
+        }
+        if !handle.is_paused() {
+            if let Err(error) = self.session.pause(handle).await {
+                tracing::warn!("engine: could not restart {info_hash} for its announce: {error}");
+                return false;
+            }
+        }
+        match self.session.update_only_files(handle, &HashSet::from([file])).await {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!("engine: could not select file {file} of {info_hash}: {error}");
+                false
+            }
+        }
+    }
+
+    /// Stops an online torrent's background download; what it has stays.
+    async fn deselect(&self, handle: &TorrentHandle) {
+        if handle.only_files().is_some_and(|files| !files.is_empty()) {
+            if let Err(error) = self.session.update_only_files(handle, &HashSet::new()).await {
+                tracing::warn!("engine: could not stop the download of {}: {error}", handle.info_hash().as_string());
+            }
+        }
     }
 
     /// Ends an online viewing. The torrent stays connected for `ONLINE_LINGER`, then pauses and
@@ -783,9 +1046,36 @@ impl Engine {
             if self.is_online_only(&handle) {
                 self.touch(info_hash);
                 self.released.lock().unwrap().insert(info_hash.to_owned(), Instant::now());
+                self.deselect(&handle).await;
             }
         }
         Ok(())
+    }
+
+    /// Called for every read of a file: an online viewing of `file` keeps its peers (see
+    /// `Watch`). Cheap when nothing changed.
+    pub async fn watch_file(&self, handle: &TorrentHandle, file: usize) {
+        use tokio::io::AsyncSeekExt;
+
+        let info_hash = handle.info_hash().as_string();
+        if !self.is_online_only(handle) || !self.played.lock().unwrap().contains(&info_hash) {
+            return;
+        }
+        if self.watching.lock().unwrap().get(&info_hash).is_some_and(|watch| watch.file == file) {
+            return;
+        }
+        // The first read of this viewing, or another episode of the same torrent.
+        let held = async {
+            let mut stream = handle.clone().stream(file).await?;
+            stream.seek(std::io::SeekFrom::End(0)).await?;
+            anyhow::Ok(stream)
+        };
+        match held.await {
+            Ok(stream) => {
+                self.watching.lock().unwrap().insert(info_hash, Watch { file, _keepalive: Box::new(stream) });
+            }
+            Err(error) => tracing::warn!("engine: could not hold file {file} of {info_hash} open: {error}"),
+        }
     }
 
     pub fn file_path(&self, info_hash: &str, file_index: usize) -> Result<PathBuf> {

@@ -83,10 +83,9 @@ export function parseSubtitles(content: string): Cue[] {
 
 /** Cues are few thousand at most and usually overlap rarely, so a linear scan is enough. */
 export function activeCueText(cues: Cue[], time: number): string {
-  return cues
-    .filter((cue) => time >= cue.start && time <= cue.end)
-    .map((cue) => cue.text)
-    .join("\n");
+  const lines = cues.filter((cue) => time >= cue.start && time <= cue.end).map((cue) => cue.text);
+  // Some files carry a line twice (two events with one text); it is said once.
+  return [...new Set(lines)].join("\n");
 }
 
 /** Language names in each interface language asked for so far. */

@@ -196,7 +196,7 @@ pub async fn ffmpeg_install(app: State<'_, AppState>, ffmpeg: State<'_, FfmpegSt
     let result = install(&app.data_dir.join(FOLDER_NAME), &ffmpeg).await;
     ffmpeg.installing.store(false, Ordering::Relaxed);
     result.map_err(|error| {
-        eprintln!("ffmpeg: install failed: {error:#}");
+        tracing::warn!("ffmpeg: install failed: {error:#}");
         "ffmpeg_install_failed".to_owned()
     })
 }

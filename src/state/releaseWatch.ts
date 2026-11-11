@@ -6,7 +6,7 @@ import { create } from "zustand";
 import { backend } from "../lib/backend";
 import { t, tn } from "../lib/i18n";
 import { report } from "../lib/journal";
-import { episodeFiles, magnetInfoHash, planReleaseUpdate, toSource } from "../lib/releaseUpdate";
+import { episodeFiles, planReleaseUpdate, toSource } from "../lib/releaseUpdate";
 import { rutracker, rutrackerErrors } from "../lib/rutracker";
 import { tmdb } from "../lib/tmdb";
 import { newEpisodes } from "./calendar";
@@ -72,9 +72,7 @@ function sourcesFrom(seriesId: number, infoHash: string): { unitKey: string; sou
 async function updateFromTopic(watch: ReleaseWatch): Promise<number> {
   const seriesId = watch.title.id;
   // Quietly: a check nobody asked for must not put a tracker window in front of the user.
-  const magnet = await rutracker.getMagnet(watch.topicId, true);
-  if (magnetInfoHash(magnet) === watch.infoHash) return 0;
-  const preview = await backend.inspectLink(magnet);
+  const preview = await rutracker.inspectRelease(watch.topicId, true);
   if (preview.infoHash === watch.infoHash) return 0;
   const remember = () => useReleaseWatch.getState().follow({ ...watch, infoHash: preview.infoHash });
   // Already there: the user took the new torrent by hand, and how it is set up is theirs to decide.

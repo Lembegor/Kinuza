@@ -5,6 +5,7 @@ mod external_player;
 mod ffmpeg;
 mod imdb;
 mod launch;
+mod logging;
 mod online_subtitles;
 mod rutracker; // Модуль RuTracker
 mod server;
@@ -75,6 +76,9 @@ pub fn run() {
             commands::torrent_set_policy,
             commands::storage_info,
             commands::stream_cache_clear,
+            rutracker::rutracker_torrent_inspect,
+            logging::log_write,
+            logging::logs_open,
             commands::write_text_file,
             commands::file_location,
             commands::open_external,
@@ -103,6 +107,7 @@ pub fn run() {
         .expect("error while running Kinuza");
 }
 
+
 async fn build_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
     let data_dir = app.path().app_data_dir()?;
     std::fs::create_dir_all(&data_dir)?;
@@ -113,6 +118,8 @@ async fn build_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
         .or_else(|_| app.path().download_dir())
         .unwrap_or_else(|_| data_dir.clone())
         .join(DOWNLOAD_FOLDER_NAME);
+
+    logging::start(&data_dir);
 
     let engine = Engine::start(
         default_download_dir.clone(),
