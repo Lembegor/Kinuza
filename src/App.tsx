@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from "react";
-import { HashRouter, Route, Routes, useLocation, useNavigationType } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { HashRouter, Route } from "react-router-dom";
 import { FileDown } from "lucide-react";
 import { AddSourceDialog } from "./components/AddSourceDialog";
 import { Onboarding } from "./components/Onboarding";
 import { ConfirmDialog, Toasts, UpdateNotice } from "./components/Overlays";
+import { PageStack } from "./components/PageStack";
 import { Player } from "./components/Player";
 import { Sidebar, Titlebar } from "./components/Shell";
 import { backend, describeError, getAppInfo, isDesktop, onLaunchRequest, type LaunchRequest } from "./lib/backend";
@@ -141,55 +142,25 @@ function useLinkHandling(ready: boolean): void {
   }, [ready]);
 }
 
-const scrollPositions = new Map<string, number>();
-const scrollRestoreLimitMs = 1500;
+const pageRoutes = (
+  <>
+    <Route path="/" element={<Home />} />
+    <Route path="/browse" element={<Browse />} />
+    <Route path="/search" element={<Search />} />
+    <Route path="/title/:type/:id" element={<TitlePage />} />
+    <Route path="/person/:id" element={<PersonPage />} />
+    <Route path="/library" element={<Library />} />
+    <Route path="/calendar" element={<CalendarPage />} />
+    <Route path="/downloads" element={<Downloads />} />
+    <Route path="/settings" element={<Settings />} />
+    <Route path="/diagnostics" element={<Diagnostics />} />
+  </>
+);
 
 function Content() {
-  const location = useLocation();
-  const navigationType = useNavigationType();
-  const scrollRef = useRef<HTMLElement>(null);
-
-  useEffect(() => {
-    const element = scrollRef.current;
-    if (!element) return;
-    const key = `${location.key}:${location.pathname}${location.search}`;
-    const remember = () => scrollPositions.set(key, element.scrollTop);
-    element.addEventListener("scroll", remember, { passive: true });
-    const saved = navigationType === "POP" ? scrollPositions.get(key) : undefined;
-    let frame = 0;
-    if (navigationType === "REPLACE") {
-      remember();
-    } else if (saved === undefined) {
-      element.scrollTo({ top: 0 });
-    } else {
-      const startedAt = performance.now();
-      const restore = () => {
-        element.scrollTo({ top: saved });
-        const reached = Math.abs(element.scrollTop - saved) < 2;
-        if (!reached && performance.now() - startedAt < scrollRestoreLimitMs) frame = requestAnimationFrame(restore);
-      };
-      restore();
-    }
-    return () => {
-      cancelAnimationFrame(frame);
-      element.removeEventListener("scroll", remember);
-    };
-  }, [location.key, location.pathname, location.search]); // eslint-disable-line react-hooks/exhaustive-deps
-
   return (
-    <main className="content" ref={scrollRef}>
-      <Routes>
-        <Route path="/" element={<Home />} />
-        <Route path="/browse" element={<Browse />} />
-        <Route path="/search" element={<Search />} />
-        <Route path="/title/:type/:id" element={<TitlePage />} />
-        <Route path="/person/:id" element={<PersonPage />} />
-        <Route path="/library" element={<Library />} />
-        <Route path="/calendar" element={<CalendarPage />} />
-        <Route path="/downloads" element={<Downloads />} />
-        <Route path="/settings" element={<Settings />} />
-        <Route path="/diagnostics" element={<Diagnostics />} />
-      </Routes>
+    <main className="content">
+      <PageStack routes={pageRoutes} />
     </main>
   );
 }

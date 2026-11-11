@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { create } from "zustand";
 import type { Dismissal } from "../lib/account";
 import { backend } from "../lib/backend";
@@ -403,7 +403,6 @@ export async function tuneWeights(): Promise<TuningResult | null> {
 
 interface FeedState {
   rows: FeedRow[] | null;
-  waiting: FeedRow[] | null;
   signature: string | null;
   builtAt: number;
   building: boolean;
@@ -411,18 +410,7 @@ interface FeedState {
   tuning: TuningResult | null;
 }
 
-export const useFeed = create<FeedState>(() => ({ rows: null, waiting: null, signature: null, builtAt: 0, building: false, restored: false, tuning: null }));
-
-let watchers = 0;
-
-function watchFeed(): () => void {
-  watchers += 1;
-  return () => {
-    watchers -= 1;
-    const { waiting } = useFeed.getState();
-    if (watchers === 0 && waiting) useFeed.setState({ rows: waiting, waiting: null });
-  };
-}
+export const useFeed = create<FeedState>(() => ({ rows: null, signature: null, builtAt: 0, building: false, restored: false, tuning: null }));
 
 let restoring: Promise<void> | null = null;
 
@@ -467,8 +455,7 @@ async function rebuild(signature: string): Promise<void> {
     const { tracked, progress, dismissed } = useLibrary.getState();
     const rows = await buildFeed(tracked, progress, dismissed);
     const builtAt = Date.now();
-    if (watchers > 0 && useFeed.getState().rows !== null) useFeed.setState({ waiting: rows, signature, builtAt });
-    else useFeed.setState({ rows, waiting: null, signature, builtAt });
+    useFeed.setState({ rows, signature, builtAt });
     void backend
       .storeSet(feedStore, JSON.stringify({ signature, language: catalogLanguage(), builtAt, rows }))
       .catch(() => undefined);
@@ -510,10 +497,17 @@ export function usePersonalFeed(): PersonalFeed {
     [signals, dismissed],
   );
 
+  // A Home instance keeps the rows it first showed: a rebuild never reshuffles the page under the user,
+  // including while that Home is kept alive in the page stack. A fresh visit to Home picks up new rows.
+  const [pinnedRows, setPinnedRows] = useState(storedRows);
+
   useEffect(() => {
     void restore();
-    return watchFeed();
   }, []);
+
+  useEffect(() => {
+    if (pinnedRows === null && storedRows !== null) setPinnedRows(storedRows);
+  }, [pinnedRows, storedRows]);
 
   useEffect(() => {
     if (!loaded || !restored) return;
@@ -525,10 +519,10 @@ export function usePersonalFeed(): PersonalFeed {
 
   const rows = useMemo(
     () =>
-      storedRows
+      pinnedRows
         ?.map((row) => ({ ...row, items: row.items.filter((item) => !(key(item) in dismissed) && !(key(item) in tracked)) }))
         .filter((row) => row.items.length > 0) ?? null,
-    [storedRows, dismissed, tracked],
+    [pinnedRows, dismissed, tracked],
   );
 
   const available = signals.some((signal) => signal.weight > 0);
