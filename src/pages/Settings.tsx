@@ -7,6 +7,7 @@ import { backend, describeError, getAppInfo, isDesktop } from "../lib/backend";
 import { accountDataVersion } from "../lib/account";
 import { formatBytes } from "../lib/format";
 import { useT, type MessageKey } from "../lib/i18n";
+import { report } from "../lib/journal";
 import { appLanguages, languageName } from "../lib/languages";
 import { useAsync } from "../lib/useAsync";
 import { useLibrary } from "../state/library";
@@ -71,6 +72,20 @@ export default function Settings() {
   const navigate = useNavigate();
   const toast = useUi((state) => state.toast);
   const storage = useAsync(() => backend.storageInfo(settings.downloadDir || null), [settings.downloadDir]);
+  const [clearingCache, setClearingCache] = useState(false);
+  const clearCache = async () => {
+    setClearingCache(true);
+    try {
+      const freed = await backend.clearStreamCache();
+      toast(t("settings.cache.cleared", { size: formatBytes(freed) }), "success");
+      storage.reload();
+    } catch (error) {
+      report("downloads", "journal.cache.clear", error);
+      toast(t("settings.cache.clearFailed"), "error");
+    } finally {
+      setClearingCache(false);
+    }
+  };
   const downloadedBytes = useTorrents((state) =>
     state.list.reduce((sum, torrent) => sum + torrent.files.reduce((files, file) => files + file.downloaded, 0), 0),
   );
@@ -197,6 +212,23 @@ export default function Settings() {
                   })
                 : "…"}
             </p>
+          </div>
+        </div>
+        <div className="setting">
+          <div>
+            <strong>{t("settings.cache")}</strong>
+            <p>
+              {t("settings.cache.note")}
+              {storage.data && storage.data.cacheBytes > 0 && <> {t("settings.cache.used", { size: formatBytes(storage.data.cacheBytes) })}</>}
+            </p>
+          </div>
+          <div className="setting__actions">
+            {storage.data && storage.data.cacheBytes > 0 && (
+              <button className="button" disabled={clearingCache} onClick={() => void clearCache()}>
+                {t("settings.cache.clear")}
+              </button>
+            )}
+            <NumberSetting value={settings.cacheLimitGb} step={5} unit={t("settings.cache.unit")} onChange={(value) => settings.patch({ cacheLimitGb: value })} />
           </div>
         </div>
         <div className="setting">

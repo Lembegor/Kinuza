@@ -35,36 +35,44 @@ if ([version]$Version -lt [version]$current) {
 # Released versions are final: installed apps already have them.
 $remoteTag = git ls-remote --tags origin "refs/tags/$tag"
 if ($LASTEXITCODE -ne 0) { throw "Cannot reach GitHub (git ls-remote failed)." }
-if ($remoteTag -or (git tag -l $tag)) {
-    throw "Version $Version is already released (tag $tag exists). Pick the next number."
+if ($remoteTag) {
+    throw "Version $Version is already released (tag $tag is on GitHub). Pick the next number."
 }
 
-Write-Host "== Checking that the app builds"
-Invoke-Checked "Type check (npm run typecheck)" { npm run typecheck }
+if (git tag -l $tag) {
+    # An earlier run got as far as the tag and then could not push (no access, no network).
+    Write-Host "== Tag $tag exists here but not on GitHub: finishing the interrupted release"
+} else {
+    Write-Host "== Checking that the app builds"
+    Invoke-Checked "Type check (npm run typecheck)" { npm run typecheck }
 
-Write-Host "== Setting version $Version"
-Invoke-Checked "npm version" { npm version $Version --no-git-tag-version --allow-same-version | Out-Null }
+    Write-Host "== Setting version $Version"
+    Invoke-Checked "npm version" { npm version $Version --no-git-tag-version --allow-same-version | Out-Null }
 
-Write-Host "== Committing"
-Invoke-Checked "git add" { git add -A }
-git diff --cached --quiet
-if ($LASTEXITCODE -ne 0) {
-    Invoke-Checked "git commit" { git commit -m "Kinuza $Version" }
-}
+    Write-Host "== Committing"
+    Invoke-Checked "git add" { git add -A }
+    git diff --cached --quiet
+    if ($LASTEXITCODE -ne 0) {
+        Invoke-Checked "git commit" { git commit -m "Kinuza $Version" }
+    }
 
-# The notes travel as the tag's message; a file keeps Cyrillic text intact on any console.
-if (-not $Notes.Trim()) { $Notes = "Kinuza $Version" }
-$notesFile = [System.IO.Path]::GetTempFileName()
-try {
-    [System.IO.File]::WriteAllText($notesFile, $Notes, (New-Object System.Text.UTF8Encoding($false)))
-    Invoke-Checked "git tag" { git tag -a $tag --cleanup=whitespace -F $notesFile }
-} finally {
-    Remove-Item $notesFile -ErrorAction SilentlyContinue
+    # The notes travel as the tag's message; a file keeps Cyrillic text intact on any console.
+    if (-not $Notes.Trim()) { $Notes = "Kinuza $Version" }
+    $notesFile = [System.IO.Path]::GetTempFileName()
+    try {
+        [System.IO.File]::WriteAllText($notesFile, $Notes, (New-Object System.Text.UTF8Encoding($false)))
+        Invoke-Checked "git tag" { git tag -a $tag --cleanup=whitespace -F $notesFile }
+    } finally {
+        Remove-Item $notesFile -ErrorAction SilentlyContinue
+    }
 }
 
 Write-Host "== Pushing"
 $branch = (git rev-parse --abbrev-ref HEAD).Trim()
-Invoke-Checked "git push" { git push origin $branch $tag }
+git push origin $branch $tag
+if ($LASTEXITCODE -ne 0) {
+    throw "git push failed. Nothing is lost: the commit and the tag $tag are saved here. Fix the access (see the message above) and run the same command again."
+}
 
 Write-Host ""
 Write-Host "Version $Version is on its way. GitHub is building it now (about 15-25 minutes):"

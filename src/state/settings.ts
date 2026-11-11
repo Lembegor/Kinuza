@@ -53,6 +53,8 @@ export interface Settings {
   maxActiveDownloads: number;
   /** Seeding stops once a torrent has given back this share of its size; 0 means never. */
   seedRatio: number;
+  /** Disk space, in GB, what was watched online keeps for the next viewing; 0 keeps nothing. */
+  cacheLimitGb: number;
   /** Delete a download from disk once everything attached to it has been watched. */
   autoDeleteWatched: boolean;
   /** Closing the window hides it to the notification area; downloads go on. */
@@ -86,6 +88,7 @@ const defaults: Settings = {
   uploadLimit: 0,
   maxActiveDownloads: 0,
   seedRatio: 0,
+  cacheLimitGb: 20,
   autoDeleteWatched: false,
   closeToTray: true,
   notifyDownloads: true,
@@ -108,7 +111,7 @@ function upgrade(stored: Partial<Settings>): Partial<Settings> {
 }
 
 const bytesPerKilobyte = 1024;
-const policyKeys = ["downloadLimit", "uploadLimit", "maxActiveDownloads", "seedRatio"] as const;
+const policyKeys = ["downloadLimit", "uploadLimit", "maxActiveDownloads", "seedRatio", "cacheLimitGb"] as const;
 
 function applyDownloadPolicy(settings: Settings): void {
   backend
@@ -117,6 +120,7 @@ function applyDownloadPolicy(settings: Settings): void {
       uploadLimit: settings.uploadLimit * bytesPerKilobyte,
       maxActiveDownloads: settings.maxActiveDownloads,
       seedRatio: settings.seedRatio,
+      cacheLimitGb: settings.cacheLimitGb,
     })
     .catch((error) => report("downloads", "journal.settings.policy", error));
 }

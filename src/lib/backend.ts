@@ -19,7 +19,7 @@ export interface TorrentPreview {
   alreadyAdded: boolean;
 }
 
-/** "parked": watched online earlier; nothing of it is on disk until it is played again. */
+/** "parked": watched online earlier and resting in the cache until it is played again. */
 export type TorrentState = "initializing" | "live" | "paused" | "error" | "parked" | "queued";
 
 export interface TorrentView {
@@ -186,12 +186,16 @@ export interface DownloadPolicy {
   uploadLimit: number;
   maxActiveDownloads: number;
   seedRatio: number;
+  /** Disk space what was watched online may keep, in GiB; 0 keeps nothing once a viewing ends. */
+  cacheLimitGb: number;
 }
 
 export interface StorageInfo {
   /** Free space on the disk that holds the download folder. */
   freeBytes: number;
   totalBytes: number;
+  /** Space taken by what was watched online and is kept for the next viewing. */
+  cacheBytes: number;
 }
 
 export interface AudioTrackInfo {
@@ -247,6 +251,8 @@ export const backend = {
   writeTextFile: (path: string, contents: string) => call<void>("write_text_file", { path, contents }),
   setDownloadPolicy: (policy: DownloadPolicy) => call<void>("torrent_set_policy", { policy }),
   storageInfo: (downloadDir: string | null) => call<StorageInfo>("storage_info", { downloadDir }),
+  /** Deletes what was kept from online viewings, except the film playing now; resolves to the bytes freed. */
+  clearStreamCache: () => call<number>("stream_cache_clear"),
   takeLaunchRequest: () => call<LaunchRequest | null>("take_launch_request"),
   associationStatus: () => call<AssociationStatus>("associations_status"),
   setAssociations: (enabled: boolean) => call<AssociationStatus>("associations_set", { enabled }),

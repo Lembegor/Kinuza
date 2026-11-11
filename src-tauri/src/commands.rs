@@ -154,6 +154,8 @@ pub struct StorageInfo {
     /// Free space on the disk that holds the download folder.
     free_bytes: u64,
     total_bytes: u64,
+    /// Space taken by what was watched online and is kept for the next viewing.
+    cache_bytes: u64,
 }
 
 /// Free and total space of the disk downloads go to.
@@ -163,7 +165,15 @@ pub fn storage_info(state: State<'_, AppState>, download_dir: Option<String>) ->
         .filter(|dir| !dir.trim().is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| state.default_download_dir.clone());
-    disk_space(&folder).ok_or_else(|| "storage_unknown".to_owned())
+    let mut info = disk_space(&folder).ok_or_else(|| "storage_unknown".to_owned())?;
+    info.cache_bytes = state.engine.cache_bytes();
+    Ok(info)
+}
+
+/// Deletes what was kept from online viewings, except the film playing now. Returns the bytes freed.
+#[tauri::command]
+pub async fn stream_cache_clear(state: State<'_, AppState>) -> CommandResult<u64> {
+    Ok(state.engine.clear_cache().await)
 }
 
 #[cfg(windows)]
@@ -177,7 +187,7 @@ fn disk_space(folder: &std::path::Path) -> Option<StorageInfo> {
     let (mut free, mut total) = (0u64, 0u64);
     // SAFETY: `wide` is a NUL-terminated path that outlives the call; the out pointers are valid u64s.
     let ok = unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut free, &mut total, std::ptr::null_mut()) };
-    (ok != 0).then_some(StorageInfo { free_bytes: free, total_bytes: total })
+    (ok != 0).then_some(StorageInfo { free_bytes: free, total_bytes: total, cache_bytes: 0 })
 }
 
 #[cfg(not(windows))]

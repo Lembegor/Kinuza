@@ -74,6 +74,7 @@ pub fn run() {
             commands::torrent_release,
             commands::torrent_set_policy,
             commands::storage_info,
+            commands::stream_cache_clear,
             commands::write_text_file,
             commands::file_location,
             commands::open_external,

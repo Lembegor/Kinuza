@@ -85,7 +85,9 @@ export async function mockInvoke(command: string, args: Record<string, unknown> 
     case "write_text_file":
       return null;
     case "storage_info":
-      return { freeBytes: 180 * GiB, totalBytes: 930 * GiB };
+      return { freeBytes: 180 * GiB, totalBytes: 930 * GiB, cacheBytes: 3.4 * GiB };
+    case "stream_cache_clear":
+      return 3.4 * GiB;
     case "ffmpeg_status":
       return { installed: false, installing: false, downloadedBytes: 0, totalBytes: 82 * 1024 * 1024 };
     case "imdb_rating":

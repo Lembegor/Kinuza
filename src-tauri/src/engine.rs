@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
     str::FromStr,
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{anyhow, Context, Result};
@@ -85,6 +85,16 @@ struct ParkedFile {
 }
 
 const PARKED_INDEX_NAME: &str = "parked.json";
+/// When each torrent watched online was last played, by info hash; the oldest leave the cache first.
+const CACHE_INDEX_NAME: &str = "cache.json";
+/// After the player lets go of a torrent it stays connected to its peers this long: coming back
+/// to the film (another episode, a wrong click) then continues at full speed at once.
+const ONLINE_LINGER: Duration = Duration::from_secs(5 * 60);
+/// What was fetched for an online viewing is kept at most this long since it was last played.
+const CACHE_MAX_AGE: Duration = Duration::from_secs(14 * 24 * 60 * 60);
+/// The cache is measured and trimmed every this many policy checks.
+const CACHE_CHECK_EVERY: u32 = 6;
+const BYTES_PER_GIBIBYTE: f64 = 1024.0 * 1024.0 * 1024.0;
 const CACHE_DATA_FOLDER_NAME: &str = "data";
 /// State reported for a parked torrent.
 const STATE_PARKED: &str = "parked";
@@ -104,6 +114,9 @@ pub struct DownloadPolicy {
     pub max_active_downloads: usize,
     /// Seeding stops once a torrent has given back this share of its size (1.0 is "as much as it took"); 0 means never.
     pub seed_ratio: f32,
+    /// Disk space what was watched online may keep, in GiB; 0 keeps nothing once a viewing ends.
+    #[serde(default)]
+    pub cache_limit_gb: f32,
 }
 
 const POLICY_CHECK_INTERVAL: Duration = Duration::from_secs(5);
@@ -133,6 +146,12 @@ pub struct Engine {
     queued: Mutex<HashSet<String>>,
     /// Torrents whose seeding the ratio limit has already stopped once; resumed by hand, they stay on.
     seeding_stopped: Mutex<HashSet<String>>,
+    /// Online torrents the player let go of, and when; they stay connected for `ONLINE_LINGER`.
+    released: Mutex<HashMap<String, Instant>>,
+    /// When each online torrent was last played, in Unix milliseconds; kept in `CACHE_INDEX_NAME`.
+    last_played: Mutex<HashMap<String, u64>>,
+    /// Whether the settings have said how large the cache may be. Until then nothing is trimmed.
+    policy_known: std::sync::atomic::AtomicBool,
 }
 
 impl Engine {
@@ -160,6 +179,10 @@ impl Engine {
             .ok()
             .and_then(|text| serde_json::from_str(&text).ok())
             .unwrap_or_default();
+        let last_played = std::fs::read_to_string(cache_dir.join(CACHE_INDEX_NAME))
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default();
         let engine = Arc::new(Self {
             session,
             pending: Mutex::new(HashMap::new()),
@@ -170,21 +193,30 @@ impl Engine {
             policy: Mutex::new(DownloadPolicy::default()),
             queued: Mutex::new(HashSet::new()),
             seeding_stopped: Mutex::new(HashSet::new()),
+            released: Mutex::new(HashMap::new()),
+            last_played: Mutex::new(last_played),
+            policy_known: std::sync::atomic::AtomicBool::new(false),
         });
 
         let keeper = engine.clone();
         tokio::spawn(async move {
+            let mut tick: u32 = 0;
             loop {
                 tokio::time::sleep(POLICY_CHECK_INTERVAL).await;
                 keeper.enforce_policy().await;
+                keeper.rest_released().await;
+                tick = tick.wrapping_add(1);
+                if tick % CACHE_CHECK_EVERY == 0 {
+                    keeper.trim_cache().await;
+                }
             }
         });
 
-        // A viewing cut short (the app closed or crashed mid-film) leaves fetched data behind.
+        // A viewing cut short (the app closed or crashed mid-film) leaves its torrent running.
         let cleaner = engine.clone();
         tokio::spawn(async move {
             tokio::time::sleep(STARTUP_CLEANUP_DELAY).await;
-            cleaner.park_leftovers().await;
+            cleaner.rest_leftovers().await;
         });
         Ok(engine)
     }
@@ -194,6 +226,7 @@ impl Engine {
         self.session.ratelimits.set_download_bps(limit(policy.download_limit));
         self.session.ratelimits.set_upload_bps(limit(policy.upload_limit));
         *self.policy.lock().unwrap() = policy;
+        self.policy_known.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Keeps the number of simultaneous downloads within the limit and stops seeding at the ratio limit.
@@ -277,7 +310,7 @@ impl Engine {
     }
 
     /// Takes an online-only torrent out of the session and deletes what it fetched, keeping its
-    /// .torrent so that it can be played again.
+    /// .torrent so that it can be added again elsewhere (as a download).
     async fn park(&self, handle: &TorrentHandle) -> Result<()> {
         let info_hash = handle.info_hash().as_string();
         let torrent_bytes = handle.with_metadata(|metadata| metadata.torrent_bytes.clone())?;
@@ -305,25 +338,161 @@ impl Engine {
             .insert(info_hash.clone(), ParkedTorrent { name: display_name(handle), files, peers, trackers });
         self.save_parked();
 
+        self.forget_cached(&info_hash);
         self.session.delete(TorrentIdOrHash::Hash(handle.info_hash()), true).await?;
         let _ = std::fs::remove_dir_all(self.cache_data_folder(&info_hash));
         Ok(())
     }
 
-    async fn park_leftovers(&self) {
-        let _parking = self.parking.lock().await;
-        let leftovers: Vec<TorrentHandle> = self.session.with_torrents(|torrents| {
-            torrents.map(|(_, handle)| handle.clone()).filter(|handle| self.is_online_only(handle)).collect()
-        });
-        for handle in leftovers {
-            let info_hash = handle.info_hash().as_string();
-            if self.played.lock().unwrap().contains(&info_hash) {
-                continue;
-            }
-            if let Err(error) = self.park(&handle).await {
-                eprintln!("engine: could not clean up {info_hash}: {error}");
+    fn save_last_played(&self) {
+        let last_played = self.last_played.lock().unwrap();
+        if let Ok(text) = serde_json::to_string(&*last_played) {
+            let _ = std::fs::write(self.cache_dir.join(CACHE_INDEX_NAME), text);
+        }
+    }
+
+    fn touch(&self, info_hash: &str) {
+        self.last_played.lock().unwrap().insert(info_hash.to_owned(), unix_millis(SystemTime::now()));
+        self.save_last_played();
+    }
+
+    fn forget_cached(&self, info_hash: &str) {
+        self.released.lock().unwrap().remove(info_hash);
+        if self.last_played.lock().unwrap().remove(info_hash).is_some() {
+            self.save_last_played();
+        }
+    }
+
+    /// Being played now, or let go of a moment ago and still connected.
+    fn is_in_use(&self, info_hash: &str) -> bool {
+        self.played.lock().unwrap().contains(info_hash) || self.released.lock().unwrap().contains_key(info_hash)
+    }
+
+    /// Online torrents of the session that nothing is playing: these are the cache. With
+    /// `with_lingering`, also the ones let go of a moment ago and still connected.
+    fn resting_online(&self, with_lingering: bool) -> Vec<TorrentHandle> {
+        self.session.with_torrents(|torrents| {
+            torrents
+                .map(|(_, handle)| handle.clone())
+                .filter(|handle| {
+                    let info_hash = handle.info_hash().as_string();
+                    let busy = if with_lingering { self.played.lock().unwrap().contains(&info_hash) } else { self.is_in_use(&info_hash) };
+                    self.is_online_only(handle) && !busy
+                })
+                .collect()
+        })
+    }
+
+    /// Pauses a resting online torrent: it stops talking to the swarm and keeps what it fetched.
+    async fn rest(&self, handle: &TorrentHandle) {
+        if !handle.is_paused() {
+            if let Err(error) = self.session.pause(handle).await {
+                eprintln!("engine: could not pause {}: {error}", handle.info_hash().as_string());
             }
         }
+    }
+
+    /// Online torrents left running by a viewing the app did not see end.
+    async fn rest_leftovers(&self) {
+        let _parking = self.parking.lock().await;
+        for handle in self.resting_online(false) {
+            self.rest(&handle).await;
+        }
+    }
+
+    /// Pauses the online torrents whose time to stay connected after a viewing has run out.
+    async fn rest_released(&self) {
+        let _parking = self.parking.lock().await;
+        let due: Vec<String> = {
+            let mut released = self.released.lock().unwrap();
+            let due: Vec<String> =
+                released.iter().filter(|(_, since)| since.elapsed() >= ONLINE_LINGER).map(|(hash, _)| hash.clone()).collect();
+            for hash in &due {
+                released.remove(hash);
+            }
+            due
+        };
+        for info_hash in due {
+            if let Ok(handle) = self.find(&info_hash) {
+                if self.is_online_only(&handle) && !self.played.lock().unwrap().contains(&info_hash) {
+                    self.rest(&handle).await;
+                }
+            }
+        }
+    }
+
+    /// Removes the cached torrents unplayed for too long, then the least recently played ones
+    /// until the cache fits its limit. Returns the bytes freed.
+    async fn trim_cache(&self) -> u64 {
+        if !self.policy_known.load(std::sync::atomic::Ordering::Relaxed) {
+            return 0;
+        }
+        let limit = (f64::from(self.policy.lock().unwrap().cache_limit_gb.max(0.0)) * BYTES_PER_GIBIBYTE) as u64;
+        self.evict_cache(limit, false).await
+    }
+
+    /// Everything watched online that nothing is playing, dropped from the disk. Returns the bytes freed.
+    pub async fn clear_cache(&self) -> u64 {
+        self.evict_cache(0, true).await
+    }
+
+    /// `with_lingering`: the torrents still connected after a viewing may go too (the user asked
+    /// for the cache to be emptied); otherwise they are left for the viewer to come back to.
+    async fn evict_cache(&self, limit: u64, with_lingering: bool) -> u64 {
+        let _parking = self.parking.lock().await;
+        let now = unix_millis(SystemTime::now());
+        let max_age = CACHE_MAX_AGE.as_millis() as u64;
+        let mut resting: Vec<(TorrentHandle, u64, u64)> = self
+            .resting_online(with_lingering)
+            .into_iter()
+            .map(|handle| {
+                let info_hash = handle.info_hash().as_string();
+                let played = self.last_played.lock().unwrap().get(&info_hash).copied().unwrap_or(0);
+                let size = allocated_bytes(&self.cache_data_folder(&info_hash));
+                (handle, played, size)
+            })
+            .collect();
+        // What is being watched counts towards the limit too, but is never the one to go.
+        let in_use: u64 = self
+            .session
+            .with_torrents(|torrents| {
+                torrents
+                    .map(|(_, handle)| handle.clone())
+                    .filter(|handle| {
+                        let info_hash = handle.info_hash().as_string();
+                        let busy = if with_lingering { self.played.lock().unwrap().contains(&info_hash) } else { self.is_in_use(&info_hash) };
+                        self.is_online_only(handle) && busy
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .iter()
+            .map(|handle| allocated_bytes(&self.cache_data_folder(&handle.info_hash().as_string())))
+            .sum();
+        resting.sort_by_key(|(_, played, _)| *played);
+        let mut total = in_use + resting.iter().map(|(_, _, size)| size).sum::<u64>();
+        let mut freed = 0;
+        for (handle, played, size) in resting {
+            let too_old = now.saturating_sub(played) > max_age;
+            if !too_old && total <= limit {
+                continue;
+            }
+            let info_hash = handle.info_hash().as_string();
+            match self.session.delete(TorrentIdOrHash::Hash(handle.info_hash()), true).await {
+                Ok(()) => {
+                    let _ = std::fs::remove_dir_all(self.cache_data_folder(&info_hash));
+                    self.forget_cached(&info_hash);
+                    total = total.saturating_sub(size);
+                    freed += size;
+                }
+                Err(error) => eprintln!("engine: could not drop {info_hash} from the cache: {error}"),
+            }
+        }
+        freed
+    }
+
+    /// Disk space taken by what was watched online.
+    pub fn cache_bytes(&self) -> u64 {
+        allocated_bytes(&self.cache_dir.join(CACHE_DATA_FOLDER_NAME))
     }
 
     /// Adds a torrent from its .torrent contents. With no files it goes to the online cache.
@@ -460,8 +629,19 @@ impl Engine {
 
     /// Torrents in the session, then the ones parked between online viewings.
     pub fn list(&self) -> Vec<TorrentView> {
-        let mut list: Vec<TorrentView> =
-            self.session.with_torrents(|torrents| torrents.map(|(_, handle)| torrent_view(handle)).collect());
+        let mut list: Vec<TorrentView> = self.session.with_torrents(|torrents| {
+            torrents
+                .map(|(_, handle)| {
+                    let mut view = torrent_view(handle);
+                    // Between viewings an online torrent is part of the cache, not a download.
+                    let played = self.played.lock().unwrap().contains(&view.info_hash);
+                    if self.is_online_only(handle) && !played {
+                        view.state = STATE_PARKED;
+                    }
+                    view
+                })
+                .collect()
+        });
         {
             let queued = self.queued.lock().unwrap();
             for torrent in &mut list {
@@ -520,6 +700,7 @@ impl Engine {
     pub async fn delete(&self, info_hash: &str, delete_files: bool) -> Result<()> {
         let _parking = self.parking.lock().await;
         self.forget_parked(info_hash);
+        self.forget_cached(info_hash);
         let Ok(handle) = self.find(info_hash) else {
             return Ok(());
         };
@@ -581,6 +762,8 @@ impl Engine {
         let handle = self.find(info_hash)?;
         if self.is_online_only(&handle) {
             self.played.lock().unwrap().insert(info_hash.to_owned());
+            self.released.lock().unwrap().remove(info_hash);
+            self.touch(info_hash);
         }
         self.resume_handle(&handle).await?;
         // A torrent added a moment ago is still checking its files and cannot be read yet.
@@ -590,15 +773,19 @@ impl Engine {
         Ok(handle)
     }
 
-    /// Ends an online viewing: what was fetched for it is deleted. Does nothing for a torrent
-    /// that is being downloaded.
+    /// Ends an online viewing. The torrent stays connected for `ONLINE_LINGER`, then pauses and
+    /// keeps what it fetched, so that the film opens at once where it was left. The cache limit
+    /// decides how long that data stays. Does nothing for a torrent that is being downloaded.
     pub async fn release_online(&self, info_hash: &str) -> Result<()> {
         let _parking = self.parking.lock().await;
         self.played.lock().unwrap().remove(info_hash);
-        match self.find(info_hash) {
-            Ok(handle) if self.is_online_only(&handle) => self.park(&handle).await,
-            _ => Ok(()),
+        if let Ok(handle) = self.find(info_hash) {
+            if self.is_online_only(&handle) {
+                self.touch(info_hash);
+                self.released.lock().unwrap().insert(info_hash.to_owned(), Instant::now());
+            }
         }
+        Ok(())
     }
 
     pub fn file_path(&self, info_hash: &str, file_index: usize) -> Result<PathBuf> {
@@ -664,6 +851,45 @@ impl Engine {
         }
         self.session.unpause(handle).await
     }
+}
+
+fn unix_millis(time: SystemTime) -> u64 {
+    time.duration_since(UNIX_EPOCH).map(|elapsed| elapsed.as_millis() as u64).unwrap_or(0)
+}
+
+/// Disk space files under `path` really take. Torrent files are sparse: a film watched for ten
+/// minutes is as long as the whole film but holds only those ten minutes.
+fn allocated_bytes(path: &Path) -> u64 {
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return 0;
+    };
+    if metadata.is_dir() {
+        return std::fs::read_dir(path)
+            .map(|entries| entries.flatten().map(|entry| allocated_bytes(&entry.path())).sum())
+            .unwrap_or(0);
+    }
+    file_allocated_bytes(path).unwrap_or(metadata.len())
+}
+
+#[cfg(windows)]
+fn file_allocated_bytes(path: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{GetCompressedFileSizeW, INVALID_FILE_SIZE};
+
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let mut high = 0u32;
+    // SAFETY: `wide` is a NUL-terminated path and `high` outlives the call.
+    let low = unsafe { GetCompressedFileSizeW(wide.as_ptr(), &mut high) };
+    // A size whose low half is all ones is ambiguous with the error value; the plain length will do.
+    if low == INVALID_FILE_SIZE {
+        return None;
+    }
+    Some((u64::from(high) << 32) | u64::from(low))
+}
+
+#[cfg(not(windows))]
+fn file_allocated_bytes(_path: &Path) -> Option<u64> {
+    None
 }
 
 fn parse_hash(info_hash: &str) -> Result<Id20> {
