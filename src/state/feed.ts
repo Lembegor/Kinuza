@@ -403,6 +403,7 @@ export async function tuneWeights(): Promise<TuningResult | null> {
 
 interface FeedState {
   rows: FeedRow[] | null;
+  waiting: FeedRow[] | null;
   signature: string | null;
   builtAt: number;
   building: boolean;
@@ -410,7 +411,18 @@ interface FeedState {
   tuning: TuningResult | null;
 }
 
-export const useFeed = create<FeedState>(() => ({ rows: null, signature: null, builtAt: 0, building: false, restored: false, tuning: null }));
+export const useFeed = create<FeedState>(() => ({ rows: null, waiting: null, signature: null, builtAt: 0, building: false, restored: false, tuning: null }));
+
+let watchers = 0;
+
+function watchFeed(): () => void {
+  watchers += 1;
+  return () => {
+    watchers -= 1;
+    const { waiting } = useFeed.getState();
+    if (watchers === 0 && waiting) useFeed.setState({ rows: waiting, waiting: null });
+  };
+}
 
 let restoring: Promise<void> | null = null;
 
@@ -455,7 +467,8 @@ async function rebuild(signature: string): Promise<void> {
     const { tracked, progress, dismissed } = useLibrary.getState();
     const rows = await buildFeed(tracked, progress, dismissed);
     const builtAt = Date.now();
-    useFeed.setState({ rows, signature, builtAt });
+    if (watchers > 0 && useFeed.getState().rows !== null) useFeed.setState({ waiting: rows, signature, builtAt });
+    else useFeed.setState({ rows, waiting: null, signature, builtAt });
     void backend
       .storeSet(feedStore, JSON.stringify({ signature, language: catalogLanguage(), builtAt, rows }))
       .catch(() => undefined);
@@ -499,6 +512,7 @@ export function usePersonalFeed(): PersonalFeed {
 
   useEffect(() => {
     void restore();
+    return watchFeed();
   }, []);
 
   useEffect(() => {

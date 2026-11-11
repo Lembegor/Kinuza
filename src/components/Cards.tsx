@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { Check, ChevronLeft, ChevronRight, Clock, CloudOff, LoaderCircle, Play, Star, ThumbsDown } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, Clock, CloudOff, LoaderCircle, Star, ThumbsDown } from "lucide-react";
 import type { Dismissal } from "../lib/account";
 import { t, useT } from "../lib/i18n";
 import { cachedCatalog } from "../lib/persistentCache";
 import { hasApiKey, imageUrl, tmdb, type MediaItem } from "../lib/tmdb";
-import { availabilityOf, useAvailability } from "../state/availability";
 import { maxRating, titleKey, unitKey, useLibrary, type TitleRef, type WatchStatus } from "../state/library";
 import { TrackBadge } from "./TrackControls";
 
@@ -116,18 +115,6 @@ function QuickActions({ item }: { item: CardItem }) {
 
 export type DismissDetail = Pick<Dismissal, "reason" | "personId" | "personName">;
 
-function AvailableBadge({ item }: { item: CardItem }) {
-  const { t, tn } = useT();
-  const available = useAvailability((state) => availabilityOf(state.known, item));
-  if (!available) return null;
-  return (
-    <span className="poster-card__available" title={tn("cards.available.seeds", available.seeds)}>
-      <Play size={9} fill="currentColor" />
-      {available.quality || t("cards.available")}
-    </span>
-  );
-}
-
 export function PosterCard({ item }: { item: CardItem }) {
   const navigate = useNavigate();
   const poster = imageUrl(item.poster, "w342");
@@ -143,7 +130,6 @@ export function PosterCard({ item }: { item: CardItem }) {
           </span>
         ) : null}
         <TrackBadge type={item.type} id={item.id} />
-        <AvailableBadge item={item} />
       </div>
       <div className="poster-card__title">{item.title}</div>
       <div className="poster-card__meta">

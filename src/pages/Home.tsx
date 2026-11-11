@@ -6,8 +6,7 @@ import { t, useT } from "../lib/i18n";
 import { imageUrl, tmdb, type MediaItem } from "../lib/tmdb";
 import { useAsync } from "../lib/useAsync";
 import { isNewEpisode, useEpisodeCalendar, type CalendarEpisode } from "../state/calendar";
-import { usePersonalFeed, type FeedItem, type FeedRow } from "../state/feed";
-import { availabilityOf, checkAvailability, useAvailability } from "../state/availability";
+import { usePersonalFeed } from "../state/feed";
 import { entryToRef, isWatched, titleKey, useLibrary, type Progress, type TitleRef } from "../state/library";
 import { useUi } from "../state/ui";
 import { useUpNext, type UpNextEpisode } from "../state/upNext";
@@ -311,36 +310,6 @@ function dismissRecommendation(title: TitleRef, detail: DismissDetail): void {
   });
 }
 
-const availabilityChecks = 16;
-const availableRowLimit = 18;
-const shortestAvailableRow = 4;
-
-function AvailableNowRow({ rows }: { rows: FeedRow[] }) {
-  const { t } = useT();
-  const known = useAvailability((state) => state.known);
-  const candidates = useMemo(() => {
-    const seen = new Set<string>();
-    const ordered: FeedItem[] = [];
-    const forYou = rows.find((row) => row.id === "for-you")?.items ?? [];
-    const others = rows.filter((row) => row.id !== "for-you").flatMap((row) => row.items.slice(0, 3));
-    for (const item of [...forYou, ...others]) {
-      const itemKey = titleKey(item.type, item.id);
-      if (seen.has(itemKey)) continue;
-      seen.add(itemKey);
-      ordered.push(item);
-    }
-    return ordered;
-  }, [rows]);
-
-  useEffect(() => {
-    if (candidates.length > 0) checkAvailability(candidates.slice(0, availabilityChecks));
-  }, [candidates]);
-
-  const items = candidates.filter((item) => availabilityOf(known, item) !== null).slice(0, availableRowLimit);
-  if (items.length < shortestAvailableRow) return null;
-  return <PosterRow title={t("feed.availableNow")} items={items} onDismiss={dismissRecommendation} />;
-}
-
 export default function Home() {
   const { t } = useT();
   const trending = useAsync(tmdb.trending, []);
@@ -379,7 +348,6 @@ export default function Home() {
         <UpNextRow />
         <NewEpisodesRow />
         {feed.available && feed.rows === null && <PosterRow title={t("feed.forYou")} items={null} />}
-        {feed.rows && <AvailableNowRow rows={feed.rows} />}
         {feed.rows?.map((row) => <PosterRow key={row.id} title={row.title} items={row.items} onDismiss={dismissRecommendation} />)}
         {planned.length > 0 && <PosterRow title={t("home.row.planned")} items={planned} />}
         <PosterRow title={t("home.row.trending")} items={trending.data} />

@@ -28,6 +28,7 @@ import { t, useT } from "../lib/i18n";
 import { qualityRank } from "../lib/parse";
 import { imageUrl, tmdb, type Details, type Episode, type MediaType } from "../lib/tmdb";
 import { useAsync } from "../lib/useAsync";
+import { checkAvailability, checkedOf, useAvailability } from "../state/availability";
 import { localDay } from "../state/calendar";
 import { isWatched, toTitleRef, unitKey, useLibrary, type Source, type TitleRef } from "../state/library";
 import { useSettings } from "../state/settings";
@@ -434,6 +435,26 @@ function useResumeEpisode(details: Details | null): { season: number; episode: n
   }, [details, progress, sources]);
 }
 
+function TrackerHint({ details, onFind }: { details: Details; onFind: () => void }) {
+  const { t, tn } = useT();
+  const checked = useAvailability((state) => checkedOf(state.known, details));
+
+  useEffect(() => {
+    checkAvailability([details], true);
+  }, [details]);
+
+  if (!checked) return null;
+  if (!checked.found) return <div className="title-hero__tracker is-missing">{t("title.tracker.none")}</div>;
+  return (
+    <div className="title-hero__tracker">
+      <CircleCheck size={15} />
+      {checked.quality ? t("title.tracker.found", { quality: checked.quality }) : t("title.tracker.foundPlain")}
+      <span>· {tn("cards.available.seeds", checked.seeds)}</span>
+      <button onClick={onFind}>{t("title.episode.find")}</button>
+    </div>
+  );
+}
+
 function TitleRating({ imdbId, catalogRating }: { imdbId: string | null; catalogRating: number }) {
   const imdb = useAsync(() => (imdbId ? backend.imdbRating(imdbId) : Promise.resolve(null)), [imdbId]);
   const { t, tn, locale } = useT();
@@ -590,6 +611,7 @@ export default function TitlePage() {
                 </button>
               )}
             </div>
+            {(type === "tv" || !bestMovieSource) && <TrackerHint details={data} onFind={() => openAddSource({ target })} />}
             <RatingStars title={title} />
           </div>
         </div>

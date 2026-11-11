@@ -344,26 +344,30 @@
   background: rgba(255, 255, 255, 0.1);
 }
 
-.poster-card__available {
-  position: absolute;
-  left: 8px;
-  bottom: 8px;
+.title-hero__tracker {
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 4px;
-  height: 20px;
-  padding: 0 7px;
-  border-radius: 6px;
-  background: rgba(79, 200, 144, 0.9);
-  color: #06140d;
-  font-size: 11px;
-  font-weight: 800;
-  transition: opacity 0.2s;
+  gap: 4px 8px;
+  margin-top: 14px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(79, 200, 144, 0.14);
+  color: var(--ok);
+  font-size: 13px;
+  font-weight: 700;
 }
 
-.poster-card:hover .poster-card__available,
-.poster-card:focus-within .poster-card__available {
-  opacity: 0;
+.title-hero__tracker.is-missing {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted);
+}
+
+.title-hero__tracker button {
+  color: inherit;
+  font-weight: 800;
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .continue-card {

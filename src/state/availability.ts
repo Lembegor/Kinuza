@@ -114,17 +114,14 @@ async function run(): Promise<void> {
   }
 }
 
-export function checkAvailability(items: MediaItem[]): void {
+export function checkAvailability(items: MediaItem[], first = false): void {
   if (!isDesktop && import.meta.env.PROD) return;
   void restore().then(() => {
     const known = useAvailability.getState().known;
-    const queued = new Set(queue.map(itemKey));
-    for (const item of items) {
-      const itemId = itemKey(item);
-      if (queued.has(itemId) || isFresh(known[itemId])) continue;
-      queue.push(item);
-      queued.add(itemId);
-    }
+    const wanted = items.filter((item) => !isFresh(known[itemKey(item)]));
+    const wantedKeys = new Set(wanted.map(itemKey));
+    const rest = queue.filter((item) => !wantedKeys.has(itemKey(item)));
+    queue = first ? [...wanted, ...rest] : [...rest, ...wanted];
     queue = queue.slice(0, queueLimit);
     void run();
   });
@@ -133,6 +130,10 @@ export function checkAvailability(items: MediaItem[]): void {
 export function availabilityOf(known: Record<string, Availability>, item: Pick<MediaItem, "type" | "id">): Availability | null {
   const entry = known[itemKey(item)];
   return entry?.found ? entry : null;
+}
+
+export function checkedOf(known: Record<string, Availability>, item: Pick<MediaItem, "type" | "id">): Availability | null {
+  return known[itemKey(item)] ?? null;
 }
 
 export function loadAvailability(): void {
