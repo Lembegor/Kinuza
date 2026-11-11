@@ -13,6 +13,8 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: write
+    outputs:
+      release_id: ${{ steps.build.outputs.releaseId }}
     steps:
       - uses: actions/checkout@v4
 
@@ -58,6 +60,7 @@ jobs:
       - run: npm ci
 
       - uses: tauri-apps/tauri-action@v0
+        id: build
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -72,6 +75,59 @@ jobs:
           prerelease: false
           includeUpdaterJson: true
 
+  linux:
+    needs: windows
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the Linux build libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev patchelf file xdg-utils gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      - name: Run the Rust tests
+        working-directory: src-tauri
+        run: cargo test --locked
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+          VITE_TMDB_API_KEY: ${{ secrets.VITE_TMDB_API_KEY }}
+          VITE_OPENSUBTITLES_API_KEY: ${{ secrets.VITE_OPENSUBTITLES_API_KEY }}
+        with:
+          releaseId: ${{ needs.windows.outputs.release_id }}
+          includeUpdaterJson: true
+
+  publish:
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       - name: Check the draft and publish it
         shell: bash
         env:
@@ -81,16 +137,19 @@ jobs:
           tag="$GITHUB_REF_NAME"
           folder=$(mktemp -d)
           gh release download "$tag" --pattern latest.json --dir "$folder"
-          installer=$(node scripts/check-update-manifest.cjs "$folder/latest.json" "${tag#v}")
+          installers=$(node scripts/check-update-manifest.cjs "$folder/latest.json" "${tag#v}")
           assets=$(gh release view "$tag" --json assets --jq '.assets[].name')
-          for wanted in "$installer" "$installer.sig"; do
-            if ! grep -qxF "$wanted" <<< "$assets"; then
-              echo "::error::The draft has no $wanted, so the update would not install. The draft stays unpublished."
-              exit 1
-            fi
-          done
+          while IFS= read -r installer; do
+            for wanted in "$installer" "$installer.sig"; do
+              if ! grep -qxF "$wanted" <<< "$assets"; then
+                echo "::error::The draft has no $wanted, so the update would not install. The draft stays unpublished."
+                exit 1
+              fi
+            done
+          done <<< "$installers"
           gh release edit "$tag" --draft=false --latest
-          echo "Published $tag: latest.json points to $installer"
+          echo "Published $tag. Updates point to:"
+          echo "$installers"
 
       - name: Mirror the update
         continue-on-error: true
@@ -107,6 +166,10 @@ jobs:
           fi
           tag="$GITHUB_REF_NAME"
           folder=$(mktemp -d)
-          gh release download "$tag" --dir "$folder" --pattern latest.json --pattern '*-setup.exe' --pattern '*-setup.exe.sig'
+          gh release download "$tag" --dir "$folder" --pattern latest.json
+          installers=$(node scripts/check-update-manifest.cjs "$folder/latest.json" "${tag#v}")
+          while IFS= read -r installer; do
+            gh release download "$tag" --dir "$folder" --pattern "$installer" --pattern "$installer.sig"
+          done <<< "$installers"
           node scripts/check-update-manifest.cjs "$folder/latest.json" "${tag#v}" "https://github.com/$GITHUB_REPOSITORY/releases/download/" "https://github.com/$MIRROR_REPO/releases/download/" > /dev/null
           GH_TOKEN="$MIRROR_TOKEN" gh release create "$tag" --repo "$MIRROR_REPO" --title "Kinuza ${tag#v}" --notes "Kinuza ${tag#v}" --latest "$folder"/*

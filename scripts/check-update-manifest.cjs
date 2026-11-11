@@ -1,6 +1,11 @@
 const fs = require("fs");
 
 const [file, version, fromPrefix, toPrefix] = process.argv.slice(2);
+const required = (process.env.KINUZA_PLATFORMS ?? "windows-x86_64,linux-x86_64,linux-x86_64-deb,linux-x86_64-rpm")
+  .split(",")
+  .map((name) => name.trim())
+  .filter(Boolean);
+const families = [...new Set(required.map((name) => name.split("-").slice(0, 2).join("-")))];
 
 function fail(message) {
   console.error(`::error::${message}`);
@@ -18,9 +23,12 @@ if (String(manifest.version).replace(/^v/, "") !== version) {
   fail(`latest.json says version ${manifest.version}, the tag says ${version}.`);
 }
 
-const platforms = Object.entries(manifest.platforms ?? {}).filter(([name]) => name.startsWith("windows-x86_64"));
-if (platforms.length === 0) fail("latest.json has no Windows x64 entry.");
+const known = manifest.platforms ?? {};
+for (const name of required) {
+  if (!known[name]) fail(`latest.json has no ${name} entry.`);
+}
 
+const platforms = Object.entries(known).filter(([name]) => families.some((family) => name.startsWith(family)));
 const installers = new Set();
 for (const [name, entry] of platforms) {
   if (!entry || typeof entry.signature !== "string" || entry.signature.trim().length < 40) fail(`${name} has no signature in latest.json.`);
@@ -32,5 +40,16 @@ for (const [name, entry] of platforms) {
   installers.add(decodeURIComponent(entry.url.split("/").pop()));
 }
 
+const expectations = [
+  ["windows-x86_64", /\.exe$/],
+  ["linux-x86_64-deb", /\.deb$/],
+  ["linux-x86_64-rpm", /\.rpm$/],
+  ["linux-x86_64", /\.AppImage$/],
+];
+for (const [name, pattern] of expectations) {
+  const entry = known[name];
+  if (entry && !pattern.test(decodeURIComponent(entry.url.split("/").pop()))) fail(`${name} points to a file of the wrong kind: ${entry.url}`);
+}
+
 if (fromPrefix && toPrefix) fs.writeFileSync(file, JSON.stringify(manifest, null, 2));
-process.stdout.write([...installers][0]);
+process.stdout.write([...installers].join("\n"));

@@ -4,7 +4,8 @@ import { FolderOpen, RefreshCw } from "lucide-react";
 import { HotkeyList } from "../components/HotkeyList";
 import { ImportSetting } from "../components/ImportSetting";
 import { LanguageSelect } from "../components/LanguagePicker";
-import { backend, describeError, getAppInfo, isDesktop } from "../lib/backend";
+import { backend, describeError, getAppInfo, isDesktop, isLinux } from "../lib/backend";
+import { mpv } from "../lib/mpv";
 import { accountDataVersion } from "../lib/account";
 import { formatBytes } from "../lib/format";
 import { useT, type MessageKey } from "../lib/i18n";
@@ -275,13 +276,15 @@ export default function Settings() {
           </div>
           <Toggle label={t("settings.player.autoNext")} checked={settings.autoNextEpisode} onChange={(value) => settings.patch({ autoNextEpisode: value })} />
         </div>
-        <div className="setting">
-          <div>
-            <strong>{t("settings.player.smooth")}</strong>
-            <p>{t("settings.player.smooth.note")}</p>
+        {mpv.supported && (
+          <div className="setting">
+            <div>
+              <strong>{t("settings.player.smooth")}</strong>
+              <p>{t("settings.player.smooth.note")}</p>
+            </div>
+            <Toggle label={t("settings.player.smooth")} checked={settings.smoothMotion} onChange={(value) => settings.patch({ smoothMotion: value })} />
           </div>
-          <Toggle label={t("settings.player.smooth")} checked={settings.smoothMotion} onChange={(value) => settings.patch({ smoothMotion: value })} />
-        </div>
+        )}
         <div className="setting">
           <div>
             <strong>{t("settings.player.external")}</strong>
@@ -423,7 +426,7 @@ export default function Settings() {
         <div className="setting">
           <div>
             <strong>{t("settings.tray")}</strong>
-            <p>{t("settings.tray.note")}</p>
+            <p>{t(isLinux ? "settings.tray.note.linux" : "settings.tray.note")}</p>
           </div>
           <Toggle label={t("settings.tray")} checked={settings.closeToTray} onChange={(value) => settings.patch({ closeToTray: value })} />
         </div>

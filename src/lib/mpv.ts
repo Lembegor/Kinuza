@@ -1,4 +1,4 @@
-import { isDesktop } from "./backend";
+import { isWindows } from "./backend";
 
 export interface MpvStatus {
   installed: boolean;
@@ -40,7 +40,7 @@ async function invoke<T>(command: string, args?: Record<string, unknown>): Promi
 }
 
 export const mpv = {
-  supported: isDesktop && navigator.userAgent.includes("Windows"),
+  supported: isWindows,
   status: () => invoke<MpvStatus>("mpv_status"),
   install: () => invoke<void>("mpv_install"),
   warm: () => invoke<void>("mpv_warm"),

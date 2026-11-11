@@ -178,6 +178,7 @@ export const en: Messages = {
   "notifications.downloaded": "Download finished",
   "settings.tray": "Keep running in the tray",
   "settings.tray.note": "Closing the window hides the app to the notification area and downloads go on. Quit from the tray icon.",
+  "settings.tray.note.linux": "Closing the window hides the app to the tray and downloads go on. In GNOME the tray icon shows only with the AppIndicator extension; without it, start Kinuza again to bring the window back.",
   "settings.notify": "Notify when a download finishes",
   "settings.notify.note": "A system notification once a torrent has downloaded.",
   "tracker.sort.best": "Best first",

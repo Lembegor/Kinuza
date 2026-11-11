@@ -115,7 +115,7 @@ pub fn log_write(level: String, message: String) {
 pub fn logs_open(state: tauri::State<'_, crate::AppState>) -> Result<(), String> {
     let folder = folder(&state.data_dir);
     std::fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
-    std::process::Command::new("explorer").arg(&folder).spawn().map_err(|error| error.to_string())?;
+    crate::host::open_folder(&folder).map_err(|error| error.to_string())?;
     Ok(())
 }
 

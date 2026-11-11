@@ -1189,7 +1189,13 @@ fn file_allocated_bytes(path: &Path) -> Option<u64> {
     Some((u64::from(high) << 32) | u64::from(low))
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
+fn file_allocated_bytes(path: &Path) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path).ok().map(|metadata| metadata.blocks() * 512)
+}
+
+#[cfg(not(any(windows, unix)))]
 fn file_allocated_bytes(_path: &Path) -> Option<u64> {
     None
 }

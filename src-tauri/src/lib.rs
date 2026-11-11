@@ -1,9 +1,14 @@
+#[cfg(windows)]
+mod associations;
+#[cfg(not(windows))]
+#[path = "associations_linux.rs"]
 mod associations;
 mod commands;
 mod engine;
 mod external_player;
 mod ffmpeg;
 mod files;
+mod host;
 mod imdb;
 mod launch;
 mod logging;
@@ -37,7 +42,17 @@ const SESSION_FOLDER_NAME: &str = "session";
 const STREAM_CACHE_FOLDER_NAME: &str = "stream-cache";
 const STARTUP_ERROR_TEXT: &str = "Kinuza не смогла запуститься. Подробности записаны в журнал (папка logs в данных приложения).";
 
+#[cfg(target_os = "linux")]
+fn prepare_linux_webview() {
+    let nvidia = std::path::Path::new("/proc/driver/nvidia/version").exists();
+    if nvidia && std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+}
+
 pub fn run() {
+    #[cfg(target_os = "linux")]
+    prepare_linux_webview();
     tauri::Builder::default()
         .manage(TokioMutex::new(rutracker::RutrackerState::new()))
         .manage(imdb::ImdbState::default())
@@ -46,6 +61,7 @@ pub fn run() {
         .manage(files::FileGrants::default())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
                 let _ = window.unminimize();
                 let _ = window.set_focus();
             }
@@ -144,7 +160,19 @@ fn show_startup_error(detail: &str) {
 }
 
 #[cfg(not(windows))]
-fn show_startup_error(_detail: &str) {}
+fn show_startup_error(detail: &str) {
+    let text = format!("{STARTUP_ERROR_TEXT}
+
+{detail}");
+    let shown = host::command("zenity")
+        .args(["--error", "--title=Kinuza", "--no-markup", "--text"])
+        .arg(&text)
+        .status()
+        .is_ok_and(|status| status.success());
+    if !shown {
+        let _ = host::command("kdialog").args(["--title", "Kinuza", "--error"]).arg(&text).status();
+    }
+}
 
 async fn build_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
     let data_dir = app.path().app_data_dir()?;

@@ -1,5 +1,4 @@
 use std::{
-    io::{Read, Write},
     path::{Path, PathBuf},
     process::Stdio,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
@@ -14,14 +13,26 @@ use tokio::{io::AsyncWriteExt, process::Command, sync::Mutex};
 
 use crate::AppState;
 
+#[cfg(windows)]
 const ARCHIVE_NAME: &str = "ffmpeg-master-latest-win64-lgpl-shared.zip";
+#[cfg(all(not(windows), target_arch = "aarch64"))]
+const ARCHIVE_NAME: &str = "ffmpeg-master-latest-linuxarm64-lgpl.tar.xz";
+#[cfg(all(not(windows), not(target_arch = "aarch64")))]
+const ARCHIVE_NAME: &str = "ffmpeg-master-latest-linux64-lgpl.tar.xz";
 const RELEASE_URL: &str = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest";
 const CHECKSUMS_NAME: &str = "checksums.sha256";
 const FOLDER_NAME: &str = "ffmpeg";
 const BINARIES_FOLDER_NAME: &str = "bin";
+#[cfg(windows)]
 const EXECUTABLE_NAME: &str = "ffmpeg.exe";
+#[cfg(not(windows))]
+const EXECUTABLE_NAME: &str = "ffmpeg";
+#[cfg(windows)]
 const APPROXIMATE_ARCHIVE_BYTES: u64 = 82 * 1024 * 1024;
+#[cfg(not(windows))]
+const APPROXIMATE_ARCHIVE_BYTES: u64 = 134 * 1024 * 1024;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(40);
+#[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[derive(Default)]
@@ -140,6 +151,9 @@ pub fn command(executable: &Path) -> Command {
         .args(["-hide_banner", "-nostdin"])
         .stdin(Stdio::null())
         .kill_on_drop(true);
+    for variable in crate::host::leaked_variables() {
+        command.env_remove(variable);
+    }
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
     command
@@ -225,7 +239,9 @@ async fn install(folder: &Path, progress: &FfmpegState) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(windows)]
 fn unpack(archive: &Path, target: &Path) -> anyhow::Result<()> {
+    use std::io::{Read, Write};
     let staging = target.with_extension("new");
     let _ = std::fs::remove_dir_all(&staging);
     std::fs::create_dir_all(&staging)?;
@@ -245,6 +261,39 @@ fn unpack(archive: &Path, target: &Path) -> anyhow::Result<()> {
         entry.read_to_end(&mut bytes)?;
         std::fs::File::create(staging.join(&name))?.write_all(&bytes)?;
         found_executable |= name == EXECUTABLE_NAME;
+    }
+    anyhow::ensure!(found_executable, "the archive has no {EXECUTABLE_NAME}");
+
+    let _ = std::fs::remove_dir_all(target);
+    std::fs::rename(&staging, target).context("could not put the unpacked files in place")?;
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn unpack(archive: &Path, target: &Path) -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let staging = target.with_extension("new");
+    let _ = std::fs::remove_dir_all(&staging);
+    std::fs::create_dir_all(&staging)?;
+
+    let compressed = std::io::BufReader::new(std::fs::File::open(archive)?);
+    let mut tarball = tar::Archive::new(lzma_rust2::XzReader::new(compressed, true));
+    let mut found_executable = false;
+    for entry in tarball.entries()? {
+        let mut entry = entry?;
+        if !entry.header().entry_type().is_file() {
+            continue;
+        }
+        let path = entry.path()?.into_owned();
+        let in_binaries = path.parent().and_then(Path::file_name).is_some_and(|folder| folder == BINARIES_FOLDER_NAME);
+        if !in_binaries || path.file_name().is_none_or(|name| name != EXECUTABLE_NAME) {
+            continue;
+        }
+        let destination = staging.join(EXECUTABLE_NAME);
+        std::io::copy(&mut entry, &mut std::fs::File::create(&destination)?)?;
+        std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(0o755))?;
+        found_executable = true;
+        break;
     }
     anyhow::ensure!(found_executable, "the archive has no {EXECUTABLE_NAME}");
 

@@ -23,10 +23,15 @@ where
                 value: argument,
             });
         }
-        if lower.ends_with(".torrent") && Path::new(&argument).is_file() {
+        let path = if lower.starts_with("file://") {
+            tauri::Url::parse(&argument).ok()?.to_file_path().ok()?.to_string_lossy().into_owned()
+        } else {
+            argument
+        };
+        if path.to_ascii_lowercase().ends_with(".torrent") && Path::new(&path).is_file() {
             return Some(LaunchRequest {
                 kind: "file",
-                value: argument,
+                value: path,
             });
         }
         None

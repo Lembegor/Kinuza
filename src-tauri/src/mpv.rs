@@ -1,3 +1,5 @@
+#![cfg_attr(not(windows), allow(dead_code, unused_imports, unused_variables))]
+
 use std::{
     path::{Path, PathBuf},
     process::Stdio,
@@ -106,8 +108,14 @@ fn downloaded(data_dir: &Path) -> Option<PathBuf> {
     installed.is_file().then_some(installed)
 }
 
+#[cfg(windows)]
 pub fn executable(app: &AppHandle, data_dir: &Path) -> Option<PathBuf> {
     bundled(app).or_else(|| downloaded(data_dir))
+}
+
+#[cfg(not(windows))]
+pub fn executable(_app: &AppHandle, _data_dir: &Path) -> Option<PathBuf> {
+    None
 }
 
 #[tauri::command]
@@ -123,6 +131,9 @@ pub fn mpv_status(handle: AppHandle, app: State<'_, AppState>, mpv: State<'_, Mp
 
 #[tauri::command]
 pub async fn mpv_install(handle: AppHandle, app: State<'_, AppState>, mpv: State<'_, MpvState>) -> Result<(), String> {
+    if cfg!(not(windows)) {
+        return Err("mpv_unsupported".to_owned());
+    }
     let _installing = mpv.install.lock().await;
     if executable(&handle, &app.data_dir).is_some() {
         return Ok(());
@@ -284,6 +295,7 @@ fn mpv_arguments(window: isize, pipe: &str) -> Vec<String> {
     .collect()
 }
 
+#[cfg(windows)]
 async fn open_pipe(name: &str) -> anyhow::Result<tokio::net::windows::named_pipe::NamedPipeClient> {
     let deadline = tokio::time::Instant::now() + PIPE_WAIT;
     loop {
@@ -298,6 +310,12 @@ async fn open_pipe(name: &str) -> anyhow::Result<tokio::net::windows::named_pipe
     }
 }
 
+#[cfg(not(windows))]
+async fn spawn(_app: &AppHandle, _data_dir: &Path) -> anyhow::Result<Player> {
+    bail!("embedding mpv is supported on Windows only")
+}
+
+#[cfg(windows)]
 async fn spawn(app: &AppHandle, data_dir: &Path) -> anyhow::Result<Player> {
     let executable = executable(app, data_dir).ok_or_else(|| anyhow!("mpv_missing"))?;
     let window = main_window_handle(app)?;

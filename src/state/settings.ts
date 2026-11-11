@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { backend } from "../lib/backend";
+import { backend, isLinux } from "../lib/backend";
 import { report } from "../lib/journal";
 import type { AppLanguage } from "../lib/languages";
 import { setApiKeyOverride, setCatalogLanguage } from "../lib/tmdb";
@@ -68,7 +68,7 @@ const defaults: Settings = {
   seedRatio: 0,
   cacheLimitGb: 20,
   autoDeleteWatched: false,
-  closeToTray: true,
+  closeToTray: !isLinux,
   notifyDownloads: true,
   notifyEpisodes: true,
   autoAddEpisodes: true,
@@ -80,7 +80,7 @@ function upgrade(stored: Partial<Settings>): Partial<Settings> {
   if (version >= currentVersion) return stored;
   const upgraded: Partial<Settings> = { ...stored, version: currentVersion };
   if (version < 2 && stored.trackerPrefs?.sort === "seeds") upgraded.trackerPrefs = { ...stored.trackerPrefs, sort: "best" };
-  if (version < 3) upgraded.closeToTray = true;
+  if (version < 3) upgraded.closeToTray = !isLinux;
   return upgraded;
 }
 

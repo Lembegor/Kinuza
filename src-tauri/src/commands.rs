@@ -197,7 +197,25 @@ fn disk_space(folder: &std::path::Path) -> Option<StorageInfo> {
     (ok != 0).then_some(StorageInfo { free_bytes: free, total_bytes: total, cache_bytes: 0 })
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
+fn disk_space(folder: &std::path::Path) -> Option<StorageInfo> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let existing = folder.ancestors().find(|path| path.exists())?;
+    let path = std::ffi::CString::new(existing.as_os_str().as_bytes()).ok()?;
+    let mut stats: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(path.as_ptr(), &mut stats) } != 0 {
+        return None;
+    }
+    let block = stats.f_frsize as u64;
+    Some(StorageInfo {
+        free_bytes: stats.f_bavail as u64 * block,
+        total_bytes: stats.f_blocks as u64 * block,
+        cache_bytes: 0,
+    })
+}
+
+#[cfg(not(any(windows, unix)))]
 fn disk_space(_folder: &std::path::Path) -> Option<StorageInfo> {
     None
 }
@@ -266,6 +284,13 @@ pub fn associations_set(enabled: bool) -> CommandResult<AssociationStatus> {
     Ok(associations::status())
 }
 
+#[cfg(not(windows))]
+#[tauri::command]
+pub fn open_default_apps_settings() -> CommandResult<()> {
+    Err("settings_unavailable".to_owned())
+}
+
+#[cfg(windows)]
 #[tauri::command]
 pub fn open_default_apps_settings() -> CommandResult<()> {
     std::process::Command::new("explorer.exe")
