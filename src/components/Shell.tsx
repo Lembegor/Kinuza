@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { NavLink, useLocation, useNavigate, useSearchParams } from "react-router-dom";
-import { ArrowLeft, ArrowRight, Bookmark, Copy, Download, House, Minus, Search, Settings, Square, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Copy, Download, House, ListVideo, Minus, Search, Settings, Square, X } from "lucide-react";
 import { isDesktop } from "../lib/backend";
 import { useTorrents } from "../state/torrents";
 
@@ -148,8 +148,8 @@ export function Sidebar() {
         <span>Главная</span>
       </NavLink>
       <NavLink to="/library" className="sidebar__link">
-        <Bookmark size={21} />
-        <span>Полка</span>
+        <ListVideo size={21} />
+        <span>Список</span>
       </NavLink>
       <NavLink to="/downloads" className="sidebar__link">
         <Download size={21} />

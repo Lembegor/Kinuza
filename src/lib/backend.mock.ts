@@ -12,13 +12,22 @@ const demoPreview: TorrentPreview = {
   infoHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   name: "Demo.Show.S01.1080p.WEB-DL",
   alreadyAdded: false,
-  files: Array.from({ length: 8 }, (_, i) => ({
-    index: i,
-    path: `Demo.Show.S01.1080p.WEB-DL/Demo.Show.S01E${String(i + 1).padStart(2, "0")}.1080p.WEB-DL.mkv`,
-    length: 1.6 * GiB + i * 1e7,
-    included: true,
-    downloaded: 0,
-  })),
+  files: [
+    ...Array.from({ length: 8 }, (_, i) => ({
+      index: i,
+      path: `Demo.Show.S01.1080p.WEB-DL/Demo.Show.S01E${String(i + 1).padStart(2, "0")}.1080p.WEB-DL.mkv`,
+      length: 1.6 * GiB + i * 1e7,
+      included: true,
+      downloaded: 0,
+    })),
+    ...["ru", "en", "en.forced", "ger"].map((suffix, i) => ({
+      index: 8 + i,
+      path: `Demo.Show.S01.1080p.WEB-DL/Demo.Show.S01E01.1080p.WEB-DL.${suffix}.srt`,
+      length: 60_000,
+      included: true,
+      downloaded: 0,
+    })),
+  ],
 };
 
 const torrents: TorrentView[] = [];
@@ -94,6 +103,11 @@ export async function mockInvoke(command: string, args: Record<string, unknown> 
     case "store_set":
       localStorage.setItem(storagePrefix + String(args.name), String(args.value));
       return null;
+    case "take_launch_request":
+      return null;
+    case "associations_status":
+    case "associations_set":
+      return { enabled: Boolean(args.enabled), overriddenByWindows: false };
     case "file_location":
       return "C:\\Users\\you\\Videos\\Kinuza\\demo.mkv";
     case "open_external":

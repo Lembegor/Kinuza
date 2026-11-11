@@ -5,7 +5,7 @@ import { AddSourceDialog } from "./components/AddSourceDialog";
 import { ConfirmDialog, Toasts, UpdateNotice } from "./components/Overlays";
 import { Player } from "./components/Player";
 import { Sidebar, Titlebar } from "./components/Shell";
-import { isDesktop } from "./lib/backend";
+import { backend, describeError, isDesktop, onLaunchRequest, type LaunchRequest } from "./lib/backend";
 import { isMagnetLink } from "./lib/parse";
 import Downloads from "./pages/Downloads";
 import Home from "./pages/Home";
@@ -77,6 +77,64 @@ function useTorrentDrop(): boolean {
   return dragging;
 }
 
+/** Opens the add dialog for a link clicked in the browser or a .torrent opened from Explorer. */
+function openLaunchRequest(request: LaunchRequest): void {
+  const { pageTarget, openAddSource } = useUi.getState();
+  const source = request.kind === "magnet" ? { magnet: request.value } : { filePath: request.value };
+  openAddSource({ target: null, suggested: pageTarget, ...source });
+}
+
+function useLaunchRequests(ready: boolean): void {
+  useEffect(() => {
+    if (!ready) return;
+    let unlisten: (() => void) | undefined;
+    let disposed = false;
+
+    void backend.takeLaunchRequest().then((request) => {
+      if (request && !disposed) openLaunchRequest(request);
+    });
+    void onLaunchRequest(openLaunchRequest).then((stop) => {
+      if (disposed) stop();
+      else unlisten = stop;
+    });
+
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [ready]);
+}
+
+async function enableLinkHandling(): Promise<void> {
+  try {
+    await backend.setAssociations(true);
+    useSettings.getState().patch({ handleLinks: true });
+  } catch (error) {
+    useUi.getState().toast(describeError(error), "error");
+  }
+}
+
+/** Keeps the Windows registration pointing at this executable; asks once whether to register at all. */
+function useLinkHandling(ready: boolean): void {
+  useEffect(() => {
+    if (!ready || !isDesktop) return;
+    const { handleLinks, linksPrompted, patch } = useSettings.getState();
+    if (handleLinks) {
+      void backend.setAssociations(true).catch((error) => console.error("associations: refresh failed", error));
+      return;
+    }
+    if (linksPrompted) return;
+    patch({ linksPrompted: true });
+    useUi.getState().askConfirm({
+      title: "Открывать торренты в Kinuza?",
+      message:
+        "Magnet-ссылки из браузера и .torrent-файлы будут сразу открываться в Kinuza: приложение само подберёт фильм или сериал и разложит файлы по сериям. Это можно изменить в настройках.",
+      confirmLabel: "Да, открывать",
+      onConfirm: () => void enableLinkHandling(),
+    });
+  }, [ready]);
+}
+
 function Content() {
   const location = useLocation();
   const scrollRef = useRef<HTMLElement>(null);
@@ -118,6 +176,9 @@ export default function App() {
 
   useMagnetPaste();
   const dragging = useTorrentDrop();
+  const ready = settingsLoaded && libraryLoaded;
+  useLaunchRequests(ready);
+  useLinkHandling(ready);
 
   // The webview's own context menu (reload, inspect) has no place in the app.
   useEffect(() => {
@@ -129,7 +190,7 @@ export default function App() {
     return () => window.removeEventListener("contextmenu", block);
   }, []);
 
-  if (!settingsLoaded || !libraryLoaded) return <div className="app app--loading" />;
+  if (!ready) return <div className="app app--loading" />;
 
   return (
     <HashRouter>

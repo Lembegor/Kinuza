@@ -134,3 +134,18 @@ export function guessTitleQuery(torrentName: string): string {
 export function isMagnetLink(text: string): boolean {
   return /^magnet:\?xt=urn:bt(ih|mh):[a-z0-9]+/i.test(text.trim());
 }
+
+const widthSteps: [number, string][] = [[3200, "2160p"], [2300, "1440p"], [1700, "1080p"], [1150, "720p"], [700, "480p"]];
+const heightSteps: [number, string][] = [[2000, "2160p"], [1300, "1440p"], [1000, "1080p"], [700, "720p"], [440, "480p"]];
+const lowestQuality = "360p";
+
+/**
+ * Names the quality of a decoded picture. Both sides are checked and the better result wins:
+ * wide-screen films are cropped in height, 4:3 video is narrow.
+ */
+export function qualityFromSize(width: number, height: number): string {
+  if (width <= 0 || height <= 0) return "";
+  const byWidth = widthSteps.find(([minimum]) => width >= minimum)?.[1] ?? lowestQuality;
+  const byHeight = heightSteps.find(([minimum]) => height >= minimum)?.[1] ?? lowestQuality;
+  return qualityRank(byWidth) >= qualityRank(byHeight) ? byWidth : byHeight;
+}

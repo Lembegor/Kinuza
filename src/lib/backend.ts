@@ -42,6 +42,19 @@ export interface AppInfo {
   externalPlayer: string | null;
 }
 
+/** A magnet link or .torrent file Windows handed to the app. */
+export interface LaunchRequest {
+  kind: "magnet" | "file";
+  value: string;
+}
+
+export interface AssociationStatus {
+  enabled: boolean;
+  overriddenByWindows: boolean;
+}
+
+const launchEvent = "launch-request";
+
 type Args = Record<string, unknown>;
 
 async function call<T>(command: string, args?: Args): Promise<T> {
@@ -67,7 +80,8 @@ export async function streamUrl(infoHash: string, fileIndex: number): Promise<st
 }
 
 export const backend = {
-  inspectMagnet: (magnet: string) => call<TorrentPreview>("torrent_inspect", { magnet }),
+  /** Accepts a magnet link or the address of an Internet Archive torrent. */
+  inspectLink: (link: string) => call<TorrentPreview>("torrent_inspect", { link }),
   inspectFile: (path: string) => call<TorrentPreview>("torrent_inspect", { path }),
   addTorrent: (infoHash: string, files: number[], downloadDir: string | null) =>
     call<void>("torrent_add", { infoHash, files, downloadDir }),
@@ -83,11 +97,24 @@ export const backend = {
   openExternal: (infoHash: string, fileIndex: number) =>
     call<string>("open_external", { infoHash, fileIndex }),
   readFileBytes: (path: string) => call<ArrayBuffer>("read_file_bytes", { path }),
+  takeLaunchRequest: () => call<LaunchRequest | null>("take_launch_request"),
+  associationStatus: () => call<AssociationStatus>("associations_status"),
+  setAssociations: (enabled: boolean) => call<AssociationStatus>("associations_set", { enabled }),
+  openDefaultAppsSettings: () => call<void>("open_default_apps_settings"),
   storeGet: (name: string) => call<string | null>("store_get", { name }),
   storeSet: (name: string, value: string) => call<void>("store_set", { name, value }),
 };
 
+/** Subscribes to links forwarded by a second launch of the app. Returns an unsubscribe function. */
+export async function onLaunchRequest(handler: (request: LaunchRequest) => void): Promise<() => void> {
+  if (!isDesktop) return () => undefined;
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<LaunchRequest>(launchEvent, (event) => handler(event.payload));
+}
+
 const errorMessages: Record<string, string> = {
+  associations_failed: "Не удалось изменить программу по умолчанию для торрентов.",
+  settings_unavailable: "Не удалось открыть параметры Windows.",
   metadata_timeout:
     "Не удалось получить список файлов: у раздачи сейчас нет доступных участников. Попробуйте позже или другую ссылку.",
   torrent_not_inspected: "Сначала откройте торрент заново.",
@@ -97,6 +124,7 @@ const errorMessages: Record<string, string> = {
   file_too_large: "Файл слишком большой.",
   file_unreadable: "Не удалось прочитать файл.",
   bad_info_hash: "Некорректная ссылка на торрент.",
+  bad_link: "Такая ссылка не поддерживается. Нужна magnet-ссылка.",
 };
 
 /** Turns a backend error code into text for the user. */

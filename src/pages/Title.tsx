@@ -3,9 +3,8 @@
 import { useEffect, useMemo } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import {
-  Bookmark,
-  BookmarkCheck,
   Check,
+  CheckCheck,
   CircleCheck,
   Clapperboard,
   Eye,
@@ -18,12 +17,13 @@ import {
   X,
 } from "lucide-react";
 import { CatalogError, PosterRow, typeLabel } from "../components/Cards";
+import { RatingStars, StatusMenu } from "../components/TrackControls";
 import { backend, describeError, isDesktop } from "../lib/backend";
 import { formatBytes, formatDate, formatRuntime, formatSpeed, plural } from "../lib/format";
 import { qualityRank } from "../lib/parse";
 import { imageUrl, tmdb, type Details, type Episode, type MediaType } from "../lib/tmdb";
 import { useAsync } from "../lib/useAsync";
-import { isWatched, titleKey, toTitleRef, unitKey, useLibrary, type Source, type TitleRef } from "../state/library";
+import { isWatched, toTitleRef, unitKey, useLibrary, type Source, type TitleRef } from "../state/library";
 import { fileProgress, useTorrents } from "../state/torrents";
 import { useUi, type AddSourceTarget } from "../state/ui";
 
@@ -243,27 +243,50 @@ function SeriesEpisodes({
 }) {
   const episodes = useAsync(() => tmdb.season(details.id, season), [details.id, season]);
   const sources = useLibrary((state) => state.sources);
+  const progress = useLibrary((state) => state.progress);
   const openAddSource = useUi((state) => state.openAddSource);
 
-  const available = useMemo(
-    () => (episodes.data ?? []).filter((episode) => sources[unitKey("tv", details.id, episode.season, episode.episode)]).length,
-    [episodes.data, sources, details.id],
-  );
-  const total = episodes.data?.length ?? 0;
+  const keyOf = (episode: Episode) => unitKey("tv", details.id, episode.season, episode.episode);
+  const list = episodes.data ?? [];
+  const total = list.length;
+  const available = list.filter((episode) => sources[keyOf(episode)]).length;
+  const watched = list.filter((episode) => isWatched(progress[keyOf(episode)])).length;
+  const seasonWatched = total > 0 && watched === total;
+
+  const note = [
+    `${total} ${plural(total, "серия", "серии", "серий")}`,
+    available > 0 ? `добавлено ${available}` : "",
+    watched > 0 ? `просмотрено ${watched}` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  const toggleSeasonWatched = () =>
+    useLibrary.getState().setManyWatched(
+      list.map((episode) => ({
+        unitKey: keyOf(episode),
+        context: { title, season: episode.season, episode: episode.episode, episodeName: episode.name },
+      })),
+      !seasonWatched,
+    );
 
   return (
     <section className="section">
       <div className="section__head">
         <h2>Серии</h2>
-        {total > 0 && (
-          <span className="section__note">
-            {available > 0 ? `Добавлено ${available} из ${total}` : `${total} ${plural(total, "серия", "серии", "серий")}`}
-          </span>
-        )}
-        <button className="button" onClick={() => openAddSource({ target })}>
-          <Plus size={16} />
-          Добавить торрент
-        </button>
+        {total > 0 && <span className="section__note">{note}</span>}
+        <div className="section__actions">
+          {total > 0 && (
+            <button className="button" onClick={toggleSeasonWatched}>
+              <CheckCheck size={16} />
+              {seasonWatched ? "Снять отметки" : "Сезон просмотрен"}
+            </button>
+          )}
+          <button className="button" onClick={() => openAddSource({ target })}>
+            <Plus size={16} />
+            Добавить торрент
+          </button>
+        </div>
       </div>
 
       {details.seasons.length > 1 && (
@@ -334,8 +357,6 @@ export default function TitlePage() {
   const data = details.data && details.data.id === id ? details.data : null;
   const title = useMemo(() => (data ? toTitleRef(data) : null), [data]);
 
-  const saved = useLibrary((state) => Boolean(state.saved[titleKey(type, id)]));
-  const toggleSaved = useLibrary((state) => state.toggleSaved);
   const movieSources = useLibrary((state) => state.sources[unitKey("movie", id)]);
   const resume = useResumeEpisode(data);
   const { play, openAddSource, setPageTarget } = useUi.getState();
@@ -345,7 +366,7 @@ export default function TitlePage() {
   const season = requestedSeason !== null ? Number(requestedSeason) : (resume?.season ?? firstSeason);
 
   const target = useMemo<AddSourceTarget | null>(
-    () => (data && title ? { title, seasons: data.seasons, defaultSeason: season } : null),
+    () => (data && title ? { title, originalTitle: data.originalTitle, seasons: data.seasons, defaultSeason: season } : null),
     [data, title, season],
   );
 
@@ -353,6 +374,15 @@ export default function TitlePage() {
     setPageTarget(target);
     return () => setPageTarget(null);
   }, [target, setPageTarget]);
+
+  // A tracked series needs its episode count to know when it has been watched to the end.
+  useEffect(() => {
+    if (!data || !title) return;
+    const regularEpisodes = data.seasons
+      .filter((item) => item.seasonNumber !== specialsSeason)
+      .reduce((sum, item) => sum + item.episodeCount, 0);
+    useLibrary.getState().noteTitleDetails(title, data.type === "tv" ? regularEpisodes : undefined);
+  }, [data, title]);
 
   if (details.error) {
     return (
@@ -436,10 +466,7 @@ export default function TitlePage() {
                   Добавить торрент
                 </button>
               )}
-              <button className="button button--large" onClick={() => toggleSaved(title)}>
-                {saved ? <BookmarkCheck size={18} /> : <Bookmark size={18} />}
-                {saved ? "На полке" : "На полку"}
-              </button>
+              <StatusMenu title={title} />
               {data.trailerKey && (
                 <button className="button button--large" onClick={() => void openTrailer(data.trailerKey!)}>
                   <Clapperboard size={18} />
@@ -447,6 +474,7 @@ export default function TitlePage() {
                 </button>
               )}
             </div>
+            <RatingStars title={title} />
           </div>
         </div>
       </section>

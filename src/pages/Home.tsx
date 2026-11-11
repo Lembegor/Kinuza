@@ -4,7 +4,7 @@ import { Info, Play, Star } from "lucide-react";
 import { CatalogError, PosterRow, Row, typeLabel } from "../components/Cards";
 import { imageUrl, tmdb, type MediaItem } from "../lib/tmdb";
 import { useAsync } from "../lib/useAsync";
-import { isWatched, useLibrary, type Progress } from "../state/library";
+import { entryToRef, isWatched, useLibrary, type Progress } from "../state/library";
 import { useUi } from "../state/ui";
 
 const heroRotationMs = 10000;
@@ -144,8 +144,15 @@ export default function Home() {
   const topMovies = useAsync(tmdb.topMovies, []);
   const topSeries = useAsync(tmdb.topSeries, []);
   const animeMovies = useAsync(tmdb.animeMovies, []);
-  const saved = useLibrary((state) => state.saved);
-  const shelf = useMemo(() => Object.values(saved).sort((a, b) => b.addedAt - a.addedAt), [saved]);
+  const tracked = useLibrary((state) => state.tracked);
+  const planned = useMemo(
+    () =>
+      Object.values(tracked)
+        .filter((entry) => entry.status === "planned")
+        .sort((a, b) => b.updatedAt - a.updatedAt)
+        .map(entryToRef),
+    [tracked],
+  );
 
   if (trending.error) {
     return (
@@ -161,7 +168,7 @@ export default function Home() {
       <Hero items={trending.data ?? []} />
       <div className="page__rows">
         <ContinueRow />
-        {shelf.length > 0 && <PosterRow title="Моя полка" items={shelf} />}
+        {planned.length > 0 && <PosterRow title="Запланировано" items={planned} />}
         <PosterRow title="Сейчас в тренде" items={trending.data} />
         <PosterRow title="Сейчас в кино" items={nowPlaying.data} />
         <PosterRow title="Популярные сериалы" items={series.data} />

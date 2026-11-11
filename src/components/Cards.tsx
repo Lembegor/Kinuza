@@ -5,8 +5,10 @@ import { useNavigate } from "react-router-dom";
 import { ChevronLeft, ChevronRight, CloudOff, Star } from "lucide-react";
 import { hasApiKey, imageUrl, type MediaItem } from "../lib/tmdb";
 import type { TitleRef } from "../state/library";
+import { TrackBadge } from "./TrackControls";
 
-type CardItem = TitleRef & Partial<Pick<MediaItem, "rating" | "isAnime">>;
+/** `note` replaces the year and type line, e.g. with episode progress. */
+type CardItem = TitleRef & Partial<Pick<MediaItem, "rating" | "isAnime">> & { note?: string };
 
 export function typeLabel(item: Pick<CardItem, "type" | "isAnime">): string {
   if (item.isAnime) return "Аниме";
@@ -26,11 +28,18 @@ export function PosterCard({ item }: { item: CardItem }) {
             {item.rating.toFixed(1)}
           </span>
         ) : null}
+        <TrackBadge type={item.type} id={item.id} />
       </div>
       <div className="poster-card__title">{item.title}</div>
       <div className="poster-card__meta">
-        {item.year && <span>{item.year}</span>}
-        <span>{typeLabel(item)}</span>
+        {item.note ? (
+          <span>{item.note}</span>
+        ) : (
+          <>
+            {item.year && <span>{item.year}</span>}
+            <span>{typeLabel(item)}</span>
+          </>
+        )}
       </div>
     </button>
   );

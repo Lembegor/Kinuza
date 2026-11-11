@@ -1,7 +1,8 @@
 // Adds a torrent: magnet link or .torrent file -> file list -> which movie or episodes the files are.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { FileUp, Link2, LoaderCircle, Search, X } from "lucide-react";
+import { ExternalLink, FileUp, Landmark, Link2, LoaderCircle, Search, X } from "lucide-react";
+import { searchArchive, type ArchiveItem } from "../lib/archive";
 import { backend, describeError, isDesktop, type TorrentFile, type TorrentPreview } from "../lib/backend";
 import { formatBytes, plural } from "../lib/format";
 import { baseName, guessTitleQuery, isMagnetLink, isVideoFile, parseEpisode, parseQuality, parseTags, resolveEpisode } from "../lib/parse";
@@ -15,6 +16,7 @@ import { typeLabel } from "./Cards";
 
 const titleSearchDebounceMs = 350;
 const titleSearchLimit = 8;
+const playerFriendlyExtensions = /\.(mp4|m4v|mkv|webm|mov)$/i;
 
 function toSource(preview: TorrentPreview, file: TorrentFile): Source {
   const name = baseName(file.path);
@@ -39,7 +41,66 @@ function videoFiles(preview: TorrentPreview): TorrentFile[] {
   );
 }
 
-function InputStep({ busy, error, onMagnet, onFile }: { busy: boolean; error: string; onMagnet: (magnet: string) => void; onFile: (path: string) => void }) {
+async function openPage(url: string): Promise<void> {
+  if (!isDesktop) {
+    window.open(url, "_blank");
+    return;
+  }
+  const { openUrl } = await import("@tauri-apps/plugin-opener");
+  await openUrl(url);
+}
+
+/** Free copies of the film from the Internet Archive, found by its original title. */
+function ArchiveResults({ target, onPick }: { target: AddSourceTarget; onPick: (item: ArchiveItem) => void }) {
+  const query = target.originalTitle || target.title.title;
+  const results = useAsync(() => searchArchive(query, target.title.year), [query, target.title.year]);
+
+  return (
+    <div className="archive">
+      <div className="archive__head">
+        <Landmark size={16} />
+        <strong>Свободные копии</strong>
+        <span>Internet Archive</span>
+      </div>
+      {results.loading && <p className="archive__note">Ищем «{query}»…</p>}
+      {results.error !== null && <p className="archive__note">Не удалось связаться с archive.org.</p>}
+      {!results.loading && results.error === null && (results.data ?? []).length === 0 && (
+        <p className="archive__note">
+          Свободной копии этого фильма в архиве нет. Там лежат фильмы в общественном достоянии и под свободными
+          лицензиями.
+        </p>
+      )}
+      {(results.data ?? []).map((item) => (
+        <div key={item.identifier} className="archive__item">
+          <div className="archive__title">
+            <strong>{item.title}</strong>
+            <span>{[item.year, `скачали ${item.downloads.toLocaleString("ru-RU")} раз`].filter(Boolean).join(" · ")}</span>
+          </div>
+          <button className="icon-button" aria-label="Страница в архиве" title="Страница в архиве" onClick={() => void openPage(item.pageUrl)}>
+            <ExternalLink size={15} />
+          </button>
+          <button className="button button--small" onClick={() => onPick(item)}>
+            Выбрать
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function InputStep({
+  busy,
+  error,
+  target,
+  onLink,
+  onFile,
+}: {
+  busy: boolean;
+  error: string;
+  target: AddSourceTarget | null;
+  onLink: (link: string) => void;
+  onFile: (path: string) => void;
+}) {
   const [value, setValue] = useState("");
   const valid = isMagnetLink(value);
 
@@ -78,11 +139,11 @@ function InputStep({ busy, error, onMagnet, onFile }: { busy: boolean; error: st
             if (isMagnetLink(text)) {
               event.preventDefault();
               setValue(text.trim());
-              onMagnet(text.trim());
+              onLink(text.trim());
             }
           }}
           onKeyDown={(event) => {
-            if (event.key === "Enter" && valid) onMagnet(value.trim());
+            if (event.key === "Enter" && valid) onLink(value.trim());
           }}
         />
       </label>
@@ -93,16 +154,25 @@ function InputStep({ busy, error, onMagnet, onFile }: { busy: boolean; error: st
           <FileUp size={16} />
           Выбрать .torrent-файл
         </button>
-        <button className="button button--primary" disabled={!valid} onClick={() => onMagnet(value.trim())}>
+        <button className="button button--primary" disabled={!valid} onClick={() => onLink(value.trim())}>
           Продолжить
         </button>
       </div>
       <p className="add-input__hint">Файл .torrent можно просто перетащить в окно приложения.</p>
+      {target?.title.type === "movie" && <ArchiveResults target={target} onPick={(item) => onLink(item.torrentUrl)} />}
     </div>
   );
 }
 
-function TitlePicker({ preview, onPick }: { preview: TorrentPreview; onPick: (target: AddSourceTarget) => void }) {
+function TitlePicker({
+  preview,
+  suggested,
+  onPick,
+}: {
+  preview: TorrentPreview;
+  suggested: AddSourceTarget | null;
+  onPick: (target: AddSourceTarget) => void;
+}) {
   const [query, setQuery] = useState(() => guessTitleQuery(preview.name));
   const [debounced, setDebounced] = useState(query);
   const [resolving, setResolving] = useState<number | null>(null);
@@ -121,7 +191,7 @@ function TitlePicker({ preview, onPick }: { preview: TorrentPreview; onPick: (ta
       if (item.type === "tv") seasons = (await tmdb.details("tv", item.id)).seasons;
       const firstRegular = seasons.find((season) => season.seasonNumber > 0)?.seasonNumber ?? 1;
       const guessed = parseEpisode(preview.name).season;
-      onPick({ title: toTitleRef(item), seasons, defaultSeason: guessed ?? firstRegular });
+      onPick({ title: toTitleRef(item), originalTitle: item.originalTitle, seasons, defaultSeason: guessed ?? firstRegular });
     } catch (error) {
       useUi.getState().toast(describeError(error), "error");
       setResolving(null);
@@ -136,6 +206,15 @@ function TitlePicker({ preview, onPick }: { preview: TorrentPreview; onPick: (ta
         <input autoFocus value={query} placeholder="Название" spellCheck={false} onChange={(event) => setQuery(event.target.value)} />
       </label>
       <div className="title-picker__list">
+        {suggested && (
+          <button className="title-picker__item title-picker__item--suggested" disabled={resolving !== null} onClick={() => onPick(suggested)}>
+            <img src={imageUrl(suggested.title.poster, "w185") ?? undefined} alt="" />
+            <div>
+              <strong>{suggested.title.title}</strong>
+              <span>Открыто сейчас в приложении</span>
+            </div>
+          </button>
+        )}
         {results.loading && <div className="title-picker__empty">Ищем…</div>}
         {!results.loading && (results.data ?? []).length === 0 && (
           <div className="title-picker__empty">{debounced ? "Ничего не нашлось — поправьте название." : "Введите название."}</div>
@@ -171,8 +250,13 @@ function buildEpisodeRows(preview: TorrentPreview, seasons: SeasonInfo[], defaul
 
 function MovieMapping({ preview, onConfirm }: { preview: TorrentPreview; onConfirm: (files: TorrentFile[]) => void }) {
   const files = useMemo(() => videoFiles(preview), [preview]);
-  const largest = useMemo(() => files.reduce((best, file) => (file.length > best.length ? file : best), files[0]), [files]);
-  const [selected, setSelected] = useState(largest?.index ?? 0);
+  const preferred = useMemo(() => {
+    // Archives often carry the same film in several formats; MP4/MKV play in the built-in player.
+    const friendly = files.filter((file) => playerFriendlyExtensions.test(file.path));
+    const pool = friendly.length > 0 ? friendly : files;
+    return pool.reduce((best, file) => (file.length > best.length ? file : best), pool[0]);
+  }, [files]);
+  const [selected, setSelected] = useState(preferred?.index ?? 0);
 
   return (
     <>
@@ -319,7 +403,7 @@ function AddSourceFlow({ request }: { request: AddSourceRequest }) {
     // StrictMode mounts twice in development; the torrent must be inspected once.
     if (!started.current) {
       started.current = true;
-      if (request.magnet) void inspect(backend.inspectMagnet(request.magnet));
+      if (request.magnet) void inspect(backend.inspectLink(request.magnet));
       else if (request.filePath) void inspect(backend.inspectFile(request.filePath));
     }
     return () => {
@@ -372,12 +456,13 @@ function AddSourceFlow({ request }: { request: AddSourceRequest }) {
           <InputStep
             busy={busy}
             error={error}
-            onMagnet={(magnet) => void inspect(backend.inspectMagnet(magnet))}
+            target={target}
+            onLink={(link) => void inspect(backend.inspectLink(link))}
             onFile={(path) => void inspect(backend.inspectFile(path))}
           />
         )}
 
-        {preview && !target && <TitlePicker preview={preview} onPick={setTarget} />}
+        {preview && !target && <TitlePicker preview={preview} suggested={request.suggested ?? null} onPick={setTarget} />}
 
         {preview && target && error && <p className="add-input__warning">{error}</p>}
 

@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { FolderOpen, RefreshCw } from "lucide-react";
-import { getAppInfo, isDesktop } from "../lib/backend";
+import { backend, describeError, getAppInfo, isDesktop } from "../lib/backend";
 import { useAsync } from "../lib/useAsync";
 import { useSettings } from "../state/settings";
+import { useUi } from "../state/ui";
 import { useUpdater, type UpdateStatus } from "../state/updater";
 
 const updateLabels: Record<UpdateStatus, string> = {
@@ -14,6 +15,14 @@ const updateLabels: Record<UpdateStatus, string> = {
   installing: "Устанавливаем…",
   error: "Не удалось проверить обновления.",
 };
+
+const qualityOptions = [
+  { value: 0, label: "Максимальное" },
+  { value: 2160, label: "2160p (4K)" },
+  { value: 1080, label: "1080p" },
+  { value: 720, label: "720p" },
+  { value: 480, label: "480p" },
+];
 
 function Toggle({ checked, onChange }: { checked: boolean; onChange: (value: boolean) => void }) {
   return (
@@ -28,6 +37,16 @@ export default function Settings() {
   const updater = useUpdater();
   const info = useAsync(getAppInfo, []);
   const [keyDraft, setKeyDraft] = useState(settings.tmdbKey);
+  const associations = useAsync(backend.associationStatus, [settings.handleLinks]);
+
+  const toggleLinks = async (enabled: boolean) => {
+    try {
+      await backend.setAssociations(enabled);
+      settings.patch({ handleLinks: enabled, linksPrompted: true });
+    } catch (error) {
+      useUi.getState().toast(describeError(error), "error");
+    }
+  };
 
   const chooseFolder = async () => {
     if (!isDesktop) return;
@@ -65,7 +84,56 @@ export default function Settings() {
       </section>
 
       <section className="settings-group">
+        <h2>Ссылки из браузера</h2>
+        <div className="setting">
+          <div>
+            <strong>Открывать торренты в Kinuza</strong>
+            <p>
+              Нажатие на magnet-ссылку в браузере или на .torrent-файл открывает Kinuza с готовым диалогом добавления.
+            </p>
+          </div>
+          <Toggle checked={settings.handleLinks} onChange={(value) => void toggleLinks(value)} />
+        </div>
+        {settings.handleLinks && associations.data?.overriddenByWindows && (
+          <div className="setting">
+            <div>
+              <strong>В Windows выбрана другая программа</strong>
+              <p>
+                Раньше для торрентов вручную была выбрана другая программа, и Windows использует её. Выберите Kinuza для
+                «MAGNET» и «.torrent» в параметрах.
+              </p>
+            </div>
+            <div className="setting__actions">
+              <button className="button" onClick={() => void backend.openDefaultAppsSettings()}>
+                Параметры Windows
+              </button>
+            </div>
+          </div>
+        )}
+      </section>
+
+      <section className="settings-group">
         <h2>Плеер</h2>
+        <div className="setting">
+          <div>
+            <strong>Качество по умолчанию</strong>
+            <p>
+              С какого качества начинать, когда у фильма или серии добавлено несколько источников. В плеере его можно
+              переключить в любой момент.
+            </p>
+          </div>
+          <select
+            className="select select--large"
+            value={settings.preferredQuality}
+            onChange={(event) => settings.patch({ preferredQuality: Number(event.target.value) })}
+          >
+            {qualityOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </div>
         <div className="setting">
           <div>
             <strong>Следующая серия автоматически</strong>

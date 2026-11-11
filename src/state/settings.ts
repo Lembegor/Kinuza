@@ -14,6 +14,12 @@ export interface Settings {
   muted: boolean;
   subtitleScale: number;
   autoNextEpisode: boolean;
+  /** Highest quality to start with when a title has several sources; 0 means the best available. */
+  preferredQuality: number;
+  /** Kinuza opens magnet links and .torrent files clicked in the browser or Explorer. */
+  handleLinks: boolean;
+  /** The one-time question about handling links has been shown. */
+  linksPrompted: boolean;
 }
 
 const defaults: Settings = {
@@ -24,6 +30,9 @@ const defaults: Settings = {
   muted: false,
   subtitleScale: 1,
   autoNextEpisode: true,
+  preferredQuality: 0,
+  handleLinks: false,
+  linksPrompted: false,
 };
 
 interface SettingsState extends Settings {

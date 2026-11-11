@@ -24,12 +24,12 @@ function statusText(torrent: TorrentView): string {
 /** Maps info hashes to the title they were attached to, using saved sources and watch history. */
 function useTorrentTitles(): Record<string, { path: string; label: string }> {
   const sources = useLibrary((state) => state.sources);
-  const saved = useLibrary((state) => state.saved);
+  const tracked = useLibrary((state) => state.tracked);
   const progress = useLibrary((state) => state.progress);
 
   return useMemo(() => {
     const names = new Map<string, string>();
-    for (const [key, title] of Object.entries(saved)) names.set(key, title.title);
+    for (const [key, title] of Object.entries(tracked)) names.set(key, title.title);
     for (const item of Object.values<Progress>(progress)) names.set(`${item.title.type}:${item.title.id}`, item.title.title);
 
     const result: Record<string, { path: string; label: string }> = {};
@@ -43,7 +43,7 @@ function useTorrentTitles(): Record<string, { path: string; label: string }> {
       }
     }
     return result;
-  }, [sources, saved, progress]);
+  }, [sources, tracked, progress]);
 }
 
 async function run(action: Promise<void>): Promise<void> {

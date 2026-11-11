@@ -26,8 +26,16 @@ import {
 } from "lucide-react";
 import { backend, describeError, getAppInfo, isDesktop, streamUrl, type TorrentFile } from "../lib/backend";
 import { formatBytes, formatClock, formatSpeed } from "../lib/format";
-import { baseName, isSubtitleFile } from "../lib/parse";
-import { activeCueText, decodeSubtitleBytes, parseSubtitles, type Cue } from "../lib/subtitles";
+import { baseName, isSubtitleFile, qualityFromSize, qualityRank } from "../lib/parse";
+import {
+  activeCueText,
+  compareSubtitleLabels,
+  decodeSubtitleBytes,
+  describeSubtitleFile,
+  parseSubtitles,
+  type Cue,
+  type SubtitleLabel,
+} from "../lib/subtitles";
 import { tmdb } from "../lib/tmdb";
 import { useAsync } from "../lib/useAsync";
 import { sortSources } from "../pages/Title";
@@ -73,13 +81,31 @@ type VideoWithExtras = HTMLVideoElement & {
   webkitAudioDecodedByteCount?: number;
 };
 
-function pickInitialSource(sources: Source[], preferredId: string | undefined): Source | undefined {
+interface SubtitleOption extends SubtitleLabel {
+  key: string;
+  file: TorrentFile;
+}
+
+/**
+ * Picks where playback starts: an explicit choice, else the preferred quality, else the best copy.
+ * `sources` is sorted best first; `maxQuality` 0 means no limit.
+ */
+function pickInitialSource(sources: Source[], preferredId: string | undefined, maxQuality: number): Source | undefined {
   const preferred = sources.find((source) => source.id === preferredId);
-  if (preferred) return preferred;
-  // A fully downloaded copy starts instantly, so it wins over a better one still downloading.
+  if (preferred || sources.length === 0) return preferred;
   const { byHash } = useTorrents.getState();
-  const ready = sources.find((source) => fileProgress(byHash[source.infoHash], source.fileIndex) >= 1);
-  return ready ?? sources[0];
+  const isReady = (source: Source) => fileProgress(byHash[source.infoHash], source.fileIndex) >= 1;
+
+  if (maxQuality > 0) {
+    const within = sources.filter((source) => qualityRank(source.quality) <= maxQuality);
+    // Everything is above the limit: the lowest one is the closest match.
+    const pool = within.length > 0 ? within : sources.slice(-1);
+    const top = qualityRank(pool[0].quality);
+    const sameQuality = pool.filter((source) => qualityRank(source.quality) === top);
+    return sameQuality.find(isReady) ?? sameQuality[0];
+  }
+  // A fully downloaded copy starts instantly, so it wins over a better one still downloading.
+  return sources.find(isReady) ?? sources[0];
 }
 
 function readAudioOptions(video: VideoWithExtras): { options: AudioOption[]; selected: number } {
@@ -194,7 +220,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
   const stored = useLibrary((state) => state.sources[session.unitKey]);
   const allSources = useLibrary((state) => state.sources);
   const sources = useMemo(() => sortSources(stored ?? []), [stored]);
-  const [sourceId, setSourceId] = useState(() => pickInitialSource(sources, session.preferredSourceId)?.id);
+  const [sourceId, setSourceId] = useState(() => pickInitialSource(sources, session.preferredSourceId, settings.preferredQuality)?.id);
   const source = sources.find((item) => item.id === sourceId) ?? sources[0];
   const torrent = useTorrents((state) => (source ? state.byHash[source.infoHash] : undefined));
 
@@ -214,7 +240,9 @@ function PlayerView({ session }: { session: PlayerSession }) {
   const [rate, setRate] = useState(1);
   const [audio, setAudio] = useState<{ options: AudioOption[]; selected: number }>({ options: [], selected: 0 });
   const [cues, setCues] = useState<Cue[]>([]);
-  const [subtitleName, setSubtitleName] = useState<string | null>(null);
+  const [subtitleKey, setSubtitleKey] = useState<string | null>(null);
+  const [subtitleLabel, setSubtitleLabel] = useState("");
+  const [resolution, setResolution] = useState("");
   const [subtitleText, setSubtitleText] = useState("");
   const [volume, setVolume] = useState(settings.volume);
   const [muted, setMuted] = useState(settings.muted);
@@ -239,10 +267,16 @@ function PlayerView({ session }: { session: PlayerSession }) {
     return allSources[unitKey("tv", session.title.id, next.season, next.episode)] ? next : null;
   }, [seasonEpisodes.data, allSources, session]);
 
-  const subtitleFiles = useMemo(
-    () => (torrent && source ? torrentSubtitleFiles(torrent.files, source.fileName) : []),
-    [torrent, source],
-  );
+  const subtitleOptions = useMemo<SubtitleOption[]>(() => {
+    if (!torrent || !source) return [];
+    return torrentSubtitleFiles(torrent.files, source.fileName)
+      .map((file) => ({
+        file,
+        key: `torrent:${file.index}`,
+        ...describeSubtitleFile(baseName(file.path), source.fileName),
+      }))
+      .sort(compareSubtitleLabels);
+  }, [torrent, source]);
 
   // --- source and playback lifecycle -------------------------------------------------------------
 
@@ -377,6 +411,8 @@ function PlayerView({ session }: { session: PlayerSession }) {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.ctrlKey || event.metaKey || event.altKey) return;
+      // A dialog opened over the player (a link arriving from the browser) keeps its own typing.
+      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
       const handlers: Record<string, () => void> = {
         " ": togglePlay,
         k: togglePlay,
@@ -420,23 +456,24 @@ function PlayerView({ session }: { session: PlayerSession }) {
     return () => cancelAnimationFrame(frame);
   }, [cues]);
 
-  const applySubtitles = (bytes: ArrayBuffer, name: string) => {
+  const applySubtitles = (bytes: ArrayBuffer, key: string, label: string) => {
     const parsed = parseSubtitles(decodeSubtitleBytes(bytes));
     if (parsed.length === 0) {
       toast("В файле не нашлось субтитров.", "error");
       return;
     }
     setCues(parsed);
-    setSubtitleName(name);
+    setSubtitleKey(key);
+    setSubtitleLabel(label);
     setMenu(null);
   };
 
-  const loadTorrentSubtitle = async (file: TorrentFile) => {
+  const loadTorrentSubtitle = async (option: SubtitleOption) => {
     if (!source) return;
     try {
-      const response = await fetch(await streamUrl(source.infoHash, file.index));
+      const response = await fetch(await streamUrl(source.infoHash, option.file.index));
       if (!response.ok) throw new Error("file_unreadable");
-      applySubtitles(await response.arrayBuffer(), baseName(file.path));
+      applySubtitles(await response.arrayBuffer(), option.key, option.label);
     } catch (error) {
       toast(describeError(error), "error");
     }
@@ -448,7 +485,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
       const { open } = await import("@tauri-apps/plugin-dialog");
       const picked = await open({ title: "Файл субтитров", filters: [{ name: "Субтитры", extensions: ["srt", "ass", "ssa", "vtt"] }] });
       if (typeof picked !== "string") return;
-      applySubtitles(await backend.readFileBytes(picked), baseName(picked));
+      applySubtitles(await backend.readFileBytes(picked), `disk:${picked}`, baseName(picked));
     } catch (error) {
       toast(describeError(error), "error");
     }
@@ -456,7 +493,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
 
   const disableSubtitles = () => {
     setCues([]);
-    setSubtitleName(null);
+    setSubtitleKey(null);
     setMenu(null);
   };
 
@@ -535,6 +572,8 @@ function PlayerView({ session }: { session: PlayerSession }) {
   }
 
   const downloaded = fileProgress(torrent, source.fileIndex);
+  // The light stretch shows how far ahead playback is safe; a finished file needs no such hint.
+  const bufferedAhead = downloaded >= 1 ? [] : buffered.filter((range) => range.start <= current + 1 && range.end > current);
   const subtitle = session.episode !== undefined ? `Сезон ${session.season} · Серия ${session.episode}${session.episodeName ? ` — ${session.episodeName}` : ""}` : session.title.year;
   const VolumeIcon = muted || volume === 0 ? VolumeX : volume < 0.5 ? Volume1 : Volume2;
 
@@ -571,6 +610,10 @@ function PlayerView({ session }: { session: PlayerSession }) {
             if (resumeAt.current > 0 && resumeAt.current < video.duration - 5) video.currentTime = resumeAt.current;
             resumeAt.current = 0;
             setAudio(readAudioOptions(video));
+            setResolution(video.videoWidth > 0 ? `${video.videoWidth}×${video.videoHeight}` : "");
+            // A release name does not always state the quality; the decoded picture does.
+            const detected = qualityFromSize(video.videoWidth, video.videoHeight);
+            if (detected && !source.quality) useLibrary.getState().setSourceQuality(session.unitKey, source.id, detected);
           }}
           onDurationChange={(event) => setDuration(event.currentTarget.duration)}
           onTimeUpdate={(event) => setCurrent(event.currentTarget.currentTime)}
@@ -689,7 +732,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
       )}
 
       <div className="player__bottom">
-        <SeekBar current={current} duration={duration} buffered={buffered} onSeek={seekTo} />
+        <SeekBar current={current} duration={duration} buffered={bufferedAhead} onSeek={seekTo} />
         <div className="player__controls">
           <button className="player__button player__button--main" aria-label={playing ? "Пауза" : "Смотреть"} onClick={togglePlay}>
             {playing ? <Pause size={22} fill="currentColor" /> : <Play size={22} fill="currentColor" />}
@@ -754,7 +797,13 @@ function PlayerView({ session }: { session: PlayerSession }) {
           <div className="player__menu">
             <h3>Качество</h3>
             {sources.map((item) => (
-              <QualityOption key={item.id} source={item} active={item.id === source.id} onPick={() => switchSource(item)} />
+              <QualityOption
+                key={item.id}
+                source={item}
+                active={item.id === source.id}
+                resolution={item.id === source.id ? resolution : ""}
+                onPick={() => switchSource(item)}
+              />
             ))}
             {externalPlayer && (
               <button className="player__menu-item" onClick={() => void openExternally()}>
@@ -793,16 +842,22 @@ function PlayerView({ session }: { session: PlayerSession }) {
               {cues.length === 0 ? <Check size={15} /> : <i />}
               <span>Выключены</span>
             </button>
-            {subtitleFiles.map((file) => (
-              <button key={file.index} className="player__menu-item" onClick={() => void loadTorrentSubtitle(file)}>
-                {subtitleName === baseName(file.path) ? <Check size={15} /> : <i />}
-                <span>{baseName(file.path)}</span>
+            {subtitleOptions.map((option) => (
+              <button
+                key={option.key}
+                className="player__menu-item"
+                title={baseName(option.file.path)}
+                onClick={() => void loadTorrentSubtitle(option)}
+              >
+                {subtitleKey === option.key ? <Check size={15} /> : <i />}
+                <span>{option.label}</span>
+                <small>{option.detail}</small>
               </button>
             ))}
-            {subtitleName && !subtitleFiles.some((file) => baseName(file.path) === subtitleName) && (
+            {subtitleKey?.startsWith("disk:") && (
               <button className="player__menu-item">
                 <Check size={15} />
-                <span>{subtitleName}</span>
+                <span>{subtitleLabel}</span>
               </button>
             )}
             <button className="player__menu-item" onClick={() => void loadSubtitleFromDisk()}>
@@ -828,7 +883,17 @@ function PlayerView({ session }: { session: PlayerSession }) {
   );
 }
 
-function QualityOption({ source, active, onPick }: { source: Source; active: boolean; onPick: () => void }) {
+function QualityOption({
+  source,
+  active,
+  resolution,
+  onPick,
+}: {
+  source: Source;
+  active: boolean;
+  resolution: string;
+  onPick: () => void;
+}) {
   const progress = useTorrents((state) => fileProgress(state.byHash[source.infoHash], source.fileIndex));
   return (
     <button className="player__menu-item" onClick={onPick}>
@@ -838,6 +903,7 @@ function QualityOption({ source, active, onPick }: { source: Source; active: boo
         {source.tags.length > 0 && <em> {source.tags.join(" · ")}</em>}
       </span>
       <small>
+        {resolution && `${resolution} · `}
         {formatBytes(source.size)} · {progress >= 1 ? "скачано" : `${Math.floor(progress * 100)}%`}
       </small>
     </button>

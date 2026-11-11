@@ -7,12 +7,17 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::{
+    associations::{self, AssociationStatus},
     engine::{TorrentPreview, TorrentView},
-    external_player, AppState,
+    external_player,
+    launch::LaunchRequest,
+    AppState,
 };
 
 /// Subtitle files are small; anything bigger is refused instead of being pushed through the bridge.
 const MAX_READABLE_FILE_BYTES: u64 = 8 * 1024 * 1024;
+/// Torrent files are fetched over HTTP only from the Internet Archive.
+const ARCHIVE_TORRENT_PREFIX: &str = "https://archive.org/download/";
 
 type CommandResult<T> = Result<T, String>;
 
@@ -42,11 +47,17 @@ pub fn app_info(app: tauri::AppHandle, state: State<'_, AppState>) -> AppInfo {
 #[tauri::command]
 pub async fn torrent_inspect(
     state: State<'_, AppState>,
-    magnet: Option<String>,
+    link: Option<String>,
     path: Option<String>,
 ) -> CommandResult<TorrentPreview> {
-    let source = match (magnet, path) {
-        (Some(magnet), _) => AddTorrent::from_url(magnet.trim().to_owned()),
+    let source = match (link, path) {
+        (Some(link), _) => {
+            let link = link.trim().to_owned();
+            if !is_supported_link(&link) {
+                return Err("bad_link".to_owned());
+            }
+            AddTorrent::from_url(link)
+        }
         (None, Some(path)) => {
             let bytes = std::fs::read(&path).map_err(|_| "torrent_file_unreadable".to_owned())?;
             AddTorrent::from_bytes(bytes)
@@ -54,6 +65,11 @@ pub async fn torrent_inspect(
         (None, None) => return Err("no_source".to_owned()),
     };
     state.engine.inspect(source).await.map_err(to_message)
+}
+
+/// A magnet link, or the address of a torrent file hosted by the Internet Archive.
+fn is_supported_link(link: &str) -> bool {
+    link.to_ascii_lowercase().starts_with("magnet:?") || link.starts_with(ARCHIVE_TORRENT_PREFIX)
 }
 
 #[tauri::command]
@@ -168,4 +184,37 @@ pub fn read_file_bytes(path: String) -> CommandResult<tauri::ipc::Response> {
     }
     let bytes = std::fs::read(&path).map_err(|_| "file_unreadable".to_owned())?;
     Ok(tauri::ipc::Response::new(bytes))
+}
+
+/// Returns the link the app was started with, once.
+#[tauri::command]
+pub fn take_launch_request(state: State<'_, AppState>) -> Option<LaunchRequest> {
+    state.pending_launch.lock().ok()?.take()
+}
+
+#[tauri::command]
+pub fn associations_status() -> AssociationStatus {
+    associations::status()
+}
+
+/// Makes Kinuza the handler of magnet links and .torrent files, or gives them back.
+#[tauri::command]
+pub fn associations_set(enabled: bool) -> CommandResult<AssociationStatus> {
+    let result = if enabled {
+        associations::enable()
+    } else {
+        associations::disable()
+    };
+    result.map_err(|_| "associations_failed".to_owned())?;
+    Ok(associations::status())
+}
+
+/// Opens the Windows page where the user picks default programs.
+#[tauri::command]
+pub fn open_default_apps_settings() -> CommandResult<()> {
+    std::process::Command::new("explorer.exe")
+        .arg("ms-settings:defaultapps")
+        .spawn()
+        .map(|_| ())
+        .map_err(|_| "settings_unavailable".to_owned())
 }

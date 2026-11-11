@@ -17,12 +17,16 @@ export interface Toast {
 /** What a new torrent should be attached to. Without a target the dialog asks for the title. */
 export interface AddSourceTarget {
   title: TitleRef;
+  /** Title in the original language; free copies are looked up by it. */
+  originalTitle?: string;
   seasons: SeasonInfo[];
   defaultSeason: number;
 }
 
 export interface AddSourceRequest {
   target: AddSourceTarget | null;
+  /** Offered first when the dialog has to ask which title the torrent belongs to. */
+  suggested?: AddSourceTarget | null;
   magnet?: string;
   filePath?: string;
 }
