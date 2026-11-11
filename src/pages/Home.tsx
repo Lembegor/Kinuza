@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Info, Play, Star } from "lucide-react";
+import { ChevronLeft, ChevronRight, Info, Play, Star } from "lucide-react";
 import { CatalogError, PosterRow, Row, typeLabel } from "../components/Cards";
+import { t, useT } from "../lib/i18n";
 import { imageUrl, tmdb, type MediaItem } from "../lib/tmdb";
 import { useAsync } from "../lib/useAsync";
-import { entryToRef, isWatched, useLibrary, type Progress } from "../state/library";
+import { isNewEpisode, useEpisodeCalendar, type CalendarEpisode } from "../state/calendar";
+import { usePersonalFeed } from "../state/feed";
+import { entryToRef, isWatched, titleKey, useLibrary, type Progress, type TitleRef } from "../state/library";
 import { useUi } from "../state/ui";
 
 const heroRotationMs = 10000;
@@ -12,26 +15,41 @@ const heroItemCount = 6;
 /** Progress shorter than this is treated as an accidental start, not something to resume. */
 const minResumeSeconds = 30;
 const continueRowLimit = 12;
+const secondsPerMinute = 60;
+const minutesPerHour = 60;
+
+/** A film and a series may share a number, so the kind is part of a slide's identity. */
+function slideKey(slide: MediaItem): string {
+  return titleKey(slide.type, slide.id);
+}
 
 function Hero({ items }: { items: MediaItem[] }) {
+  const { t } = useT();
   const navigate = useNavigate();
   const [index, setIndex] = useState(0);
+  const [paused, setPaused] = useState(false);
   const slides = useMemo(() => items.filter((item) => item.backdrop && item.overview).slice(0, heroItemCount), [items]);
 
+  // Restarts on every slide change, so a slide picked by hand stays for the full interval.
   useEffect(() => {
-    if (slides.length < 2) return;
-    const timer = setInterval(() => setIndex((value) => (value + 1) % slides.length), heroRotationMs);
-    return () => clearInterval(timer);
-  }, [slides.length]);
+    if (slides.length < 2 || paused) return;
+    const timer = setTimeout(() => setIndex((value) => (value + 1) % slides.length), heroRotationMs);
+    return () => clearTimeout(timer);
+  }, [slides.length, index, paused]);
 
   const current = slides[index];
   if (!current) return <div className="hero hero--skeleton" />;
 
+  const step = (direction: 1 | -1) => setIndex((value) => (value + direction + slides.length) % slides.length);
+  const open = () => navigate(`/title/${current.type}/${current.id}`);
+
   return (
-    <section className="hero">
+    <section className="hero" onMouseEnter={() => setPaused(true)} onMouseLeave={() => setPaused(false)}>
+      {/* A soft, blurred copy fills the width; the sharp picture keeps its own proportions on the right. */}
+      <img key={`ambient:${slideKey(current)}`} className="hero__ambient" src={imageUrl(current.backdrop, "w780") ?? undefined} alt="" draggable={false} />
       {slides.map((slide, slideIndex) => (
         <img
-          key={slide.id}
+          key={slideKey(slide)}
           className={`hero__backdrop ${slideIndex === index ? "is-active" : ""}`}
           src={imageUrl(slide.backdrop, "w1280") ?? undefined}
           alt=""
@@ -39,9 +57,10 @@ function Hero({ items }: { items: MediaItem[] }) {
         />
       ))}
       <div className="hero__shade" />
-      <div className="hero__body" key={current.id}>
+      <button className="hero__open" aria-label={t("home.hero.open", { title: current.title })} onClick={open} />
+      <div className="hero__body" key={`body:${slideKey(current)}`}>
         <div className="hero__kicker">
-          <span>В тренде</span>
+          <span>{t("home.hero.trending")}</span>
           <span>{typeLabel(current)}</span>
           {current.year && <span>{current.year}</span>}
           {current.rating > 0 && (
@@ -51,40 +70,68 @@ function Hero({ items }: { items: MediaItem[] }) {
             </span>
           )}
         </div>
-        <h1>{current.title}</h1>
+        <h1>
+          <button onClick={open}>{current.title}</button>
+        </h1>
         <p>{current.overview}</p>
         <div className="hero__actions">
-          <button className="button button--primary button--large" onClick={() => navigate(`/title/${current.type}/${current.id}`)}>
+          <button className="button button--primary button--large" onClick={open}>
             <Info size={18} />
-            Подробнее
+            {t("home.hero.details")}
           </button>
         </div>
       </div>
-      <div className="hero__dots">
-        {slides.map((slide, slideIndex) => (
-          <button
-            key={slide.id}
-            aria-label={slide.title}
-            className={slideIndex === index ? "is-active" : ""}
-            onClick={() => setIndex(slideIndex)}
-          />
-        ))}
-      </div>
+      {slides.length > 1 && (
+        // Arrows and dots share one corner, away from the title.
+        <div className="hero__nav">
+          <button className="hero__arrow" aria-label={t("home.hero.previous")} onClick={() => step(-1)}>
+            <ChevronLeft size={20} />
+          </button>
+          <div className="hero__dots">
+            {slides.map((slide, slideIndex) => (
+              <button
+                key={slideKey(slide)}
+                aria-label={slide.title}
+                className={slideIndex === index ? "is-active" : ""}
+                onClick={() => setIndex(slideIndex)}
+              />
+            ))}
+          </div>
+          <button className="hero__arrow" aria-label={t("home.hero.next")} onClick={() => step(1)}>
+            <ChevronRight size={20} />
+          </button>
+        </div>
+      )}
     </section>
   );
 }
 
+function remainingLabel(progress: Progress): string {
+  const minutes = Math.max(1, Math.round((progress.duration - progress.position) / secondsPerMinute));
+  const hours = Math.floor(minutes / minutesPerHour);
+  const time =
+    hours > 0
+      ? t("common.duration.hoursMinutes", { hours, minutes: minutes % minutesPerHour })
+      : t("common.duration.minutes", { minutes });
+  return t("home.continue.remaining", { time });
+}
+
 function ContinueCard({ unitKey, progress }: { unitKey: string; progress: Progress }) {
+  const { t } = useT();
   const play = useUi((state) => state.play);
   const navigate = useNavigate();
   const hasSource = useLibrary((state) => (state.sources[unitKey]?.length ?? 0) > 0);
   const { title } = progress;
   const art = imageUrl(title.backdrop, "w780") ?? imageUrl(title.poster, "w342");
-  const episodeLabel = progress.season !== undefined ? `Сезон ${progress.season} · Серия ${progress.episode}` : "Фильм";
+  const episodeLabel =
+    progress.season !== undefined
+      ? t("common.seasonEpisode", { season: progress.season, episode: progress.episode ?? "" })
+      : t("common.type.movie");
 
-  const open = () => {
+  const openTitle = () => navigate(`/title/${title.type}/${title.id}`);
+  const resume = () => {
     if (!hasSource) {
-      navigate(`/title/${title.type}/${title.id}`);
+      openTitle();
       return;
     }
     play({
@@ -96,9 +143,10 @@ function ContinueCard({ unitKey, progress }: { unitKey: string; progress: Progre
     });
   };
 
+  // The picture resumes playback; the name and the corner button lead to the title's page.
   return (
-    <button className="continue-card" onClick={open}>
-      <div className="continue-card__art">
+    <div className="continue-card">
+      <button className="continue-card__art" aria-label={t("home.continue.resume", { title: title.title })} onClick={resume}>
         {art && <img src={art} alt="" loading="lazy" draggable={false} />}
         <span className="continue-card__play">
           <Play size={22} fill="currentColor" />
@@ -106,16 +154,23 @@ function ContinueCard({ unitKey, progress }: { unitKey: string; progress: Progre
         <div className="bar bar--thin">
           <i style={{ width: `${(progress.position / progress.duration) * 100}%` }} />
         </div>
-      </div>
-      <div className="poster-card__title">{title.title}</div>
-      <div className="poster-card__meta">
-        <span>{episodeLabel}</span>
-      </div>
-    </button>
+      </button>
+      <button className="continue-card__info" aria-label={t("home.continue.page", { title: title.title })} title={t("common.openPage")} onClick={openTitle}>
+        <Info size={16} />
+      </button>
+      <button className="continue-card__text" onClick={openTitle}>
+        <div className="poster-card__title">{title.title}</div>
+        <div className="poster-card__meta">
+          <span>{episodeLabel}</span>
+          {progress.duration > secondsPerMinute && <span>{remainingLabel(progress)}</span>}
+        </div>
+      </button>
+    </div>
   );
 }
 
 function ContinueRow() {
+  const { t } = useT();
   const progress = useLibrary((state) => state.progress);
   const entries = useMemo(
     () =>
@@ -127,7 +182,7 @@ function ContinueRow() {
   );
   if (entries.length === 0) return null;
   return (
-    <Row title="Продолжить просмотр">
+    <Row title={t("home.row.continue")}>
       {entries.map(([key, item]) => (
         <ContinueCard key={key} unitKey={key} progress={item} />
       ))}
@@ -135,7 +190,44 @@ function ContinueRow() {
   );
 }
 
+/** One card per series that has episodes out and not watched yet; the series with the latest episode first. */
+function NewEpisodesRow() {
+  const { t, tn } = useT();
+  const calendar = useEpisodeCalendar();
+  const progress = useLibrary((state) => state.progress);
+  const items = useMemo(() => {
+    const bySeries = new Map<number, CalendarEpisode[]>();
+    for (const episode of calendar.episodes ?? []) {
+      if (!isNewEpisode(episode, progress, calendar.today)) continue;
+      bySeries.set(episode.title.id, [...(bySeries.get(episode.title.id) ?? []), episode]);
+    }
+    // The schedule runs from the earliest day, so the last episode of each list is the latest.
+    const latest = (episodes: CalendarEpisode[]) => episodes[episodes.length - 1];
+    return [...bySeries.values()]
+      .sort((a, b) => latest(b).airDate.localeCompare(latest(a).airDate))
+      .map((episodes) => ({
+        ...episodes[0].title,
+        note:
+          episodes.length === 1
+            ? t("common.seasonEpisode", { season: episodes[0].season, episode: episodes[0].episode })
+            : tn("calendar.new.count", episodes.length),
+      }));
+  }, [calendar.episodes, calendar.today, progress, t, tn]);
+  return <PosterRow title={t("home.row.newEpisodes")} items={items} />;
+}
+
+/** "Not interested" on a recommendation: it goes at once, and a toast offers to take that back. */
+function dismissRecommendation(title: TitleRef): void {
+  const { dismiss, restoreDismissed } = useLibrary.getState();
+  dismiss(title);
+  useUi.getState().toast(t("feed.dismissed", { title: title.title }), "info", {
+    label: t("feed.dismissed.undo"),
+    run: () => restoreDismissed(titleKey(title.type, title.id)),
+  });
+}
+
 export default function Home() {
+  const { t } = useT();
   const trending = useAsync(tmdb.trending, []);
   const movies = useAsync(tmdb.popularMovies, []);
   const series = useAsync(tmdb.popularSeries, []);
@@ -145,6 +237,7 @@ export default function Home() {
   const topSeries = useAsync(tmdb.topSeries, []);
   const animeMovies = useAsync(tmdb.animeMovies, []);
   const tracked = useLibrary((state) => state.tracked);
+  const feed = usePersonalFeed();
   const planned = useMemo(
     () =>
       Object.values(tracked)
@@ -168,15 +261,19 @@ export default function Home() {
       <Hero items={trending.data ?? []} />
       <div className="page__rows">
         <ContinueRow />
-        {planned.length > 0 && <PosterRow title="Запланировано" items={planned} />}
-        <PosterRow title="Сейчас в тренде" items={trending.data} />
-        <PosterRow title="Сейчас в кино" items={nowPlaying.data} />
-        <PosterRow title="Популярные сериалы" items={series.data} />
-        <PosterRow title="Аниме" items={anime.data} />
-        <PosterRow title="Популярные фильмы" items={movies.data} />
-        <PosterRow title="Аниме-фильмы" items={animeMovies.data} />
-        <PosterRow title="Лучшие фильмы" items={topMovies.data} />
-        <PosterRow title="Лучшие сериалы" items={topSeries.data} />
+        <NewEpisodesRow />
+        {/* A skeleton row holds the place while the picks load, so the page does not jump. */}
+        {feed.available && feed.rows === null && <PosterRow title={t("feed.forYou")} items={null} />}
+        {feed.rows?.map((row) => <PosterRow key={row.id} title={row.title} items={row.items} onDismiss={dismissRecommendation} />)}
+        {planned.length > 0 && <PosterRow title={t("home.row.planned")} items={planned} />}
+        <PosterRow title={t("home.row.trending")} items={trending.data} />
+        <PosterRow title={t("home.row.nowPlaying")} items={nowPlaying.data} />
+        <PosterRow title={t("home.row.popularSeries")} items={series.data} />
+        <PosterRow title={t("home.row.anime")} items={anime.data} />
+        <PosterRow title={t("home.row.popularMovies")} items={movies.data} />
+        <PosterRow title={t("home.row.animeMovies")} items={animeMovies.data} />
+        <PosterRow title={t("home.row.topMovies")} items={topMovies.data} />
+        <PosterRow title={t("home.row.topSeries")} items={topSeries.data} />
       </div>
     </div>
   );

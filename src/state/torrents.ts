@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { backend, type TorrentFile, type TorrentView } from "../lib/backend";
+import { report } from "../lib/journal";
 
 const pollIntervalMs = 1500;
 
@@ -18,7 +19,7 @@ export const useTorrents = create<TorrentsState>((set) => ({
       const list = await backend.listTorrents();
       set({ list, byHash: Object.fromEntries(list.map((torrent) => [torrent.infoHash, torrent])) });
     } catch (error) {
-      console.error("torrents: refresh failed", error);
+      report("downloads", "journal.torrents.refresh", error);
     }
   },
 }));

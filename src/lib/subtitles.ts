@@ -1,5 +1,7 @@
 // Parses SRT, WebVTT and ASS/SSA subtitles into plain timed cues.
 
+import { currentLocale, t, type MessageKey } from "./i18n";
+
 export interface Cue {
   start: number;
   end: number;
@@ -87,7 +89,18 @@ export function activeCueText(cues: Cue[], time: number): string {
     .join("\n");
 }
 
-const languageNames = new Intl.DisplayNames(["ru"], { type: "language", fallback: "none" });
+/** Language names in each interface language asked for so far. */
+const languageNamesByLocale = new Map<string, Intl.DisplayNames>();
+
+function languageNames(): Intl.DisplayNames {
+  const locale = currentLocale();
+  let names = languageNamesByLocale.get(locale);
+  if (!names) {
+    names = new Intl.DisplayNames([locale], { type: "language", fallback: "none" });
+    languageNamesByLocale.set(locale, names);
+  }
+  return names;
+}
 
 /** Spellings that are not plain ISO 639-1/-3 codes: bibliographic codes and full English names. */
 const languageAliases: Record<string, string> = {
@@ -101,12 +114,12 @@ const languageAliases: Record<string, string> = {
   hun: "hu", hungarian: "hu", ara: "ar", arabic: "ar", heb: "he", hebrew: "he",
 };
 
-const subtitleFlags: Record<string, string> = {
-  forced: "только надписи",
-  signs: "только надписи",
-  sdh: "для слабослышащих",
-  cc: "для слабослышащих",
-  full: "полные",
+const subtitleFlags: Record<string, MessageKey> = {
+  forced: "player.subtitles.signsOnly",
+  signs: "player.subtitles.signsOnly",
+  sdh: "player.subtitles.sdh",
+  cc: "player.subtitles.sdh",
+  full: "player.subtitles.full",
 };
 
 /** Languages listed first in the subtitle menu. */
@@ -126,7 +139,7 @@ function toLanguageCode(token: string): string | null {
   if (languageAliases[token]) return languageAliases[token];
   if (!/^[a-z]{2,3}$/.test(token)) return null;
   try {
-    return languageNames.of(token) ? token : null;
+    return languageNames().of(token) ? token : null;
   } catch {
     return null;
   }
@@ -144,16 +157,16 @@ export function describeSubtitleFile(fileName: string, videoFileName: string): S
   const tokens = sharesVideoName ? allTokens : allTokens.slice(-tailTokenCount);
 
   let languageCode: string | null = null;
-  const flags: string[] = [];
+  const flags: MessageKey[] = [];
   for (const token of tokens) {
     if (subtitleFlags[token]) flags.push(subtitleFlags[token]);
     else languageCode ??= toLanguageCode(token);
   }
 
-  const name = languageCode ? languageNames.of(languageCode) : undefined;
+  const name = languageCode ? languageNames().of(languageCode) : undefined;
   return {
     label: name ? name.charAt(0).toUpperCase() + name.slice(1) : stem,
-    detail: [...new Set(flags), extension.toUpperCase()].join(" · "),
+    detail: [...[...new Set(flags)].map((flag) => t(flag)), extension.toUpperCase()].join(" · "),
     languageCode: name ? languageCode : null,
   };
 }
@@ -165,5 +178,5 @@ function languageOrder(label: SubtitleLabel): number {
 }
 
 export function compareSubtitleLabels(a: SubtitleLabel, b: SubtitleLabel): number {
-  return languageOrder(a) - languageOrder(b) || a.label.localeCompare(b.label, "ru");
+  return languageOrder(a) - languageOrder(b) || a.label.localeCompare(b.label, currentLocale());
 }

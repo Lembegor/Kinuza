@@ -123,12 +123,72 @@ pub async fn torrent_select_files(
     state: State<'_, AppState>,
     info_hash: String,
     files: Vec<usize>,
+    download_dir: Option<String>,
 ) -> CommandResult<()> {
+    let download_dir = download_dir
+        .filter(|dir| !dir.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| state.default_download_dir.clone());
     state
         .engine
-        .select_files(&info_hash, &files)
+        .select_files(&info_hash, &files, &download_dir)
         .await
         .map_err(to_message)
+}
+
+/// Ends an online viewing of a torrent: the data fetched for it is deleted.
+#[tauri::command]
+pub async fn torrent_release(state: State<'_, AppState>, info_hash: String) -> CommandResult<()> {
+    state.engine.release_online(&info_hash).await.map_err(to_message)
+}
+
+/// Applies the speed limits, the download queue size and the seeding limit from the settings.
+#[tauri::command]
+pub fn torrent_set_policy(state: State<'_, AppState>, policy: crate::engine::DownloadPolicy) {
+    state.engine.set_policy(policy);
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StorageInfo {
+    /// Free space on the disk that holds the download folder.
+    free_bytes: u64,
+    total_bytes: u64,
+}
+
+/// Free and total space of the disk downloads go to.
+#[tauri::command]
+pub fn storage_info(state: State<'_, AppState>, download_dir: Option<String>) -> CommandResult<StorageInfo> {
+    let folder = download_dir
+        .filter(|dir| !dir.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| state.default_download_dir.clone());
+    disk_space(&folder).ok_or_else(|| "storage_unknown".to_owned())
+}
+
+#[cfg(windows)]
+fn disk_space(folder: &std::path::Path) -> Option<StorageInfo> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+
+    // The folder may not exist yet; its nearest existing parent is on the same disk.
+    let existing = folder.ancestors().find(|path| path.exists())?;
+    let wide: Vec<u16> = existing.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let (mut free, mut total) = (0u64, 0u64);
+    // SAFETY: `wide` is a NUL-terminated path that outlives the call; the out pointers are valid u64s.
+    let ok = unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut free, &mut total, std::ptr::null_mut()) };
+    (ok != 0).then_some(StorageInfo { free_bytes: free, total_bytes: total })
+}
+
+#[cfg(not(windows))]
+fn disk_space(_folder: &std::path::Path) -> Option<StorageInfo> {
+    None
+}
+
+/// Saves text to a file the user chose in a save dialog (a backup of their lists, a log).
+#[tauri::command]
+pub fn write_text_file(path: String, contents: String) -> CommandResult<()> {
+    std::fs::write(&path, contents).map_err(|_| "file_unwritable".to_owned())
 }
 
 #[tauri::command]
@@ -154,7 +214,7 @@ pub async fn open_external(
     let player = external_player::find().ok_or_else(|| "no_external_player".to_owned())?;
     state
         .engine
-        .prepare_stream(&info_hash, file_index)
+        .prepare_stream(&info_hash)
         .await
         .map_err(to_message)?;
 

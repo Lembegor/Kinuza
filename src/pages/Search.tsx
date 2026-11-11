@@ -2,16 +2,17 @@ import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { SearchX } from "lucide-react";
 import { CatalogError, EmptyState, PosterGrid } from "../components/Cards";
+import { useT, type MessageKey } from "../lib/i18n";
 import { tmdb, type MediaItem } from "../lib/tmdb";
 import { useAsync } from "../lib/useAsync";
 
 type Filter = "all" | "movie" | "tv" | "anime";
 
-const filters: { id: Filter; label: string }[] = [
-  { id: "all", label: "Всё" },
-  { id: "movie", label: "Фильмы" },
-  { id: "tv", label: "Сериалы" },
-  { id: "anime", label: "Аниме" },
+const filters: { id: Filter; label: MessageKey }[] = [
+  { id: "all", label: "search.filter.all" },
+  { id: "movie", label: "search.filter.movies" },
+  { id: "tv", label: "search.filter.series" },
+  { id: "anime", label: "search.filter.anime" },
 ];
 
 function matches(item: MediaItem, filter: Filter): boolean {
@@ -21,6 +22,7 @@ function matches(item: MediaItem, filter: Filter): boolean {
 }
 
 export default function Search() {
+  const { t } = useT();
   const [params] = useSearchParams();
   const query = (params.get("q") ?? "").trim();
   const [filter, setFilter] = useState<Filter>("all");
@@ -31,7 +33,7 @@ export default function Search() {
   return (
     <div className="page">
       <div className="page__head">
-        <h1>{query ? `«${query}»` : "Поиск"}</h1>
+        <h1>{query ? t("search.query", { query }) : t("search.title")}</h1>
         <div className="chips">
           {filters.map((item) => (
             <button
@@ -39,7 +41,7 @@ export default function Search() {
               className={`chip ${filter === item.id ? "is-active" : ""}`}
               onClick={() => setFilter(item.id)}
             >
-              {item.label}
+              {t(item.label)}
             </button>
           ))}
         </div>
@@ -58,8 +60,8 @@ export default function Search() {
       ) : (
         <EmptyState
           icon={<SearchX size={40} />}
-          title={query ? "Ничего не нашлось" : "Введите название"}
-          text={query ? "Попробуйте другое написание или оригинальное название." : "Поиск работает по фильмам, сериалам и аниме."}
+          title={query ? t("search.empty.title") : t("search.prompt.title")}
+          text={query ? t("search.empty.text") : t("search.prompt.text")}
         />
       )}
     </div>

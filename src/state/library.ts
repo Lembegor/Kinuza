@@ -2,7 +2,18 @@
 // to movies and episodes, and watch progress.
 
 import { create } from "zustand";
+import {
+  accountDataVersion,
+  dismissedRemovalKey,
+  mergeAccountData,
+  progressRemovalKey,
+  trackedRemovalKey,
+  type AccountData,
+  type Dismissal,
+  type TitlePreferences,
+} from "../lib/account";
 import { backend } from "../lib/backend";
+import { t, type MessageKey } from "../lib/i18n";
 import type { MediaItem, MediaType } from "../lib/tmdb";
 
 const storeName = "library";
@@ -11,6 +22,11 @@ const specialsSeason = 0;
 /** A unit counts as watched once this share of it has been played. */
 export const watchedThreshold = 0.92;
 export const maxRating = 10;
+/**
+ * The rating a title gets when the user names it as one they like during the first-run
+ * introduction: clearly liked, without claiming it is a favourite or that it was watched to the end.
+ */
+export const likedPickRating = 8;
 
 export interface TitleRef {
   type: MediaType;
@@ -23,16 +39,19 @@ export interface TitleRef {
 
 export type WatchStatus = "watching" | "planned" | "completed" | "onHold" | "dropped";
 
-export const watchStatuses: { id: WatchStatus; label: string }[] = [
-  { id: "watching", label: "Смотрю" },
-  { id: "planned", label: "Запланировано" },
-  { id: "completed", label: "Просмотрено" },
-  { id: "onHold", label: "Отложено" },
-  { id: "dropped", label: "Брошено" },
+/** The statuses in the order they are offered; `labelKey` names the message with the status's name. */
+export const watchStatuses: { id: WatchStatus; labelKey: MessageKey }[] = [
+  { id: "watching", labelKey: "status.watching" },
+  { id: "planned", labelKey: "status.planned" },
+  { id: "completed", labelKey: "status.completed" },
+  { id: "onHold", labelKey: "status.onHold" },
+  { id: "dropped", labelKey: "status.dropped" },
 ];
 
+/** The status's name in the interface language. */
 export function statusLabel(status: WatchStatus): string {
-  return watchStatuses.find((item) => item.id === status)?.label ?? "";
+  const key = watchStatuses.find((item) => item.id === status)?.labelKey;
+  return key ? t(key) : "";
 }
 
 export interface TrackEntry extends TitleRef {
@@ -72,8 +91,17 @@ type EpisodeContext = Omit<Progress, "position" | "duration" | "updatedAt">;
 
 interface LibraryData {
   tracked: Record<string, TrackEntry>;
+  /** Torrents attached to titles: this computer's, unlike the rest, which is the user's (see `AccountData`). */
   sources: Record<string, Source[]>;
   progress: Record<string, Progress>;
+  /** Deletion times by `tracked:<key>` / `progress:<key>`, kept so a future sync does not undo a deletion. */
+  removed: Record<string, number>;
+  /** How each title is watched: voice-over, subtitles, speed, timing corrections. By `type:id`. */
+  preferences: Record<string, TitlePreferences>;
+  /** Recommendations the user is not interested in, by `type:id`. */
+  dismissed: Record<string, Dismissal>;
+  /** When the first-run introduction was finished or skipped. */
+  onboardedAt?: number;
 }
 
 /** Shape of the file written before statuses existed: bookmarks only. */
@@ -83,6 +111,11 @@ interface LegacyData {
 
 interface LibraryState extends LibraryData {
   loaded: boolean;
+  /**
+   * The user has nothing yet and has not been through the introduction, so the app opens with it.
+   * Decided when the data is read: titles added during the introduction must not cut it short.
+   */
+  firstRun: boolean;
   load: () => Promise<void>;
   setStatus: (title: TitleRef, status: WatchStatus) => void;
   setRating: (title: TitleRef, rating: number | null) => void;
@@ -96,6 +129,18 @@ interface LibraryState extends LibraryData {
   setProgress: (unitKey: string, progress: Progress) => void;
   setWatched: (unitKey: string, watched: boolean, context: EpisodeContext) => void;
   setManyWatched: (entries: { unitKey: string; context: EpisodeContext }[], watched: boolean) => void;
+  /** Remembers how the user watches this title; only the given fields change. */
+  setTitlePreferences: (title: Pick<TitleRef, "type" | "id">, change: Partial<Omit<TitlePreferences, "updatedAt">>) => void;
+  /** "Not interested": keeps the title out of recommendations from now on. */
+  dismiss: (title: TitleRef) => void;
+  /** Takes a dismissal back. */
+  restoreDismissed: (key: string) => void;
+  /** Ends the first-run introduction for good; `liked` are the titles the user picked in it, if any. */
+  finishOnboarding: (liked: TitleRef[]) => void;
+  /** Statuses, ratings and progress in the form an account would store. */
+  exportAccountData: () => AccountData;
+  /** Folds another copy of the user's data (another device, a server) into this one; the later change wins. */
+  mergeAccountData: (other: AccountData) => void;
 }
 
 export function titleKey(type: MediaType, id: number): string {
@@ -181,17 +226,50 @@ function migrate(data: Partial<LibraryData> & LegacyData): LibraryData {
       updatedAt: item.updatedAt,
     };
   }
-  return { tracked, sources: data.sources ?? {}, progress };
+  return {
+    tracked,
+    sources: data.sources ?? {},
+    progress,
+    removed: data.removed ?? {},
+    preferences: data.preferences ?? {},
+    dismissed: data.dismissed ?? {},
+    onboardedAt: data.onboardedAt,
+  };
+}
+
+function isEmpty(record: Record<string, unknown>): boolean {
+  return Object.keys(record).length === 0;
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
+/** The latest state not yet on disk; null when everything is written. */
+let unsaved: LibraryData | null = null;
+
+function write(state: LibraryData): Promise<void> {
+  const data: LibraryData = {
+    tracked: state.tracked,
+    sources: state.sources,
+    progress: state.progress,
+    removed: state.removed,
+    preferences: state.preferences,
+    dismissed: state.dismissed,
+    onboardedAt: state.onboardedAt,
+  };
+  return backend.storeSet(storeName, JSON.stringify(data)).catch((error) => console.error("library: save failed", error));
+}
 
 function scheduleSave(state: LibraryData): void {
+  unsaved = state;
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => {
-    const data: LibraryData = { tracked: state.tracked, sources: state.sources, progress: state.progress };
-    backend.storeSet(storeName, JSON.stringify(data)).catch((error) => console.error("library: save failed", error));
-  }, saveDelayMs);
+  saveTimer = setTimeout(() => void flushLibrary(), saveDelayMs);
+}
+
+/** Writes pending changes now instead of after the usual delay; the app calls this before it closes. */
+export function flushLibrary(): Promise<void> {
+  clearTimeout(saveTimer);
+  const pending = unsaved;
+  unsaved = null;
+  return pending ? write(pending) : Promise.resolve();
 }
 
 export const useLibrary = create<LibraryState>((set, get) => {
@@ -213,12 +291,20 @@ export const useLibrary = create<LibraryState>((set, get) => {
     tracked: {},
     sources: {},
     progress: {},
+    removed: {},
+    preferences: {},
+    dismissed: {},
+    onboardedAt: undefined,
     loaded: false,
+    firstRun: false,
 
     async load() {
       try {
         const text = await backend.storeGet(storeName);
-        set({ ...migrate(text ? JSON.parse(text) : {}), loaded: true });
+        const data = migrate(text ? JSON.parse(text) : {});
+        // Someone who already keeps a list here does not need the app introduced to them.
+        const firstRun = !data.onboardedAt && isEmpty(data.tracked) && isEmpty(data.progress);
+        set({ ...data, firstRun, loaded: true });
       } catch (error) {
         console.error("library: load failed", error);
         set({ loaded: true });
@@ -232,7 +318,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
       update((state) => {
         const tracked = { ...state.tracked };
         delete tracked[key];
-        return { tracked };
+        return { tracked, removed: { ...state.removed, [trackedRemovalKey(key)]: Date.now() } };
       });
     },
 
@@ -313,14 +399,71 @@ export const useLibrary = create<LibraryState>((set, get) => {
       if (entries.length === 0) return;
       update((state) => {
         const progress = { ...state.progress };
+        const removed = { ...state.removed };
         const now = Date.now();
         for (const { unitKey: key, context } of entries) {
-          if (watched) progress[key] = { ...context, position: 1, duration: 1, updatedAt: now };
-          else delete progress[key];
+          if (watched) {
+            progress[key] = { ...context, position: 1, duration: 1, updatedAt: now };
+          } else {
+            delete progress[key];
+            removed[progressRemovalKey(key)] = now;
+          }
         }
         const tracked = watched ? withAutoStatus(state.tracked, progress, entries[0].context.title) : state.tracked;
-        return { progress, tracked };
+        return { progress, tracked, removed };
       });
+    },
+
+    setTitlePreferences(title, change) {
+      update((state) => {
+        const key = titleKey(title.type, title.id);
+        return { preferences: { ...state.preferences, [key]: { ...state.preferences[key], ...change, updatedAt: Date.now() } } };
+      });
+    },
+
+    dismiss(title) {
+      update((state) => {
+        const key = titleKey(title.type, title.id);
+        const { type, id, title: name, poster, backdrop, year } = title;
+        return { dismissed: { ...state.dismissed, [key]: { type, id, title: name, poster, backdrop, year, updatedAt: Date.now() } } };
+      });
+    },
+
+    restoreDismissed(key) {
+      update((state) => {
+        if (!state.dismissed[key]) return {};
+        const dismissed = { ...state.dismissed };
+        delete dismissed[key];
+        return { dismissed, removed: { ...state.removed, [dismissedRemovalKey(key)]: Date.now() } };
+      });
+    },
+
+    finishOnboarding(liked) {
+      set({ firstRun: false });
+      update((state) => {
+        const now = Date.now();
+        const tracked = { ...state.tracked };
+        for (const title of liked) {
+          const key = titleKey(title.type, title.id);
+          tracked[key] ??= { ...title, status: null, rating: likedPickRating, addedAt: now, updatedAt: now };
+        }
+        return { tracked, onboardedAt: state.onboardedAt ?? now };
+      });
+    },
+
+    exportAccountData() {
+      const { tracked, progress, removed, preferences, dismissed, onboardedAt } = get();
+      return { version: accountDataVersion, tracked, progress, removed, preferences, dismissed, onboardedAt };
+    },
+
+    mergeAccountData(other) {
+      update(() => {
+        const merged = mergeAccountData(get().exportAccountData(), other);
+        const { tracked, progress, removed, preferences, onboardedAt } = merged;
+        return { tracked, progress, removed, preferences, dismissed: merged.dismissed ?? {}, onboardedAt };
+      });
+      // Data that came from elsewhere may show that the introduction is behind this user already.
+      if (get().onboardedAt) set({ firstRun: false });
     },
   };
 });

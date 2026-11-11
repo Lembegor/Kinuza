@@ -2,7 +2,8 @@
 
 import { useRef, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
-import { ChevronLeft, ChevronRight, CloudOff, Star } from "lucide-react";
+import { ChevronLeft, ChevronRight, CloudOff, Star, ThumbsDown } from "lucide-react";
+import { t, useT } from "../lib/i18n";
 import { hasApiKey, imageUrl, type MediaItem } from "../lib/tmdb";
 import type { TitleRef } from "../state/library";
 import { TrackBadge } from "./TrackControls";
@@ -11,8 +12,8 @@ import { TrackBadge } from "./TrackControls";
 type CardItem = TitleRef & Partial<Pick<MediaItem, "rating" | "isAnime">> & { note?: string };
 
 export function typeLabel(item: Pick<CardItem, "type" | "isAnime">): string {
-  if (item.isAnime) return "Аниме";
-  return item.type === "movie" ? "Фильм" : "Сериал";
+  if (item.isAnime) return t("common.type.anime");
+  return item.type === "movie" ? t("common.type.movie") : t("common.type.series");
 }
 
 export function PosterCard({ item }: { item: CardItem }) {
@@ -45,7 +46,35 @@ export function PosterCard({ item }: { item: CardItem }) {
   );
 }
 
+/**
+ * A card of a recommendation row with a "not interested" button over its corner. The button is a
+ * neighbour of the card, not a part of it: the card is a button itself.
+ */
+function DismissibleCard({ item, onDismiss }: { item: CardItem; onDismiss: (item: CardItem) => void }) {
+  const { t } = useT();
+  return (
+    <div className="poster-slot">
+      <PosterCard item={item} />
+      <button
+        className="poster-slot__dismiss"
+        title={t("feed.dismiss")}
+        aria-label={t("feed.dismiss.label", { title: item.title })}
+        onClick={(event) => {
+          // The card is about to go; whoever got here by keyboard carries on from its neighbour.
+          const slot = event.currentTarget.parentElement;
+          const neighbour = slot?.nextElementSibling ?? slot?.previousElementSibling;
+          neighbour?.querySelector<HTMLElement>(".poster-card")?.focus();
+          onDismiss(item);
+        }}
+      >
+        <ThumbsDown size={15} />
+      </button>
+    </div>
+  );
+}
+
 export function Row({ title, children }: { title: string; children: ReactNode }) {
+  const { t } = useT();
   const trackRef = useRef<HTMLDivElement>(null);
   const scroll = (direction: 1 | -1) => {
     const track = trackRef.current;
@@ -56,10 +85,10 @@ export function Row({ title, children }: { title: string; children: ReactNode })
       <div className="row__head">
         <h2>{title}</h2>
         <div className="row__arrows">
-          <button aria-label="Назад" onClick={() => scroll(-1)}>
+          <button aria-label={t("common.back")} onClick={() => scroll(-1)}>
             <ChevronLeft size={18} />
           </button>
-          <button aria-label="Вперёд" onClick={() => scroll(1)}>
+          <button aria-label={t("common.forward")} onClick={() => scroll(1)}>
             <ChevronRight size={18} />
           </button>
         </div>
@@ -71,12 +100,19 @@ export function Row({ title, children }: { title: string; children: ReactNode })
   );
 }
 
-export function PosterRow({ title, items }: { title: string; items: CardItem[] | null }) {
+/** With `onDismiss` the row is one of recommendations: each card can be waved away. */
+export function PosterRow({ title, items, onDismiss }: { title: string; items: CardItem[] | null; onDismiss?: (item: TitleRef) => void }) {
   if (items && items.length === 0) return null;
   return (
     <Row title={title}>
       {items
-        ? items.map((item) => <PosterCard key={`${item.type}:${item.id}`} item={item} />)
+        ? items.map((item) =>
+            onDismiss ? (
+              <DismissibleCard key={`${item.type}:${item.id}`} item={item} onDismiss={onDismiss} />
+            ) : (
+              <PosterCard key={`${item.type}:${item.id}`} item={item} />
+            ),
+          )
         : Array.from({ length: 9 }, (_, index) => <div key={index} className="poster-card poster-card--skeleton" />)}
     </Row>
   );
@@ -93,17 +129,16 @@ export function PosterGrid({ items }: { items: CardItem[] }) {
 }
 
 export function CatalogError({ onRetry }: { onRetry: () => void }) {
+  const { t } = useT();
   return (
     <div className="empty">
       <CloudOff size={40} />
-      <h2>Каталог недоступен</h2>
+      <h2>{t("errors.catalog.title")}</h2>
       <p>
-        {hasApiKey()
-          ? "Не получилось связаться с TMDB. Проверьте интернет; в некоторых сетях каталог открывается только через VPN."
-          : "Не задан ключ TMDB. Укажите его в настройках."}
+        {hasApiKey() ? t("errors.catalog.network") : t("errors.catalog.noKey")}
       </p>
       <button className="button button--primary" onClick={onRetry}>
-        Повторить
+        {t("common.retry")}
       </button>
     </div>
   );

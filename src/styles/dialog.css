@@ -8,6 +8,10 @@
   backdrop-filter: blur(6px);
   z-index: 50;
   animation: fade 0.18s;
+  /* Without this the grid track grows to the widest unwrapped line inside the dialog,
+     and the dialog, centred in that track, slides off to the right. */
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
 }
 
 .dialog {
@@ -26,6 +30,10 @@
 
 .dialog--small {
   width: min(430px, 100%);
+}
+
+.dialog--medium {
+  width: min(780px, 100%);
 }
 
 .dialog--wide {
@@ -76,6 +84,13 @@
   margin-top: 20px;
 }
 
+.dialog__hint {
+  margin-top: 12px;
+  color: var(--faint);
+  font-size: 12px;
+  text-align: right;
+}
+
 .dialog__note {
   margin-right: auto;
   color: var(--muted);
@@ -92,6 +107,17 @@
 }
 
 /* Add torrent: input step */
+
+/* A column that hands leftover height to the tracker list, so the list scrolls instead of the dialog. */
+.add-input {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.add-input > * {
+  flex: none;
+}
 
 .add-input__field {
   display: flex;
@@ -313,10 +339,21 @@ label.file-row {
 
 /* Free copies from the Internet Archive */
 
+.add-input > .archive {
+  flex: 0 1 auto;
+}
+
 .archive {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   margin-top: 18px;
   padding-top: 16px;
   border-top: 1px solid var(--line);
+}
+
+.archive > * {
+  flex: none;
 }
 
 .archive__head {
@@ -370,4 +407,272 @@ label.file-row {
 .archive__title span {
   color: var(--faint);
   font-size: 12px;
+}
+
+/* Tracker search results */
+
+.tracker-auth {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.tracker-form {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.tracker-form .input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Other names the title is released under (romaji for anime) */
+.tracker-names {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.tracker-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  margin-bottom: 10px;
+}
+
+.tracker-filters__group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tracker-filters__group--end {
+  margin-left: auto;
+}
+
+.tracker-filters .chip {
+  height: 28px;
+  padding: 0 11px;
+  font-size: 12px;
+}
+
+.tracker-item__tag--scope {
+  background: rgba(230, 182, 85, 0.14);
+  color: var(--gold);
+}
+
+.link-button {
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.archive > .tracker-list {
+  flex: 0 1 auto;
+}
+
+.tracker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 120px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.tracker-item {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 10px 10px 14px;
+  border-radius: var(--radius-s);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.tracker-item__body {
+  flex: 1;
+  min-width: 0;
+}
+
+.tracker-item__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.tracker-item__tag {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+/* Resolution, size and seeds: fixed-width columns so they line up from row to row. */
+.tracker-item__stats {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.tracker-item__stat {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  height: 22px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.tracker-item__stat svg {
+  flex: none;
+  opacity: 0.7;
+}
+
+.tracker-item__stat--resolution {
+  min-width: 132px;
+  color: var(--text);
+  font-weight: 800;
+}
+
+.tracker-item__stat--resolution small {
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.tracker-item__stat--resolution.is-unknown {
+  color: var(--faint);
+  font-weight: 600;
+}
+
+.tracker-item__stat--size {
+  min-width: 88px;
+}
+
+.tracker-item__stat--seeds {
+  min-width: 56px;
+  color: var(--ok);
+  font-weight: 800;
+}
+
+.tracker-item__stat--seeds svg {
+  opacity: 1;
+}
+
+.tracker-item__name {
+  display: block;
+  margin-top: 6px;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tracker-item__name--full {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  white-space: normal;
+}
+
+.tracker-item__tracks {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 2px 10px;
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+.tracker-item__tracks dt {
+  color: var(--faint);
+}
+
+.tracker-item__tracks {
+  align-items: center;
+  gap: 6px 10px;
+  margin-top: 7px;
+}
+
+.tracker-item__tracks dd {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+  color: var(--muted);
+}
+
+.tracker-item__tracks dd > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.language-flags {
+  flex: none;
+  display: inline-flex;
+  gap: 5px;
+}
+
+/* A language the release lacks stays in its place, greyed out, so the three flags read as a row of lights. */
+.language-flags__flag {
+  display: block;
+  width: 24px;
+  height: 16px;
+  border-radius: 3px;
+  overflow: hidden;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.14);
+  filter: grayscale(1);
+  opacity: 0.22;
+}
+
+.language-flags__flag.is-present {
+  filter: none;
+  opacity: 1;
+}
+
+.language-flags__flag svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* The release the app would pick itself. */
+.tracker-item.is-best {
+  background: rgba(230, 182, 85, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(230, 182, 85, 0.35);
+}
+
+.tracker-item__best {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 6px;
+  background: var(--gold);
+  color: #17130a;
+  font-size: 12px;
+  font-weight: 800;
 }

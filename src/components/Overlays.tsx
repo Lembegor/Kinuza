@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { CircleAlert, CircleCheck, Info, RefreshCw, X } from "lucide-react";
+import { useT } from "../lib/i18n";
 import { useUi } from "../state/ui";
 import { useUpdater } from "../state/updater";
 
@@ -18,6 +19,12 @@ export function Toasts() {
           <div key={toast.id} className={`toast toast--${toast.kind}`} onClick={() => dismiss(toast.id)}>
             <Icon size={18} />
             <span>{toast.text}</span>
+            {toast.action && (
+              // The click also reaches the toast itself, which closes it.
+              <button className="toast__action" onClick={toast.action.run}>
+                {toast.action.label}
+              </button>
+            )}
           </div>
         );
       })}
@@ -28,6 +35,7 @@ export function Toasts() {
 export function ConfirmDialog() {
   const request = useUi((state) => state.confirm);
   const close = useUi((state) => state.closeConfirm);
+  const { t } = useT();
   const [optionChecked, setOptionChecked] = useState(false);
 
   useEffect(() => setOptionChecked(false), [request]);
@@ -55,7 +63,7 @@ export function ConfirmDialog() {
         )}
         <div className="dialog__actions">
           <button className="button" onClick={close}>
-            Отмена
+            {t("common.cancel")}
           </button>
           <button
             className={`button ${request.danger ? "button--danger" : "button--primary"}`}
@@ -74,6 +82,7 @@ export function ConfirmDialog() {
 
 export function UpdateNotice() {
   const { status, version, notes, progress, dismissed, install, dismiss } = useUpdater();
+  const { t } = useT();
   const visible = (status === "available" && !dismissed) || status === "downloading" || status === "installing";
   if (!visible) return null;
 
@@ -83,22 +92,22 @@ export function UpdateNotice() {
         <RefreshCw size={18} className={status === "available" ? "" : "spin"} />
         <strong>Kinuza {version}</strong>
         {status === "available" && (
-          <button className="icon-button" aria-label="Позже" onClick={dismiss}>
+          <button className="icon-button" aria-label={t("shell.update.later")} onClick={dismiss}>
             <X size={15} />
           </button>
         )}
       </div>
       {status === "available" && (
         <>
-          <p>{notes.trim() || "Доступна новая версия приложения."}</p>
+          <p>{notes.trim() || t("shell.update.available")}</p>
           <button className="button button--primary button--block" onClick={() => void install()}>
-            Обновить и перезапустить
+            {t("shell.update.install")}
           </button>
         </>
       )}
       {status !== "available" && (
         <>
-          <p>{status === "installing" ? "Устанавливаем…" : `Скачиваем… ${Math.round(progress * 100)}%`}</p>
+          <p>{status === "installing" ? t("shell.update.installing") : t("shell.update.downloading", { percent: Math.round(progress * 100) })}</p>
           <div className="bar">
             <i style={{ width: `${progress * 100}%` }} />
           </div>

@@ -2,10 +2,14 @@ mod associations;
 mod commands;
 mod engine;
 mod external_player;
+mod ffmpeg;
+mod imdb;
 mod launch;
+mod online_subtitles;
 mod rutracker; // Модуль RuTracker
 mod server;
 mod store;
+mod tray;
 
 use std::{
     path::PathBuf,
@@ -29,11 +33,15 @@ pub struct AppState {
 
 const DOWNLOAD_FOLDER_NAME: &str = "Kinuza";
 const SESSION_FOLDER_NAME: &str = "session";
+/// What online viewing fetches lives here, apart from the downloads, until the viewing ends.
+const STREAM_CACHE_FOLDER_NAME: &str = "stream-cache";
 
 pub fn run() {
     tauri::Builder::default()
         // Инициализация состояния RuTracker
         .manage(TokioMutex::new(rutracker::RutrackerState::new()))
+        .manage(imdb::ImdbState::default())
+        .manage(ffmpeg::FfmpegState::default())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.unminimize();
@@ -46,6 +54,7 @@ pub fn run() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
@@ -62,6 +71,10 @@ pub fn run() {
             commands::torrent_resume,
             commands::torrent_delete,
             commands::torrent_select_files,
+            commands::torrent_release,
+            commands::torrent_set_policy,
+            commands::storage_info,
+            commands::write_text_file,
             commands::file_location,
             commands::open_external,
             commands::read_file_bytes,
@@ -71,11 +84,19 @@ pub fn run() {
             commands::open_default_apps_settings,
             store::store_get,
             store::store_set,
+            imdb::imdb_rating,
+            tray::tray_configure,
+            online_subtitles::online_subtitles_search,
+            online_subtitles::online_subtitles_download,
+            ffmpeg::ffmpeg_status,
+            ffmpeg::ffmpeg_install,
+            ffmpeg::media_tracks,
             
             // Новые команды RuTracker
-            rutracker::rutracker_login,
+            rutracker::rutracker_login_window,
             rutracker::rutracker_search,
             rutracker::rutracker_magnet,
+            rutracker::rutracker_video_sizes,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Kinuza");
@@ -92,10 +113,13 @@ async fn build_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
         .unwrap_or_else(|_| data_dir.clone())
         .join(DOWNLOAD_FOLDER_NAME);
 
-    let engine = Arc::new(
-        Engine::start(default_download_dir.clone(), data_dir.join(SESSION_FOLDER_NAME)).await?,
-    );
-    let stream_base_url = server::start(engine.clone(), store::random_token()).await?;
+    let engine = Engine::start(
+        default_download_dir.clone(),
+        data_dir.join(SESSION_FOLDER_NAME),
+        data_dir.join(STREAM_CACHE_FOLDER_NAME),
+    )
+    .await?;
+    let stream_base_url = server::start(engine.clone(), store::random_token(), data_dir.clone()).await?;
 
     Ok(AppState {
         engine,

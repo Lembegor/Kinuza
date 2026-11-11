@@ -1,22 +1,22 @@
 import { useMemo, useState } from "react";
 import { ListVideo } from "lucide-react";
 import { EmptyState, PosterGrid } from "../components/Cards";
-import { plural } from "../lib/format";
+import { currentLocale, tn, useT, type MessageKey } from "../lib/i18n";
 import { entryToRef, useLibrary, watchedEpisodeCount, watchStatuses, type Progress, type TrackEntry, type WatchStatus } from "../state/library";
 
 type Filter = WatchStatus | "all";
 type Sort = "updated" | "rating" | "title";
 
-const sorts: { id: Sort; label: string }[] = [
-  { id: "updated", label: "Сначала недавние" },
-  { id: "rating", label: "По моей оценке" },
-  { id: "title", label: "По названию" },
+const sorts: { id: Sort; label: MessageKey }[] = [
+  { id: "updated", label: "library.sort.updated" },
+  { id: "rating", label: "library.sort.rating" },
+  { id: "title", label: "library.sort.title" },
 ];
 
 const comparers: Record<Sort, (a: TrackEntry, b: TrackEntry) => number> = {
   updated: (a, b) => b.updatedAt - a.updatedAt,
   rating: (a, b) => (b.rating ?? 0) - (a.rating ?? 0) || b.updatedAt - a.updatedAt,
-  title: (a, b) => a.title.localeCompare(b.title, "ru"),
+  title: (a, b) => a.title.localeCompare(b.title, currentLocale()),
 };
 
 /** "12 из 62 серий" for a series being watched; nothing when there is no progress to show. */
@@ -24,11 +24,12 @@ function episodeNote(entry: TrackEntry, progress: Record<string, Progress>): str
   if (entry.type !== "tv") return undefined;
   const watched = watchedEpisodeCount(progress, entry.id);
   if (watched === 0) return undefined;
-  if (!entry.totalEpisodes) return `${watched} ${plural(watched, "серия", "серии", "серий")}`;
-  return `${watched} из ${entry.totalEpisodes} ${plural(entry.totalEpisodes, "серии", "серий", "серий")}`;
+  if (!entry.totalEpisodes) return tn("common.episodes", watched);
+  return tn("library.watchedOf", entry.totalEpisodes, { watched });
 }
 
 export default function Library() {
+  const { t } = useT();
   const tracked = useLibrary((state) => state.tracked);
   const progress = useLibrary((state) => state.progress);
   const [filter, setFilter] = useState<Filter>("all");
@@ -55,8 +56,8 @@ export default function Library() {
       <div className="page">
         <EmptyState
           icon={<ListVideo size={40} />}
-          title="Список пока пуст"
-          text="Откройте фильм или сериал и выберите статус — «Запланировано», «Смотрю», «Просмотрено». Всё, что вы начинаете смотреть, попадает сюда само."
+          title={t("library.empty.title")}
+          text={t("library.empty.text")}
         />
       </div>
     );
@@ -65,11 +66,11 @@ export default function Library() {
   return (
     <div className="page">
       <div className="page__head">
-        <h1>Мой список</h1>
+        <h1>{t("library.title")}</h1>
         <select className="select select--large" value={sort} onChange={(event) => setSort(event.target.value as Sort)}>
           {sorts.map((item) => (
             <option key={item.id} value={item.id}>
-              {item.label}
+              {t(item.label)}
             </option>
           ))}
         </select>
@@ -77,7 +78,7 @@ export default function Library() {
 
       <div className="chips chips--scroll">
         <button className={`chip ${filter === "all" ? "is-active" : ""}`} onClick={() => setFilter("all")}>
-          Все <small>{counts.all}</small>
+          {t("library.filter.all")} <small>{counts.all}</small>
         </button>
         {watchStatuses.map((status) => (
           <button
@@ -85,7 +86,7 @@ export default function Library() {
             className={`chip ${filter === status.id ? "is-active" : ""}`}
             onClick={() => setFilter(status.id)}
           >
-            {status.label} <small>{counts[status.id] ?? 0}</small>
+            {t(status.labelKey)} <small>{counts[status.id] ?? 0}</small>
           </button>
         ))}
       </div>
@@ -93,7 +94,7 @@ export default function Library() {
       {visible.length > 0 ? (
         <PosterGrid items={visible} />
       ) : (
-        <EmptyState icon={<ListVideo size={40} />} title="Здесь пока ничего нет" text="В этом статусе нет ни одного тайтла." />
+        <EmptyState icon={<ListVideo size={40} />} title={t("library.filtered.empty.title")} text={t("library.filtered.empty.text")} />
       )}
     </div>
   );

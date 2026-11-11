@@ -2,8 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import { NavLink, useLocation, useNavigate, useSearchParams } from "react-router-dom";
-import { ArrowLeft, ArrowRight, Copy, Download, House, ListVideo, Minus, Search, Settings, Square, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, CalendarDays, Copy, Download, House, LayoutGrid, ListVideo, Minus, Search, Settings, Square, X } from "lucide-react";
 import { isDesktop } from "../lib/backend";
+import { useT } from "../lib/i18n";
+import { useBrowse } from "../state/browse";
 import { useTorrents } from "../state/torrents";
 
 const searchDebounceMs = 350;
@@ -14,6 +16,7 @@ async function appWindow() {
 }
 
 export function WindowButtons() {
+  const { t } = useT();
   const [maximized, setMaximized] = useState(false);
 
   useEffect(() => {
@@ -35,16 +38,16 @@ export function WindowButtons() {
   if (!isDesktop) return null;
   return (
     <div className="window-buttons">
-      <button aria-label="Свернуть" onClick={() => void appWindow().then((w) => w.minimize())}>
+      <button aria-label={t("shell.window.minimize")} onClick={() => void appWindow().then((w) => w.minimize())}>
         <Minus size={16} />
       </button>
       <button
-        aria-label={maximized ? "Восстановить" : "Развернуть"}
+        aria-label={maximized ? t("shell.window.restore") : t("shell.window.maximize")}
         onClick={() => void appWindow().then((w) => w.toggleMaximize())}
       >
         {maximized ? <Copy size={13} /> : <Square size={12} />}
       </button>
-      <button aria-label="Закрыть" className="window-buttons__close" onClick={() => void appWindow().then((w) => w.close())}>
+      <button aria-label={t("common.close")} className="window-buttons__close" onClick={() => void appWindow().then((w) => w.close())}>
         <X size={16} />
       </button>
     </div>
@@ -52,6 +55,7 @@ export function WindowButtons() {
 }
 
 function SearchBox() {
+  const { t } = useT();
   const navigate = useNavigate();
   const location = useLocation();
   const [params] = useSearchParams();
@@ -92,7 +96,7 @@ function SearchBox() {
       <input
         ref={inputRef}
         value={value}
-        placeholder="Фильмы, сериалы, аниме"
+        placeholder={t("shell.search.placeholder")}
         spellCheck={false}
         onChange={(event) => setValue(event.target.value)}
         onKeyDown={(event) => {
@@ -103,7 +107,7 @@ function SearchBox() {
         }}
       />
       {value ? (
-        <button aria-label="Очистить" onClick={() => setValue("")}>
+        <button aria-label={t("shell.search.clear")} onClick={() => setValue("")}>
           <X size={14} />
         </button>
       ) : (
@@ -114,6 +118,7 @@ function SearchBox() {
 }
 
 export function Titlebar() {
+  const { t } = useT();
   const navigate = useNavigate();
   return (
     <header className="titlebar" data-tauri-drag-region>
@@ -122,10 +127,10 @@ export function Titlebar() {
         KINUZA
       </div>
       <div className="titlebar__history">
-        <button aria-label="Назад" onClick={() => navigate(-1)}>
+        <button aria-label={t("common.back")} onClick={() => navigate(-1)}>
           <ArrowLeft size={17} />
         </button>
-        <button aria-label="Вперёд" onClick={() => navigate(1)}>
+        <button aria-label={t("common.forward")} onClick={() => navigate(1)}>
           <ArrowRight size={17} />
         </button>
       </div>
@@ -137,29 +142,40 @@ export function Titlebar() {
 }
 
 export function Sidebar() {
+  const { t } = useT();
   const activeDownloads = useTorrents(
     (state) => state.list.filter((torrent) => !torrent.finished && torrent.state !== "paused").length,
   );
+  // The catalog reopens with the filters it was left with.
+  const browseSearch = useBrowse((state) => state.search);
 
   return (
     <nav className="sidebar">
       <NavLink to="/" end className="sidebar__link">
         <House size={21} />
-        <span>Главная</span>
+        <span>{t("shell.nav.home")}</span>
+      </NavLink>
+      <NavLink to={{ pathname: "/browse", search: browseSearch }} className="sidebar__link">
+        <LayoutGrid size={21} />
+        <span>{t("browse.title")}</span>
       </NavLink>
       <NavLink to="/library" className="sidebar__link">
         <ListVideo size={21} />
-        <span>Список</span>
+        <span>{t("shell.nav.library")}</span>
+      </NavLink>
+      <NavLink to="/calendar" className="sidebar__link">
+        <CalendarDays size={21} />
+        <span>{t("shell.nav.calendar")}</span>
       </NavLink>
       <NavLink to="/downloads" className="sidebar__link">
         <Download size={21} />
-        <span>Загрузки</span>
+        <span>{t("shell.nav.downloads")}</span>
         {activeDownloads > 0 && <em className="sidebar__badge">{activeDownloads}</em>}
       </NavLink>
       <div className="sidebar__gap" />
       <NavLink to="/settings" className="sidebar__link">
         <Settings size={21} />
-        <span>Настройки</span>
+        <span>{t("shell.nav.settings")}</span>
       </NavLink>
     </nav>
   );

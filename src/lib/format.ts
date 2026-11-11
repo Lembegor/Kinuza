@@ -1,14 +1,16 @@
-const byteUnits = ["Б", "КБ", "МБ", "ГБ", "ТБ"];
+import { currentLocale, t, type MessageKey } from "./i18n";
+
+const byteUnits: MessageKey[] = ["common.bytes.b", "common.bytes.kb", "common.bytes.mb", "common.bytes.gb", "common.bytes.tb"];
 
 export function formatBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "0 Б";
+  if (!Number.isFinite(bytes) || bytes <= 0) return `0 ${t(byteUnits[0])}`;
   const exponent = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), byteUnits.length - 1);
   const value = bytes / 1024 ** exponent;
-  return `${value >= 100 || exponent === 0 ? value.toFixed(0) : value.toFixed(1)} ${byteUnits[exponent]}`;
+  return `${value >= 100 || exponent === 0 ? value.toFixed(0) : value.toFixed(1)} ${t(byteUnits[exponent])}`;
 }
 
 export function formatSpeed(bytesPerSecond: number): string {
-  return `${formatBytes(bytesPerSecond)}/с`;
+  return t("common.perSecond", { size: formatBytes(bytesPerSecond) });
 }
 
 /** 3725 -> "1:02:05", 125 -> "2:05". */
@@ -25,32 +27,51 @@ export function formatRuntime(minutes: number | null): string {
   if (!minutes) return "";
   const hours = Math.floor(minutes / 60);
   const rest = minutes % 60;
-  if (hours === 0) return `${rest} мин`;
-  return rest === 0 ? `${hours} ч` : `${hours} ч ${rest} мин`;
+  if (hours === 0) return t("common.duration.minutes", { minutes: rest });
+  return rest === 0 ? t("common.duration.hours", { hours }) : t("common.duration.hoursMinutes", { hours, minutes: rest });
 }
 
 export function formatEta(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds <= 0) return "";
-  if (seconds < 60) return "меньше минуты";
+  if (seconds < 60) return t("common.duration.lessThanMinute");
   const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes} мин`;
+  if (minutes < 60) return t("common.duration.minutes", { minutes });
   const hours = Math.floor(minutes / 60);
-  return `${hours} ч ${minutes % 60} мин`;
+  return t("common.duration.hoursMinutes", { hours, minutes: minutes % 60 });
 }
 
-const dateFormatter = new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "long", year: "numeric" });
+/** One formatter per locale: building one is costly, and a page of episodes formats many dates. */
+const dateFormatters = new Map<string, Intl.DateTimeFormat>();
+
+function dateFormatter(locale: string): Intl.DateTimeFormat {
+  let formatter = dateFormatters.get(locale);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat(locale, { day: "numeric", month: "long", year: "numeric" });
+    dateFormatters.set(locale, formatter);
+  }
+  return formatter;
+}
+
+const isoDayPattern = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 export function formatDate(isoDate: string): string {
   if (!isoDate) return "";
-  const date = new Date(isoDate);
-  return Number.isNaN(date.getTime()) ? "" : dateFormatter.format(date);
+  // A bare day ("1970-07-30") parses as midnight UTC, which west of UTC is still the evening
+  // before; built from its parts, it is that day wherever the user is.
+  const day = isoDayPattern.exec(isoDate);
+  const date = day ? new Date(Number(day[1]), Number(day[2]) - 1, Number(day[3])) : new Date(isoDate);
+  return Number.isNaN(date.getTime()) ? "" : dateFormatter(currentLocale()).format(date);
 }
 
-/** Russian plural: plural(5, "серия", "серии", "серий") -> "серий". */
-export function plural(count: number, one: string, few: string, many: string): string {
-  const mod10 = count % 10;
-  const mod100 = count % 100;
-  if (mod10 === 1 && mod100 !== 11) return one;
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return few;
-  return many;
+const momentFormatters = new Map<string, Intl.DateTimeFormat>();
+
+/** A moment in a list of recent events: "11 нояб., 14:05:09". */
+export function formatMoment(timestamp: number): string {
+  const locale = currentLocale();
+  let formatter = momentFormatters.get(locale);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat(locale, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    momentFormatters.set(locale, formatter);
+  }
+  return formatter.format(timestamp);
 }

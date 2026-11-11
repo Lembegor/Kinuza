@@ -4,21 +4,32 @@ import { ArrowDown, ArrowUp, Download, FolderOpen, Pause, Play, Plus, Trash2, Us
 import { EmptyState } from "../components/Cards";
 import { backend, describeError, isDesktop, type TorrentView } from "../lib/backend";
 import { formatBytes, formatEta, formatSpeed } from "../lib/format";
+import { t, useT, type MessageKey } from "../lib/i18n";
 import { useLibrary, type Progress, type Source } from "../state/library";
 import { etaSeconds, torrentProgress, useTorrents } from "../state/torrents";
 import { useUi } from "../state/ui";
 
-const stateLabels: Record<string, string> = {
-  initializing: "Проверка файлов",
-  paused: "Пауза",
-  error: "Ошибка",
+const stateLabels: Record<string, MessageKey> = {
+  initializing: "downloads.state.initializing",
+  paused: "downloads.state.paused",
+  queued: "status.queued",
+  error: "downloads.state.error",
 };
 
+/** Nothing in the torrent is being saved: it is only watched online. */
+function isOnlineOnly(torrent: TorrentView): boolean {
+  return torrent.files.length > 0 && torrent.files.every((file) => !file.included);
+}
+
 function statusText(torrent: TorrentView): string {
-  if (torrent.state !== "live") return stateLabels[torrent.state] ?? torrent.state;
-  if (torrent.finished) return "Скачано · раздаётся";
+  if (torrent.state !== "live") {
+    const label = stateLabels[torrent.state];
+    return label ? t(label) : torrent.state;
+  }
+  if (isOnlineOnly(torrent)) return t("downloads.status.online");
+  if (torrent.finished) return t("downloads.status.seeding");
   const eta = formatEta(etaSeconds(torrent));
-  return eta ? `Осталось ${eta}` : "Поиск участников";
+  return eta ? t("downloads.status.remaining", { time: eta }) : t("downloads.status.searching");
 }
 
 /** Maps info hashes to the title they were attached to, using saved sources and watch history. */
@@ -26,6 +37,7 @@ function useTorrentTitles(): Record<string, { path: string; label: string }> {
   const sources = useLibrary((state) => state.sources);
   const tracked = useLibrary((state) => state.tracked);
   const progress = useLibrary((state) => state.progress);
+  const { t } = useT();
 
   return useMemo(() => {
     const names = new Map<string, string>();
@@ -38,7 +50,7 @@ function useTorrentTitles(): Record<string, { path: string; label: string }> {
       for (const source of list) {
         result[source.infoHash] ??= {
           path: `/title/${type}/${id}`,
-          label: names.get(`${type}:${id}`) ?? "Открыть страницу",
+          label: names.get(`${type}:${id}`) ?? t("common.openPage"),
         };
       }
     }
@@ -64,15 +76,16 @@ async function openFolder(path: string): Promise<void> {
 function TorrentCard({ torrent, link }: { torrent: TorrentView; link?: { path: string; label: string } }) {
   const askConfirm = useUi((state) => state.askConfirm);
   const removeFromLibrary = useLibrary((state) => state.removeTorrent);
+  const { t } = useT();
   const progress = torrentProgress(torrent);
   const paused = torrent.state === "paused";
 
   const remove = () =>
     askConfirm({
-      title: "Удалить загрузку?",
+      title: t("downloads.remove.title"),
       message: torrent.name,
-      confirmLabel: "Удалить",
-      optionLabel: "Удалить и скачанные файлы с диска",
+      confirmLabel: t("common.delete"),
+      optionLabel: t("downloads.remove.files"),
       danger: true,
       onConfirm: (deleteFiles) => {
         removeFromLibrary(torrent.infoHash);
@@ -92,7 +105,9 @@ function TorrentCard({ torrent, link }: { torrent: TorrentView; link?: { path: s
           )}
           <span>{statusText(torrent)}</span>
           <span>
-            {formatBytes(torrent.progressBytes)} из {formatBytes(torrent.totalBytes)}
+            {isOnlineOnly(torrent)
+              ? t("downloads.onDisk", { size: formatBytes(torrent.files.reduce((sum, file) => sum + file.downloaded, 0)) })
+              : t("downloads.progress", { done: formatBytes(torrent.progressBytes), total: formatBytes(torrent.totalBytes) })}
           </span>
           {torrent.state === "live" && (
             <>
@@ -120,15 +135,15 @@ function TorrentCard({ torrent, link }: { torrent: TorrentView; link?: { path: s
       <div className="torrent__actions">
         <button
           className="icon-button"
-          aria-label={paused ? "Продолжить" : "Пауза"}
+          aria-label={paused ? t("downloads.resume") : t("downloads.pause")}
           onClick={() => void run(paused ? backend.resume(torrent.infoHash) : backend.pause(torrent.infoHash))}
         >
           {paused ? <Play size={17} /> : <Pause size={17} />}
         </button>
-        <button className="icon-button" aria-label="Открыть папку" onClick={() => void openFolder(torrent.outputFolder)}>
+        <button className="icon-button" aria-label={t("downloads.openFolder")} onClick={() => void openFolder(torrent.outputFolder)}>
           <FolderOpen size={17} />
         </button>
-        <button className="icon-button" aria-label="Удалить" onClick={remove}>
+        <button className="icon-button" aria-label={t("common.delete")} onClick={remove}>
           <Trash2 size={17} />
         </button>
       </div>
@@ -137,9 +152,12 @@ function TorrentCard({ torrent, link }: { torrent: TorrentView; link?: { path: s
 }
 
 export default function Downloads() {
-  const torrents = useTorrents((state) => state.list);
+  const everything = useTorrents((state) => state.list);
+  // Torrents parked between online viewings hold nothing on disk and are not downloads.
+  const torrents = useMemo(() => everything.filter((torrent) => torrent.state !== "parked"), [everything]);
   const openAddSource = useUi((state) => state.openAddSource);
   const titles = useTorrentTitles();
+  const { t } = useT();
 
   const totals = useMemo(
     () => ({
@@ -156,7 +174,7 @@ export default function Downloads() {
   return (
     <div className="page">
       <div className="page__head">
-        <h1>Загрузки</h1>
+        <h1>{t("downloads.title")}</h1>
         {torrents.length > 0 && (
           <span className="section__note">
             ↓ {formatSpeed(totals.down)} · ↑ {formatSpeed(totals.up)}
@@ -164,14 +182,14 @@ export default function Downloads() {
         )}
         <button className="button button--primary" onClick={() => openAddSource({ target: null })}>
           <Plus size={16} />
-          Добавить торрент
+          {t("common.addTorrent")}
         </button>
       </div>
       {sorted.length === 0 ? (
         <EmptyState
           icon={<Download size={40} />}
-          title="Загрузок нет"
-          text="Добавьте magnet-ссылку или .torrent-файл: вставьте ссылку (Ctrl+V) в любом месте приложения или перетащите файл в окно."
+          title={t("downloads.empty.title")}
+          text={t("downloads.empty.text")}
         />
       ) : (
         <div className="torrent-list">

@@ -293,6 +293,18 @@
   flex: none;
 }
 
+.toast__action {
+  margin: -4px -6px -4px 6px;
+  padding: 4px 10px;
+  border-radius: var(--radius-s);
+  color: #ff8d90;
+  font-weight: 800;
+}
+
+.toast__action:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
 .update-notice {
   position: fixed;
   right: 22px;
@@ -343,4 +355,476 @@
   font-size: 18px;
   z-index: 70;
   pointer-events: none;
+}
+
+/* First start: the language choice */
+
+.language-picker {
+  grid-column: 1 / -1;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+}
+
+.language-picker__card {
+  width: min(460px, 100%);
+  text-align: center;
+}
+
+.language-picker__card h1 {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 22px;
+  font-weight: 800;
+}
+
+.language-picker__card h1 span + span {
+  color: var(--muted);
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.language-picker__options {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 28px 0 20px;
+}
+
+.language-picker__options button {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  height: 58px;
+  padding: 0 20px;
+  border-radius: var(--radius-m);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  font-size: 17px;
+  font-weight: 700;
+  transition:
+    background 0.15s,
+    border-color 0.15s;
+}
+
+.language-picker__options button:hover,
+.language-picker__options button:focus-visible {
+  background: var(--bg-hover);
+  border-color: var(--line-strong);
+}
+
+/* The language already chosen, when the user has come back to change it. */
+.language-picker__options button[aria-current="true"] {
+  border-color: var(--accent);
+}
+
+.language-picker__flag {
+  width: 34px;
+  height: 23px;
+  border-radius: 4px;
+  overflow: hidden;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.14);
+}
+
+.language-picker__flag svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.language-picker__card p {
+  color: var(--faint);
+  font-size: 12px;
+}
+
+/* First start: what the user likes, and how the app is used */
+
+.onboarding {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  animation: fade 0.25s;
+}
+
+.onboarding--centered {
+  align-items: center;
+  justify-content: center;
+  padding: 24px var(--page-gutter);
+  overflow-y: auto;
+}
+
+.onboarding__step {
+  margin-bottom: 6px;
+  color: var(--faint);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.onboarding h1 {
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.onboarding__head {
+  display: flex;
+  align-items: flex-end;
+  gap: 24px;
+  padding: 22px var(--page-gutter) 18px;
+}
+
+.onboarding__intro {
+  flex: 1;
+  min-width: 0;
+}
+
+.onboarding__intro p {
+  margin-top: 4px;
+  color: var(--muted);
+}
+
+.onboarding__search {
+  flex: none;
+  width: min(340px, 36vw);
+  height: 40px;
+}
+
+.onboarding__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable both-edges;
+  /* Room for the ring of a picked card and the focus outline, which reach outside the cards. */
+  padding: 6px calc(var(--page-gutter) - 10px) 22px;
+}
+
+.onboarding__empty {
+  margin-top: 12vh;
+  color: var(--muted);
+  text-align: center;
+}
+
+.onboarding__foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px var(--page-gutter);
+  border-top: 1px solid var(--line);
+  background: var(--bg-raised);
+}
+
+.onboarding__count {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.onboarding__count.is-enough {
+  color: var(--text);
+}
+
+.onboarding__count svg {
+  flex: none;
+  color: var(--ok);
+}
+
+/* Going back and skipping are always possible but never the thing to press first. */
+.onboarding__quiet {
+  background: none;
+  border-color: transparent;
+  color: var(--muted);
+}
+
+.pick-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+  gap: 18px 14px;
+}
+
+.pick {
+  min-width: 0;
+  border-radius: var(--radius-m);
+  text-align: left;
+}
+
+/* White, because red already means "picked". */
+.pick:focus-visible {
+  outline-color: var(--text);
+  outline-offset: 4px;
+}
+
+.pick__art {
+  position: relative;
+  aspect-ratio: 2 / 3;
+  border-radius: var(--radius-m);
+  overflow: hidden;
+  background: var(--bg-raised);
+  box-shadow: 0 0 0 1px var(--line);
+  transition: box-shadow 0.15s;
+}
+
+.pick__art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: filter 0.15s;
+}
+
+.pick:hover .pick__art {
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.5);
+}
+
+.pick.is-picked .pick__art {
+  box-shadow: 0 0 0 3px var(--accent);
+}
+
+.pick.is-picked .pick__art img {
+  filter: brightness(0.6);
+}
+
+.pick__check {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  opacity: 0;
+  transform: scale(0.6);
+  transition:
+    opacity 0.15s,
+    transform 0.2s var(--ease);
+}
+
+.pick.is-picked .pick__check {
+  opacity: 1;
+  transform: none;
+}
+
+.pick__title {
+  margin-top: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pick__meta {
+  display: flex;
+  gap: 6px;
+  color: var(--faint);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.pick__meta span + span::before {
+  content: "·";
+  margin-right: 6px;
+}
+
+.pick--skeleton {
+  aspect-ratio: 2 / 3;
+  background: linear-gradient(90deg, #131318 0%, #1e1e26 50%, #131318 100%);
+  background-size: 800px 100%;
+  animation: shimmer 1.4s linear infinite;
+}
+
+.howto {
+  width: min(880px, 100%);
+  text-align: center;
+}
+
+.howto__steps {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+  margin: 26px 0 0;
+  padding: 0;
+  list-style: none;
+  text-align: left;
+}
+
+.howto__steps li {
+  position: relative;
+  padding: 20px 20px 22px;
+  border-radius: var(--radius-l);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+}
+
+.howto__icon {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin-bottom: 16px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: #ff8d90;
+}
+
+.howto__number {
+  position: absolute;
+  top: 18px;
+  right: 22px;
+  color: var(--line-strong);
+  font-family: var(--font-display);
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.howto__steps strong {
+  display: block;
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.howto__steps p {
+  margin-top: 6px;
+  color: var(--muted);
+}
+
+.howto__ready {
+  margin-top: 22px;
+  color: var(--muted);
+}
+
+.howto__actions {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 26px;
+}
+
+.howto__start {
+  min-width: 180px;
+}
+
+/* Trailer overlay */
+
+.trailer {
+  /* What the dialog takes besides the picture: its heading, the row of videos and the gaps between. */
+  --trailer-chrome: 112px;
+  --trailer-padding: 24px;
+  position: fixed;
+  /* Starts below the title bar: the window buttons stay in reach and nothing of the overlay hides under them. */
+  inset: var(--titlebar-height) 0 0 0;
+  display: grid;
+  place-items: center;
+  padding: var(--trailer-padding) 32px;
+  background: rgba(5, 5, 8, 0.8);
+  backdrop-filter: blur(16px) saturate(1.2);
+  z-index: 50;
+  animation: fade 0.2s;
+}
+
+/* As wide as the window allows, but never so wide that the 16:9 picture pushes the heading or the
+   videos out of a short window. */
+.trailer__dialog {
+  width: min(
+    1180px,
+    100%,
+    calc((100vh - var(--titlebar-height) - 2 * var(--trailer-padding) - var(--trailer-chrome)) * 16 / 9)
+  );
+  animation: rise 0.3s var(--ease);
+}
+
+.trailer__head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 50px;
+  margin-bottom: 14px;
+}
+
+.trailer__titles {
+  flex: 1;
+  min-width: 0;
+}
+
+.trailer__head h2,
+.trailer__sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trailer__head h2 {
+  font-family: var(--font-display);
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.trailer__sub {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.trailer__close {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  transition: background 0.15s;
+}
+
+.trailer__close:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.trailer__frame {
+  aspect-ratio: 16 / 9;
+  border-radius: var(--radius-l);
+  overflow: hidden;
+  background: #000;
+  box-shadow:
+    0 0 0 1px var(--line-strong),
+    0 40px 100px rgba(0, 0, 0, 0.7);
+}
+
+.trailer__frame iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+.trailer__videos {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  height: 30px;
+  margin-top: 18px;
+}
+
+/* The chips share one line: a long list of videos must not push the dialog taller. A long name
+   is cut at a share of the line, so it gets more room in a wider window; the floor keeps a short
+   name whole. */
+.trailer__videos .chip {
+  flex: 0 1 auto;
+  min-width: 84px;
+  max-width: 20%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

@@ -1,0 +1,213 @@
+/* Import of ratings and lists (a row of the settings page) */
+
+.import__head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.import__icon {
+  flex: none;
+}
+
+.import__icon--done {
+  color: var(--ok);
+}
+
+.import__icon--failed {
+  color: #ff8d90;
+}
+
+.import__title {
+  flex: 1;
+  min-width: 0;
+}
+
+.import-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.import-counts > div {
+  flex: 1;
+  min-width: 112px;
+  padding: 10px 12px;
+  border-radius: var(--radius-s);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--line);
+}
+
+.import-counts b {
+  display: block;
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.import-counts span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.setting .import-note {
+  margin: 0;
+  color: var(--faint);
+  font-size: 12px;
+}
+
+.setting .import-note--warning {
+  color: #ff8d90;
+  font-size: 13px;
+}
+
+.import .text-button {
+  align-self: flex-start;
+  font-size: 13px;
+}
+
+/* The names can run to hundreds: the list scrolls inside the row instead of stretching the page. */
+.import-missing {
+  max-height: 220px;
+  margin: 0;
+  padding: 10px 12px 10px 32px;
+  overflow-y: auto;
+  border-radius: var(--radius-s);
+  background: rgba(0, 0, 0, 0.25);
+  color: var(--muted);
+  font-size: 13px;
+  user-select: text;
+}
+
+/* "What happened": checks and the journal of problems */
+
+.diagnostics__lead {
+  margin: -10px 0 28px;
+  color: var(--muted);
+}
+
+.diagnostic {
+  justify-content: flex-start;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.diagnostic__icon {
+  flex: none;
+  margin-top: 1px;
+  color: var(--faint);
+}
+
+.diagnostic--ok .diagnostic__icon {
+  color: var(--ok);
+}
+
+.diagnostic--note .diagnostic__icon {
+  color: var(--gold);
+}
+
+.diagnostic--problem .diagnostic__icon {
+  color: #ff8d90;
+}
+
+.diagnostic__body {
+  flex: 1;
+  min-width: 0;
+}
+
+.setting .diagnostic__status {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.diagnostic--pending .diagnostic__status {
+  color: var(--faint);
+}
+
+.diagnostic .setting__actions {
+  align-self: center;
+}
+
+.journal__head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+
+.journal__head h2 {
+  flex: 1;
+  margin: 0;
+}
+
+.journal__head .text-button {
+  font-size: 13px;
+}
+
+.journal,
+.journal__empty {
+  margin: 0;
+  padding: 16px 18px;
+  border-radius: var(--radius-l);
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+}
+
+.journal__empty {
+  color: var(--muted);
+}
+
+.journal {
+  padding-block: 6px;
+  list-style: none;
+}
+
+.journal li {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.journal li:last-child {
+  border-bottom: 0;
+}
+
+.journal time {
+  flex: none;
+  width: 128px;
+  color: var(--faint);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.journal .tag {
+  flex: none;
+}
+
+.journal__text {
+  flex: 1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 10px;
+  min-width: 0;
+  user-select: text;
+}
+
+.journal__text em {
+  color: var(--faint);
+  font-size: 12px;
+  font-style: normal;
+}
+
+/* The error as the program worded it: on its own line, apart from the plain-words message. */
+.journal__text code {
+  flex-basis: 100%;
+  color: var(--faint);
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  word-break: break-word;
+}

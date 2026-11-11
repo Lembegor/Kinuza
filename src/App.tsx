@@ -2,14 +2,21 @@ import { useEffect, useRef, useState } from "react";
 import { HashRouter, Route, Routes, useLocation } from "react-router-dom";
 import { FileDown } from "lucide-react";
 import { AddSourceDialog } from "./components/AddSourceDialog";
+import { Onboarding } from "./components/Onboarding";
 import { ConfirmDialog, Toasts, UpdateNotice } from "./components/Overlays";
 import { Player } from "./components/Player";
 import { Sidebar, Titlebar } from "./components/Shell";
 import { backend, describeError, isDesktop, onLaunchRequest, type LaunchRequest } from "./lib/backend";
+import { t, useT } from "./lib/i18n";
+import { report } from "./lib/journal";
 import { isMagnetLink } from "./lib/parse";
+import Browse from "./pages/Browse";
+import Diagnostics from "./pages/Diagnostics";
+import CalendarPage from "./pages/Calendar";
 import Downloads from "./pages/Downloads";
 import Home from "./pages/Home";
 import Library from "./pages/Library";
+import PersonPage from "./pages/Person";
 import Search from "./pages/Search";
 import Settings from "./pages/Settings";
 import TitlePage from "./pages/Title";
@@ -62,7 +69,7 @@ function useTorrentDrop(): boolean {
         const torrentFile = payload.paths.find((path) => path.toLowerCase().endsWith(".torrent"));
         const { pageTarget, openAddSource, toast } = useUi.getState();
         if (torrentFile) openAddSource({ target: pageTarget, filePath: torrentFile });
-        else toast("Перетащите файл с расширением .torrent.", "error");
+        else toast(t("shell.drop.notTorrent"), "error");
       });
       if (disposed) stop();
       else unlisten = stop;
@@ -120,16 +127,15 @@ function useLinkHandling(ready: boolean): void {
     if (!ready || !isDesktop) return;
     const { handleLinks, linksPrompted, patch } = useSettings.getState();
     if (handleLinks) {
-      void backend.setAssociations(true).catch((error) => console.error("associations: refresh failed", error));
+      void backend.setAssociations(true).catch((error) => report("system", "journal.associations.failed", error));
       return;
     }
     if (linksPrompted) return;
     patch({ linksPrompted: true });
     useUi.getState().askConfirm({
-      title: "Открывать торренты в Kinuza?",
-      message:
-        "Magnet-ссылки из браузера и .torrent-файлы будут сразу открываться в Kinuza: приложение само подберёт фильм или сериал и разложит файлы по сериям. Это можно изменить в настройках.",
-      confirmLabel: "Да, открывать",
+      title: t("shell.links.title"),
+      message: t("shell.links.message"),
+      confirmLabel: t("shell.links.confirm"),
       onConfirm: () => void enableLinkHandling(),
     });
   }, [ready]);
@@ -147,11 +153,15 @@ function Content() {
     <main className="content" ref={scrollRef}>
       <Routes>
         <Route path="/" element={<Home />} />
+        <Route path="/browse" element={<Browse />} />
         <Route path="/search" element={<Search />} />
         <Route path="/title/:type/:id" element={<TitlePage />} />
+        <Route path="/person/:id" element={<PersonPage />} />
         <Route path="/library" element={<Library />} />
+        <Route path="/calendar" element={<CalendarPage />} />
         <Route path="/downloads" element={<Downloads />} />
         <Route path="/settings" element={<Settings />} />
+        <Route path="/diagnostics" element={<Diagnostics />} />
       </Routes>
     </main>
   );
@@ -161,12 +171,17 @@ export default function App() {
   const settingsLoaded = useSettings((state) => state.loaded);
   const autoUpdate = useSettings((state) => state.autoUpdate);
   const libraryLoaded = useLibrary((state) => state.loaded);
+  const language = useSettings((state) => state.language);
+  // The first start: the language is not chosen yet, or the user has nothing here and has not been shown around.
+  const introducing = useLibrary((state) => state.firstRun) || !language;
+  const { t } = useT();
 
   useEffect(() => {
     void useSettings.getState().load();
     void useLibrary.getState().load();
     return startTorrentPolling();
   }, []);
+
 
   useEffect(() => {
     if (!settingsLoaded || !autoUpdate) return;
@@ -178,7 +193,9 @@ export default function App() {
   const dragging = useTorrentDrop();
   const ready = settingsLoaded && libraryLoaded;
   useLaunchRequests(ready);
-  useLinkHandling(ready);
+  // The question about links is worded in the interface language, so it waits until one is chosen.
+  // It also waits for the introduction to end: one thing at a time.
+  useLinkHandling(ready && !introducing);
 
   // The webview's own context menu (reload, inspect) has no place in the app.
   useEffect(() => {
@@ -191,9 +208,17 @@ export default function App() {
   }, []);
 
   if (!ready) return <div className="app app--loading" />;
+  // First start: nothing else is shown until the app knows which language to speak and the introduction is over.
+  if (introducing) {
+    return (
+      <div className="app">
+        <Onboarding />
+      </div>
+    );
+  }
 
   return (
-    <HashRouter>
+    <HashRouter key={language}>
       <div className="app">
         <Titlebar />
         <Sidebar />
@@ -206,7 +231,7 @@ export default function App() {
         {dragging && (
           <div className="drop-overlay">
             <FileDown size={44} />
-            <strong>Отпустите .torrent-файл</strong>
+            <strong>{t("shell.drop.release")}</strong>
           </div>
         )}
       </div>

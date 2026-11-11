@@ -8,10 +8,17 @@ const toastLifetimeMs = 5000;
 
 export type ToastKind = "info" | "success" | "error";
 
+/** A button on a toast, e.g. to take back what the toast reports. */
+export interface ToastAction {
+  label: string;
+  run: () => void;
+}
+
 export interface Toast {
   id: number;
   kind: ToastKind;
   text: string;
+  action?: ToastAction;
 }
 
 /** What a new torrent should be attached to. Without a target the dialog asks for the title. */
@@ -19,6 +26,8 @@ export interface AddSourceTarget {
   title: TitleRef;
   /** Title in the original language; free copies are looked up by it. */
   originalTitle?: string;
+  /** Two-letter code of the language the title was made in. */
+  originalLanguage?: string;
   seasons: SeasonInfo[];
   defaultSeason: number;
 }
@@ -58,7 +67,7 @@ interface UiState {
   /** The title open on screen; a pasted magnet or a dropped .torrent attaches to it. */
   pageTarget: AddSourceTarget | null;
   setPageTarget: (target: AddSourceTarget | null) => void;
-  toast: (text: string, kind?: ToastKind) => void;
+  toast: (text: string, kind?: ToastKind, action?: ToastAction) => void;
   dismissToast: (id: number) => void;
   openAddSource: (request: AddSourceRequest) => void;
   closeAddSource: () => void;
@@ -78,9 +87,9 @@ export const useUi = create<UiState>((set, get) => ({
   pageTarget: null,
   setPageTarget: (target) => set({ pageTarget: target }),
 
-  toast(text, kind = "info") {
+  toast(text, kind = "info", action) {
     const id = nextToastId++;
-    set((state) => ({ toasts: [...state.toasts, { id, kind, text }] }));
+    set((state) => ({ toasts: [...state.toasts, { id, kind, text, action }] }));
     setTimeout(() => get().dismissToast(id), toastLifetimeMs);
   },
   dismissToast: (id) => set((state) => ({ toasts: state.toasts.filter((toast) => toast.id !== id) })),

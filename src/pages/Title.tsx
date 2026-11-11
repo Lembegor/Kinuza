@@ -1,12 +1,14 @@
 // Title page: details, sources for a movie, seasons and episodes for a series.
 
-import { useEffect, useMemo } from "react";
-import { useParams, useSearchParams } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import {
   Check,
   CheckCheck,
   CircleCheck,
   Clapperboard,
+  Cloud,
+  Download,
   Eye,
   EyeOff,
   FolderOpen,
@@ -17,17 +19,24 @@ import {
   X,
 } from "lucide-react";
 import { CatalogError, PosterRow, typeLabel } from "../components/Cards";
+import { AnimeOrder } from "../components/AnimeOrder";
+import { FranchiseRow } from "../components/Franchise";
 import { RatingStars, StatusMenu } from "../components/TrackControls";
+import { TrailerOverlay } from "../components/TrailerOverlay";
 import { backend, describeError, isDesktop } from "../lib/backend";
-import { formatBytes, formatDate, formatRuntime, formatSpeed, plural } from "../lib/format";
+import { formatBytes, formatDate, formatRuntime, formatSpeed } from "../lib/format";
+import { t, useT } from "../lib/i18n";
 import { qualityRank } from "../lib/parse";
 import { imageUrl, tmdb, type Details, type Episode, type MediaType } from "../lib/tmdb";
 import { useAsync } from "../lib/useAsync";
 import { isWatched, toTitleRef, unitKey, useLibrary, type Source, type TitleRef } from "../state/library";
-import { fileProgress, useTorrents } from "../state/torrents";
+import { useSettings } from "../state/settings";
+import { fileOf, fileProgress, useTorrents } from "../state/torrents";
 import { useUi, type AddSourceTarget } from "../state/ui";
 
 const specialsSeason = 0;
+/** Directors or creators named under the title; an anthology can have a dozen. */
+const namedDirectorCount = 4;
 
 export function sortSources(sources: Source[]): Source[] {
   return [...sources].sort((a, b) => qualityRank(b.quality) - qualityRank(a.quality) || b.size - a.size);
@@ -44,32 +53,46 @@ async function revealFile(source: Source): Promise<void> {
   }
 }
 
-async function openTrailer(key: string): Promise<void> {
-  const url = `https://www.youtube.com/watch?v=${key}`;
-  if (!isDesktop) {
-    window.open(url, "_blank");
-    return;
+/** Turns a source that is only watched online into one that is saved to disk. */
+async function downloadSource(source: Source): Promise<void> {
+  try {
+    await backend.selectFiles(source.infoHash, [source.fileIndex], useSettings.getState().downloadDir || null);
+    await useTorrents.getState().refresh();
+    useUi.getState().toast(t("title.downloadStarted"), "success");
+  } catch (error) {
+    useUi.getState().toast(describeError(error), "error");
   }
-  const { openUrl } = await import("@tauri-apps/plugin-opener");
-  await openUrl(url);
 }
 
 /** Download state of the file behind a source. */
 function SourceStatus({ source }: { source: Source }) {
   const torrent = useTorrents((state) => state.byHash[source.infoHash]);
-  if (!torrent) return <span className="source-status source-status--missing">нет в загрузках</span>;
+  const { t } = useT();
+  if (!torrent) return <span className="source-status source-status--missing">{t("title.source.missing")}</span>;
 
   const progress = fileProgress(torrent, source.fileIndex);
   if (progress >= 1) {
     return (
       <span className="source-status source-status--done">
         <CircleCheck size={14} />
-        скачано
+        {t("common.downloaded")}
+      </span>
+    );
+  }
+  if (fileOf(torrent, source.fileIndex)?.included === false) {
+    return (
+      <span className="source-status source-status--online" title={t("title.source.online.note")}>
+        <Cloud size={14} />
+        {t("title.source.online")}
+        <button className="button button--small" onClick={() => void downloadSource(source)}>
+          <Download size={13} />
+          {t("common.download")}
+        </button>
       </span>
     );
   }
   const speed = torrent.state === "live" && torrent.downloadSpeed > 0 ? ` · ${formatSpeed(torrent.downloadSpeed)}` : "";
-  const label = torrent.state === "paused" ? "пауза" : `${Math.floor(progress * 100)}%${speed}`;
+  const label = torrent.state === "paused" ? t("title.source.paused") : `${Math.floor(progress * 100)}%${speed}`;
   return (
     <span className="source-status">
       <span className="bar bar--inline">
@@ -82,11 +105,21 @@ function SourceStatus({ source }: { source: Source }) {
 
 function QualityChip({ source, onRemove }: { source: Source; onRemove: () => void }) {
   const progress = useTorrents((state) => fileProgress(state.byHash[source.infoHash], source.fileIndex));
+  const onlineOnly = useTorrents((state) => fileOf(state.byHash[source.infoHash], source.fileIndex)?.included === false);
+  const { t } = useT();
   return (
     <span className={`quality-chip ${progress >= 1 ? "is-ready" : ""}`} title={source.fileName}>
-      {source.quality || "видео"}
-      {progress < 1 && <small>{Math.floor(progress * 100)}%</small>}
-      <button aria-label="Убрать источник" onClick={onRemove}>
+      {source.quality || t("common.video")}
+      {progress < 1 && !onlineOnly && <small>{Math.floor(progress * 100)}%</small>}
+      {progress < 1 && onlineOnly && (
+        <>
+          <small>{t("title.source.online")}</small>
+          <button aria-label={t("title.episode.download")} title={t("title.source.saveToDisk")} onClick={() => void downloadSource(source)}>
+            <Download size={11} />
+          </button>
+        </>
+      )}
+      <button aria-label={t("title.source.remove")} onClick={onRemove}>
         <X size={11} />
       </button>
     </span>
@@ -99,37 +132,35 @@ function MovieSources({ title, target }: { title: TitleRef; target: AddSourceTar
   const sources = useMemo(() => sortSources(stored ?? []), [stored]);
   const removeSource = useLibrary((state) => state.removeSource);
   const { play, openAddSource } = useUi.getState();
+  const { t } = useT();
 
   return (
     <section className="section">
       <div className="section__head">
-        <h2>Источники</h2>
+        <h2>{t("title.sources")}</h2>
         <button className="button" onClick={() => openAddSource({ target })}>
           <Plus size={16} />
-          Добавить торрент
+          {t("common.addTorrent")}
         </button>
       </div>
       {sources.length === 0 ? (
         <div className="hint-card">
           <Clapperboard size={22} />
           <div>
-            <strong>Источника пока нет</strong>
-            <p>
-              Добавьте magnet-ссылку или .torrent-файл — фильм начнёт скачиваться, а смотреть можно сразу, не дожидаясь
-              конца загрузки. Ссылку можно просто вставить (Ctrl+V), а файл — перетащить в окно.
-            </p>
+            <strong>{t("title.sources.empty.title")}</strong>
+            <p>{t("title.sources.empty.text")}</p>
           </div>
         </div>
       ) : (
         <div className="source-list">
           {sources.map((source) => (
             <div key={source.id} className="source-row">
-              <button className="round-button" aria-label="Смотреть" onClick={() => play({ title, unitKey: key, preferredSourceId: source.id })}>
+              <button className="round-button" aria-label={t("title.watch")} onClick={() => play({ title, unitKey: key, preferredSourceId: source.id })}>
                 <Play size={16} fill="currentColor" />
               </button>
               <div className="source-row__main">
                 <div className="source-row__title">
-                  <span className="quality-tag">{source.quality || "видео"}</span>
+                  <span className="quality-tag">{source.quality || t("common.video")}</span>
                   {source.tags.map((tag) => (
                     <span key={tag} className="tag">
                       {tag}
@@ -140,10 +171,10 @@ function MovieSources({ title, target }: { title: TitleRef; target: AddSourceTar
                 <div className="source-row__file">{source.fileName}</div>
               </div>
               <SourceStatus source={source} />
-              <button className="icon-button" aria-label="Показать в папке" onClick={() => void revealFile(source)}>
+              <button className="icon-button" aria-label={t("title.source.reveal")} onClick={() => void revealFile(source)}>
                 <FolderOpen size={16} />
               </button>
-              <button className="icon-button" aria-label="Убрать источник" onClick={() => removeSource(key, source.id)}>
+              <button className="icon-button" aria-label={t("title.source.remove")} onClick={() => removeSource(key, source.id)}>
                 <Trash2 size={16} />
               </button>
             </div>
@@ -160,6 +191,7 @@ function EpisodeRow({ title, episode }: { title: TitleRef; episode: Episode }) {
   const progress = useLibrary((state) => state.progress[key]);
   const { removeSource, setWatched } = useLibrary.getState();
   const play = useUi((state) => state.play);
+  const { t } = useT();
 
   const sources = useMemo(() => sortSources(stored ?? []), [stored]);
   const watched = isWatched(progress);
@@ -179,7 +211,7 @@ function EpisodeRow({ title, episode }: { title: TitleRef; episode: Episode }) {
 
   return (
     <div className={`episode ${playable ? "is-playable" : ""} ${watched ? "is-watched" : ""}`}>
-      <button className="episode__still" disabled={!playable} onClick={() => start()} aria-label="Смотреть серию">
+      <button className="episode__still" disabled={!playable} onClick={() => start()} aria-label={t("title.episode.watch")}>
         {still ? <img src={still} alt="" loading="lazy" draggable={false} /> : <div className="episode__blank" />}
         {playable && (
           <span className="episode__play">
@@ -205,7 +237,12 @@ function EpisodeRow({ title, episode }: { title: TitleRef; episode: Episode }) {
         <div className="episode__meta">
           {[formatDate(episode.airDate), formatRuntime(episode.runtimeMinutes)].filter(Boolean).join(" · ")}
         </div>
-        {episode.overview && <p className="episode__overview">{episode.overview}</p>}
+        {episode.overview && (
+          // What happens in an episode not yet watched is a spoiler: it stays veiled until pointed at.
+          <p className={`episode__overview ${watched ? "" : "is-veiled"}`} tabIndex={watched ? undefined : 0} title={watched ? undefined : t("title.episode.spoiler")}>
+            {episode.overview}
+          </p>
+        )}
       </div>
       <div className="episode__side">
         <div className="episode__chips">
@@ -215,8 +252,8 @@ function EpisodeRow({ title, episode }: { title: TitleRef; episode: Episode }) {
         </div>
         <button
           className="icon-button"
-          aria-label={watched ? "Отметить непросмотренной" : "Отметить просмотренной"}
-          title={watched ? "Отметить непросмотренной" : "Отметить просмотренной"}
+          aria-label={watched ? t("title.episode.markUnwatched") : t("title.episode.markWatched")}
+          title={watched ? t("title.episode.markUnwatched") : t("title.episode.markWatched")}
           onClick={() =>
             setWatched(key, !watched, { title, season: episode.season, episode: episode.episode, episodeName: episode.name })
           }
@@ -245,6 +282,7 @@ function SeriesEpisodes({
   const sources = useLibrary((state) => state.sources);
   const progress = useLibrary((state) => state.progress);
   const openAddSource = useUi((state) => state.openAddSource);
+  const { t, tn } = useT();
 
   const keyOf = (episode: Episode) => unitKey("tv", details.id, episode.season, episode.episode);
   const list = episodes.data ?? [];
@@ -254,9 +292,9 @@ function SeriesEpisodes({
   const seasonWatched = total > 0 && watched === total;
 
   const note = [
-    `${total} ${plural(total, "серия", "серии", "серий")}`,
-    available > 0 ? `добавлено ${available}` : "",
-    watched > 0 ? `просмотрено ${watched}` : "",
+    tn("common.episodes", total),
+    available > 0 ? t("title.episodes.added", { count: available }) : "",
+    watched > 0 ? t("title.episodes.watched", { count: watched }) : "",
   ]
     .filter(Boolean)
     .join(" · ");
@@ -273,18 +311,18 @@ function SeriesEpisodes({
   return (
     <section className="section">
       <div className="section__head">
-        <h2>Серии</h2>
+        <h2>{t("title.episodes")}</h2>
         {total > 0 && <span className="section__note">{note}</span>}
         <div className="section__actions">
           {total > 0 && (
             <button className="button" onClick={toggleSeasonWatched}>
               <CheckCheck size={16} />
-              {seasonWatched ? "Снять отметки" : "Сезон просмотрен"}
+              {seasonWatched ? t("title.season.unmark") : t("title.season.markWatched")}
             </button>
           )}
           <button className="button" onClick={() => openAddSource({ target })}>
             <Plus size={16} />
-            Добавить торрент
+            {t("common.addTorrent")}
           </button>
         </div>
       </div>
@@ -297,7 +335,7 @@ function SeriesEpisodes({
               className={`chip ${item.seasonNumber === season ? "is-active" : ""}`}
               onClick={() => onSeasonChange(item.seasonNumber)}
             >
-              {item.seasonNumber === specialsSeason ? "Спецвыпуски" : `Сезон ${item.seasonNumber}`}
+              {item.seasonNumber === specialsSeason ? t("common.specials") : t("common.season", { season: item.seasonNumber })}
             </button>
           ))}
         </div>
@@ -347,11 +385,37 @@ function useResumeEpisode(details: Details | null): { season: number; episode: n
   }, [details, progress, sources]);
 }
 
+/** The title's rating on IMDb; the catalog's own rating stands in only when IMDb has none. */
+function TitleRating({ imdbId, catalogRating }: { imdbId: string | null; catalogRating: number }) {
+  const imdb = useAsync(() => (imdbId ? backend.imdbRating(imdbId) : Promise.resolve(null)), [imdbId]);
+  const { t, tn, locale } = useT();
+  if (imdb.loading) return null;
+  if (imdb.data) {
+    return (
+      <span className="rating" title={tn("title.rating.imdb", imdb.data.votes, { votes: imdb.data.votes.toLocaleString(locale) })}>
+        <Star size={13} fill="currentColor" />
+        {imdb.data.rating.toFixed(1)}
+      </span>
+    );
+  }
+  if (catalogRating <= 0) return null;
+  return (
+    <span className="rating" title={t("title.rating.tmdb")}>
+      <Star size={13} fill="currentColor" />
+      {catalogRating.toFixed(1)}
+    </span>
+  );
+}
+
 export default function TitlePage() {
   const params = useParams();
   const type = params.type as MediaType;
   const id = Number(params.id);
   const [searchParams, setSearchParams] = useSearchParams();
+  const { t, tn } = useT();
+  // Remembered per title: the page stays mounted when one title leads to another, and the
+  // trailer of the first must not carry over to the second.
+  const [trailerTitleId, setTrailerTitleId] = useState<number | null>(null);
 
   const details = useAsync(() => tmdb.details(type, id), [type, id]);
   const data = details.data && details.data.id === id ? details.data : null;
@@ -366,7 +430,7 @@ export default function TitlePage() {
   const season = requestedSeason !== null ? Number(requestedSeason) : (resume?.season ?? firstSeason);
 
   const target = useMemo<AddSourceTarget | null>(
-    () => (data && title ? { title, originalTitle: data.originalTitle, seasons: data.seasons, defaultSeason: season } : null),
+    () => (data && title ? { title, originalTitle: data.originalTitle, originalLanguage: data.language, seasons: data.seasons, defaultSeason: season } : null),
     [data, title, season],
   );
 
@@ -400,7 +464,7 @@ export default function TitlePage() {
   const meta = [
     data.year,
     typeLabel(data),
-    type === "movie" ? formatRuntime(data.runtimeMinutes) : data.seasons.length > 0 ? `${data.seasons.filter((s) => s.seasonNumber !== specialsSeason).length || 1} сез.` : "",
+    type === "movie" ? formatRuntime(data.runtimeMinutes) : data.seasons.length > 0 ? tn("title.seasons", data.seasons.filter((s) => s.seasonNumber !== specialsSeason).length || 1) : "",
     data.countries.slice(0, 2).join(", "),
   ].filter(Boolean);
 
@@ -420,7 +484,9 @@ export default function TitlePage() {
     }
   };
   const canPlay = Boolean(bestMovieSource || resume);
-  const playLabel = resume ? `${resume.resumed ? "Продолжить" : "Смотреть"} · С${resume.season} Э${resume.episode}` : "Смотреть";
+  const playLabel = resume
+    ? `${resume.resumed ? t("title.resume") : t("title.watch")} · ${t("title.episodeShort", { season: resume.season, episode: resume.episode })}`
+    : t("title.watch");
 
   return (
     <div className="page page--flush">
@@ -433,12 +499,7 @@ export default function TitlePage() {
             <h1>{data.title}</h1>
             {data.originalTitle && data.originalTitle !== data.title && <div className="title-hero__original">{data.originalTitle}</div>}
             <div className="title-hero__meta">
-              {data.rating > 0 && (
-                <span className="rating">
-                  <Star size={13} fill="currentColor" />
-                  {data.rating.toFixed(1)}
-                </span>
-              )}
+              <TitleRating imdbId={data.imdbId} catalogRating={data.rating} />
               {meta.map((item) => (
                 <span key={item}>{item}</span>
               ))}
@@ -452,8 +513,18 @@ export default function TitlePage() {
                 ))}
               </div>
             )}
+            {data.directors.length > 0 && (
+              <div className="title-hero__crew">
+                <span>{tn(type === "movie" ? "person.directors" : "person.creators", Math.min(data.directors.length, namedDirectorCount))}</span>
+                {data.directors.slice(0, namedDirectorCount).map((person) => (
+                  <Link key={person.id} to={`/person/${person.id}`}>
+                    {person.name}
+                  </Link>
+                ))}
+              </div>
+            )}
             {data.tagline && <div className="title-hero__tagline">{data.tagline}</div>}
-            <p className="title-hero__overview">{data.overview || "Описание пока не добавлено."}</p>
+            <p className="title-hero__overview">{data.overview || t("title.noOverview")}</p>
             <div className="title-hero__actions">
               {canPlay ? (
                 <button className="button button--primary button--large" onClick={playResume}>
@@ -463,14 +534,14 @@ export default function TitlePage() {
               ) : (
                 <button className="button button--primary button--large" onClick={() => openAddSource({ target })}>
                   <Plus size={18} />
-                  Добавить торрент
+                  {t("common.addTorrent")}
                 </button>
               )}
               <StatusMenu title={title} />
-              {data.trailerKey && (
-                <button className="button button--large" onClick={() => void openTrailer(data.trailerKey!)}>
+              {data.videos.length > 0 && (
+                <button className="button button--large" aria-haspopup="dialog" onClick={() => setTrailerTitleId(id)}>
                   <Clapperboard size={18} />
-                  Трейлер
+                  {t("title.trailer")}
                 </button>
               )}
             </div>
@@ -495,25 +566,33 @@ export default function TitlePage() {
         {data.cast.length > 0 && (
           <section className="section">
             <div className="section__head">
-              <h2>В ролях</h2>
+              <h2>{t("title.cast")}</h2>
             </div>
             <div className="cast">
               {data.cast.map((person) => {
                 const photo = imageUrl(person.photo, "w185");
                 return (
-                  <div key={person.id} className="cast__person">
+                  <Link key={person.id} className="cast__person" to={`/person/${person.id}`} draggable={false}>
                     <div className="cast__photo">{photo ? <img src={photo} alt="" loading="lazy" draggable={false} /> : person.name.slice(0, 1)}</div>
                     <strong>{person.name}</strong>
                     <span>{person.character}</span>
-                  </div>
+                  </Link>
                 );
               })}
             </div>
           </section>
         )}
 
-        {data.recommendations.length > 0 && <PosterRow title="Похожее" items={data.recommendations} />}
+        {data.collection && <FranchiseRow collection={data.collection} currentId={id} />}
+
+        {data.isAnime && <AnimeOrder names={[data.originalTitle, data.title]} type={type} year={Number(data.year) || null} />}
+
+        {data.recommendations.length > 0 && <PosterRow title={t("title.similar")} items={data.recommendations} />}
       </div>
+
+      {trailerTitleId === id && data.videos.length > 0 && (
+        <TrailerOverlay title={data.title} videos={data.videos} onClose={() => setTrailerTitleId(null)} />
+      )}
     </div>
   );
 }

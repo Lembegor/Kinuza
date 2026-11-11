@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Ban, Check, ChevronDown, Clock, Eye, ListPlus, Pause, Star, Trash2, type LucideIcon } from "lucide-react";
+import { useT } from "../lib/i18n";
 import { maxRating, statusLabel, titleKey, useLibrary, watchStatuses, type TitleRef, type WatchStatus } from "../state/library";
 
 export const statusIcons: Record<WatchStatus, LucideIcon> = {
@@ -36,6 +37,7 @@ function useDismiss(open: boolean, close: () => void) {
 export function StatusMenu({ title }: { title: TitleRef }) {
   const key = titleKey(title.type, title.id);
   const entry = useLibrary((state) => state.tracked[key]);
+  const { t } = useT();
   const { setStatus, removeTracked } = useLibrary.getState();
   const [open, setOpen] = useState(false);
   const ref = useDismiss(open, () => setOpen(false));
@@ -47,7 +49,7 @@ export function StatusMenu({ title }: { title: TitleRef }) {
     <div className="status-menu" ref={ref}>
       <button className={`button button--large ${status ? `status-button status-button--${status}` : ""}`} onClick={() => setOpen(!open)}>
         <Icon size={18} />
-        {status ? statusLabel(status) : "В список"}
+        {status ? statusLabel(status) : t("library.add")}
         <ChevronDown size={16} />
       </button>
       {open && (
@@ -64,7 +66,7 @@ export function StatusMenu({ title }: { title: TitleRef }) {
                 }}
               >
                 <ItemIcon size={16} />
-                <span>{item.label}</span>
+                <span>{t(item.labelKey)}</span>
                 {item.id === status && <Check size={15} />}
               </button>
             );
@@ -78,7 +80,7 @@ export function StatusMenu({ title }: { title: TitleRef }) {
               }}
             >
               <Trash2 size={16} />
-              <span>Убрать из списка</span>
+              <span>{t("library.remove")}</span>
             </button>
           )}
         </div>
@@ -90,19 +92,20 @@ export function StatusMenu({ title }: { title: TitleRef }) {
 export function RatingStars({ title }: { title: TitleRef }) {
   const rating = useLibrary((state) => state.tracked[titleKey(title.type, title.id)]?.rating ?? null);
   const setRating = useLibrary((state) => state.setRating);
+  const { t } = useT();
   const [hover, setHover] = useState<number | null>(null);
   const shown = hover ?? rating ?? 0;
 
   return (
     <div className="rating-stars" onMouseLeave={() => setHover(null)}>
-      <span className="rating-stars__label">Моя оценка</span>
+      <span className="rating-stars__label">{t("library.rating.mine")}</span>
       <div className="rating-stars__row">
         {Array.from({ length: maxRating }, (_, index) => {
           const value = index + 1;
           return (
             <button
               key={value}
-              aria-label={`Оценка ${value}`}
+              aria-label={t("library.rating.value", { value })}
               className={value <= shown ? "is-on" : ""}
               onMouseEnter={() => setHover(value)}
               // Clicking the current rating again removes it.
@@ -113,7 +116,7 @@ export function RatingStars({ title }: { title: TitleRef }) {
           );
         })}
       </div>
-      <span className="rating-stars__value">{shown > 0 ? `${shown} из ${maxRating}` : "нет оценки"}</span>
+      <span className="rating-stars__value">{shown > 0 ? t("library.rating.outOf", { value: shown, max: maxRating }) : t("library.rating.none")}</span>
     </div>
   );
 }
@@ -121,10 +124,11 @@ export function RatingStars({ title }: { title: TitleRef }) {
 /** Compact marker for poster cards: status icon and the personal rating. */
 export function TrackBadge({ type, id }: Pick<TitleRef, "type" | "id">) {
   const entry = useLibrary((state) => state.tracked[titleKey(type, id)]);
+  const { t } = useT();
   if (!entry || (!entry.status && !entry.rating)) return null;
   const Icon = entry.status ? statusIcons[entry.status] : null;
   return (
-    <span className={`track-badge ${entry.status ? `track-badge--${entry.status}` : ""}`} title={entry.status ? statusLabel(entry.status) : "Моя оценка"}>
+    <span className={`track-badge ${entry.status ? `track-badge--${entry.status}` : ""}`} title={entry.status ? statusLabel(entry.status) : t("library.rating.mine")}>
       {Icon && <Icon size={12} />}
       {entry.rating && (
         <>

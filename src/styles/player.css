@@ -479,3 +479,242 @@
   padding: 0 12px;
   font-size: 12px;
 }
+
+/* Brief feedback for a key press: how far a seek went, the new volume or speed. */
+.player__hint {
+  position: absolute;
+  top: 14%;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 10px 20px;
+  border-radius: 999px;
+  background: rgba(8, 8, 11, 0.72);
+  backdrop-filter: blur(8px);
+  color: #fff;
+  font-size: 18px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  animation: fade 0.15s;
+}
+
+/* Chapter borders on the seek bar, and the chapter's name under the time while hovering. */
+.seek__chapter {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: rgba(8, 8, 11, 0.85);
+}
+
+.seek__tooltip small {
+  display: block;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.75;
+}
+
+/* "Skip intro": offered only while a chapter the file marks as an intro, a recap or credits is playing. */
+.player__skip {
+  position: absolute;
+  right: 28px;
+  bottom: 118px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 42px;
+  padding: 0 18px;
+  border-radius: 999px;
+  background: rgba(243, 239, 232, 0.94);
+  color: #101014;
+  font-weight: 800;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  animation: rise 0.25s var(--ease);
+}
+
+.player__skip:hover {
+  background: #fff;
+}
+
+.player__delay {
+  align-items: center;
+}
+
+.player__delay span {
+  min-width: 64px;
+  text-align: center;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Results of the online subtitle search: a list that scrolls inside the menu. */
+.player__menu-list {
+  max-height: 220px;
+  overflow-y: auto;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.player__menu-list .player__menu-item small {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.player__menu-note {
+  padding: 6px 14px 10px;
+  color: var(--faint);
+  font-size: 12px;
+}
+
+/* Mini player: a small always-on-top window. Only what fits stays: play, the bar, the way back;
+   the rest of the frame drags the window. */
+.player.is-mini .player__top > :not(.window-buttons),
+.player.is-mini .player__controls > :not(.player__button--main):not(.player__button--mini),
+.player.is-mini .player__menu,
+.player.is-mini .player__notice,
+.player.is-mini .player__skip {
+  display: none;
+}
+
+.player.is-mini .player__bottom {
+  padding: 0 12px 8px;
+}
+
+.player.is-mini .player__controls {
+  justify-content: space-between;
+}
+
+.player.is-mini .player__subtitles {
+  font-size: 60%;
+}
+
+/* Subtitles found on the internet: a panel over the film, wide enough to read release names. */
+.player__panel {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  width: min(720px, calc(100% - 48px));
+  max-height: min(560px, calc(100% - 180px));
+  padding: 20px;
+  border-radius: 18px;
+  background: rgba(20, 20, 26, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(10px);
+  animation: fade 0.18s;
+}
+
+.player__panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.player__panel-head strong {
+  font-size: 17px;
+  font-weight: 800;
+}
+
+.player__panel-head p {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.player__panel-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 36px 0;
+  color: var(--muted);
+}
+
+.player__panel-languages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.player__panel-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.player__panel-item {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 12px;
+  border-radius: var(--radius-s);
+  background: rgba(255, 255, 255, 0.04);
+  text-align: left;
+}
+
+.player__panel-item:hover,
+.player__panel-item:focus-visible {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.player__panel-item.is-chosen {
+  box-shadow: inset 0 0 0 1px var(--ok);
+}
+
+.player__panel-release {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.player__panel-badges {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--faint);
+  font-size: 12px;
+}
+
+.player__panel-badges em {
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--muted);
+  font-style: normal;
+  font-weight: 700;
+}
+
+.player__panel-badges em.is-match {
+  background: var(--gold);
+  color: #17130a;
+}
+
+.player__panel-badges small {
+  min-width: 56px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.player.is-mini .player__panel {
+  display: none;
+}

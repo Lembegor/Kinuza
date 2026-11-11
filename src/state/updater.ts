@@ -2,6 +2,7 @@
 
 import { create } from "zustand";
 import { isDesktop } from "../lib/backend";
+import { report } from "../lib/journal";
 
 export type UpdateStatus = "idle" | "checking" | "upToDate" | "available" | "downloading" | "installing" | "error";
 
@@ -40,7 +41,7 @@ export const useUpdater = create<UpdaterState>((set, get) => ({
         set({ status: "upToDate" });
       }
     } catch (error) {
-      console.error("updater: check failed", error);
+      report("updates", "journal.updates.check", error);
       set({ status: "error" });
     }
   },
@@ -62,7 +63,7 @@ export const useUpdater = create<UpdaterState>((set, get) => ({
       const { relaunch } = await import("@tauri-apps/plugin-process");
       await relaunch();
     } catch (error) {
-      console.error("updater: install failed", error);
+      report("updates", "journal.updates.install", error);
       set({ status: "error" });
     }
   },

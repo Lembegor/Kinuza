@@ -16,7 +16,7 @@ use librqbit::{
     ListenerOptions, ManagedTorrent, Session, SessionOptions, SessionPersistenceConfig,
     TorrentStatsState,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// How long a magnet link may take to resolve its metadata before we give up.
 const METADATA_TIMEOUT: Duration = Duration::from_secs(90);
@@ -61,6 +61,55 @@ pub struct TorrentView {
     pub files: Vec<TorrentFileView>,
 }
 
+/// A torrent that is only watched online, between viewings: its data is gone from disk and it
+/// is out of the session, but it can be brought back from the saved .torrent the moment it is played.
+#[derive(Serialize, Deserialize, Clone)]
+struct ParkedTorrent {
+    name: String,
+    files: Vec<ParkedFile>,
+    /// Peers it was exchanging data with and its trackers when parked. Without them the next
+    /// viewing would have to find the swarm from scratch, which can take minutes.
+    #[serde(default)]
+    peers: Vec<SocketAddr>,
+    #[serde(default)]
+    trackers: Vec<String>,
+}
+
+/// Peers remembered for a parked torrent; more than enough to get going again.
+const MAX_REMEMBERED_PEERS: usize = 200;
+
+#[derive(Serialize, Deserialize, Clone)]
+struct ParkedFile {
+    path: String,
+    length: u64,
+}
+
+const PARKED_INDEX_NAME: &str = "parked.json";
+const CACHE_DATA_FOLDER_NAME: &str = "data";
+/// State reported for a parked torrent.
+const STATE_PARKED: &str = "parked";
+/// State reported for a torrent waiting for its turn to download.
+const STATE_QUEUED: &str = "queued";
+/// How long after start-up leftovers of an interrupted online viewing are cleaned.
+const STARTUP_CLEANUP_DELAY: Duration = Duration::from_secs(8);
+
+/// How downloads share the connection and the disk; set from the app's settings.
+#[derive(Deserialize, Clone, Copy, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadPolicy {
+    /// Bytes per second for all torrents together; 0 means no limit.
+    pub download_limit: u32,
+    pub upload_limit: u32,
+    /// Torrents downloading at once; the rest wait their turn. 0 means all at once.
+    pub max_active_downloads: usize,
+    /// Seeding stops once a torrent has given back this share of its size (1.0 is "as much as it took"); 0 means never.
+    pub seed_ratio: f32,
+}
+
+const POLICY_CHECK_INTERVAL: Duration = Duration::from_secs(5);
+/// How long a reader waits for a freshly added torrent to become readable.
+const STREAM_READY_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// Metadata resolved by `inspect` and kept until the user confirms the add.
 struct PendingTorrent {
     torrent_bytes: Bytes,
@@ -72,12 +121,25 @@ struct PendingTorrent {
 pub struct Engine {
     session: Arc<Session>,
     pending: Mutex<HashMap<String, PendingTorrent>>,
+    /// Where torrents that are only watched online keep what they fetch; emptied after each viewing.
+    cache_dir: PathBuf,
+    parked: Mutex<HashMap<String, ParkedTorrent>>,
+    /// Online torrents played since start-up; the start-up cleanup leaves these alone.
+    played: Mutex<HashSet<String>>,
+    /// Serialises parking a torrent and bringing it back.
+    parking: tokio::sync::Mutex<()>,
+    policy: Mutex<DownloadPolicy>,
+    /// Torrents paused by the queue rather than by the user; they resume when a place frees up.
+    queued: Mutex<HashSet<String>>,
+    /// Torrents whose seeding the ratio limit has already stopped once; resumed by hand, they stay on.
+    seeding_stopped: Mutex<HashSet<String>>,
 }
 
 impl Engine {
-    pub async fn start(default_output: PathBuf, persistence_dir: PathBuf) -> Result<Self> {
+    pub async fn start(default_output: PathBuf, persistence_dir: PathBuf, cache_dir: PathBuf) -> Result<Arc<Self>> {
         std::fs::create_dir_all(&default_output).ok();
         std::fs::create_dir_all(&persistence_dir).ok();
+        std::fs::create_dir_all(&cache_dir).ok();
 
         let options = SessionOptions {
             fastresume: true,
@@ -94,10 +156,212 @@ impl Engine {
             .await
             .context("failed to start the torrent session")?;
 
-        Ok(Self {
+        let parked = std::fs::read_to_string(cache_dir.join(PARKED_INDEX_NAME))
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default();
+        let engine = Arc::new(Self {
             session,
             pending: Mutex::new(HashMap::new()),
-        })
+            cache_dir,
+            parked: Mutex::new(parked),
+            played: Mutex::new(HashSet::new()),
+            parking: tokio::sync::Mutex::new(()),
+            policy: Mutex::new(DownloadPolicy::default()),
+            queued: Mutex::new(HashSet::new()),
+            seeding_stopped: Mutex::new(HashSet::new()),
+        });
+
+        let keeper = engine.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(POLICY_CHECK_INTERVAL).await;
+                keeper.enforce_policy().await;
+            }
+        });
+
+        // A viewing cut short (the app closed or crashed mid-film) leaves fetched data behind.
+        let cleaner = engine.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(STARTUP_CLEANUP_DELAY).await;
+            cleaner.park_leftovers().await;
+        });
+        Ok(engine)
+    }
+
+    pub fn set_policy(&self, policy: DownloadPolicy) {
+        let limit = |bytes_per_second: u32| std::num::NonZeroU32::new(bytes_per_second);
+        self.session.ratelimits.set_download_bps(limit(policy.download_limit));
+        self.session.ratelimits.set_upload_bps(limit(policy.upload_limit));
+        *self.policy.lock().unwrap() = policy;
+    }
+
+    /// Keeps the number of simultaneous downloads within the limit and stops seeding at the ratio limit.
+    async fn enforce_policy(&self) {
+        let policy = *self.policy.lock().unwrap();
+        // Torrents watched online are not downloads and are left out.
+        let torrents: Vec<TorrentHandle> = self.session.with_torrents(|torrents| {
+            torrents.map(|(_, handle)| handle.clone()).filter(|handle| !self.is_online_only(handle)).collect()
+        });
+
+        if policy.seed_ratio > 0.0 {
+            for handle in &torrents {
+                let stats = handle.stats();
+                let info_hash = handle.info_hash().as_string();
+                let given_back = stats.total_bytes > 0 && stats.uploaded_bytes as f64 >= stats.total_bytes as f64 * f64::from(policy.seed_ratio);
+                if stats.finished && given_back && !handle.is_paused() && self.seeding_stopped.lock().unwrap().insert(info_hash) {
+                    let _ = self.session.pause(handle).await;
+                }
+            }
+        }
+
+        let downloading: Vec<&TorrentHandle> = torrents
+            .iter()
+            .filter(|handle| {
+                let stats = handle.stats();
+                !stats.finished && stats.total_bytes > 0
+            })
+            .collect();
+        // A queued torrent the user resumed by hand is no longer the queue's to manage.
+        self.queued.lock().unwrap().retain(|info_hash| {
+            downloading.iter().any(|handle| &handle.info_hash().as_string() == info_hash && handle.is_paused())
+        });
+
+        let limit = if policy.max_active_downloads == 0 { usize::MAX } else { policy.max_active_downloads };
+        let mut active = downloading.iter().filter(|handle| !handle.is_paused()).count();
+        for handle in downloading.iter().rev() {
+            if active <= limit {
+                break;
+            }
+            if !handle.is_paused() && self.session.pause(handle).await.is_ok() {
+                self.queued.lock().unwrap().insert(handle.info_hash().as_string());
+                active -= 1;
+            }
+        }
+        for handle in &downloading {
+            if active >= limit {
+                break;
+            }
+            let info_hash = handle.info_hash().as_string();
+            if self.queued.lock().unwrap().contains(&info_hash) && self.session.unpause(handle).await.is_ok() {
+                self.queued.lock().unwrap().remove(&info_hash);
+                active += 1;
+            }
+        }
+    }
+
+    fn cache_data_folder(&self, info_hash: &str) -> PathBuf {
+        self.cache_dir.join(CACHE_DATA_FOLDER_NAME).join(info_hash)
+    }
+
+    fn torrent_file(&self, info_hash: &str) -> PathBuf {
+        self.cache_dir.join(format!("{info_hash}.torrent"))
+    }
+
+    /// Only watched online: nothing of it is kept once the viewing ends.
+    fn is_online_only(&self, handle: &TorrentHandle) -> bool {
+        handle.output_folder().starts_with(&self.cache_dir)
+    }
+
+    fn save_parked(&self) {
+        let parked = self.parked.lock().unwrap();
+        if let Ok(text) = serde_json::to_string(&*parked) {
+            let _ = std::fs::write(self.cache_dir.join(PARKED_INDEX_NAME), text);
+        }
+    }
+
+    fn forget_parked(&self, info_hash: &str) {
+        self.parked.lock().unwrap().remove(info_hash);
+        let _ = std::fs::remove_file(self.torrent_file(info_hash));
+        self.save_parked();
+    }
+
+    /// Takes an online-only torrent out of the session and deletes what it fetched, keeping its
+    /// .torrent so that it can be played again.
+    async fn park(&self, handle: &TorrentHandle) -> Result<()> {
+        let info_hash = handle.info_hash().as_string();
+        let torrent_bytes = handle.with_metadata(|metadata| metadata.torrent_bytes.clone())?;
+        std::fs::write(self.torrent_file(&info_hash), &torrent_bytes)?;
+        let files = file_views(handle, &[])
+            .into_iter()
+            .map(|file| ParkedFile { path: file.path, length: file.length })
+            .collect();
+        // The peer list type is not exported by librqbit; its filter and its keys go through serde.
+        let peers = handle
+            .live()
+            .and_then(|live| {
+                let filter = serde_json::from_value(serde_json::json!({ "state": "live" })).ok()?;
+                Some(live.per_peer_stats_snapshot(filter).peers.into_keys().collect::<Vec<String>>())
+            })
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|address| address.parse().ok())
+            .take(MAX_REMEMBERED_PEERS)
+            .collect();
+        let trackers = handle.shared().trackers.iter().map(|tracker| tracker.to_string()).collect();
+        self.parked
+            .lock()
+            .unwrap()
+            .insert(info_hash.clone(), ParkedTorrent { name: display_name(handle), files, peers, trackers });
+        self.save_parked();
+
+        self.session.delete(TorrentIdOrHash::Hash(handle.info_hash()), true).await?;
+        let _ = std::fs::remove_dir_all(self.cache_data_folder(&info_hash));
+        Ok(())
+    }
+
+    async fn park_leftovers(&self) {
+        let _parking = self.parking.lock().await;
+        let leftovers: Vec<TorrentHandle> = self.session.with_torrents(|torrents| {
+            torrents.map(|(_, handle)| handle.clone()).filter(|handle| self.is_online_only(handle)).collect()
+        });
+        for handle in leftovers {
+            let info_hash = handle.info_hash().as_string();
+            if self.played.lock().unwrap().contains(&info_hash) {
+                continue;
+            }
+            if let Err(error) = self.park(&handle).await {
+                eprintln!("engine: could not clean up {info_hash}: {error}");
+            }
+        }
+    }
+
+    /// Adds a torrent from its .torrent contents. With no files it goes to the online cache.
+    async fn add_from_bytes(
+        &self,
+        info_hash: &str,
+        torrent_bytes: Bytes,
+        name: &str,
+        file_count: usize,
+        files: Vec<usize>,
+        download_dir: &Path,
+        peers: Vec<SocketAddr>,
+        trackers: Vec<String>,
+    ) -> Result<()> {
+        let output_folder = if files.is_empty() {
+            self.cache_data_folder(info_hash)
+        } else if file_count > 1 {
+            download_dir.join(sanitize_folder_name(name))
+        } else {
+            download_dir.to_path_buf()
+        };
+        let options = AddTorrentOptions {
+            only_files: Some(files),
+            overwrite: true,
+            output_folder: Some(output_folder.to_string_lossy().into_owned()),
+            initial_peers: Some(peers),
+            trackers: Some(trackers),
+            ..Default::default()
+        };
+        self.session.add_torrent(AddTorrent::from_bytes(torrent_bytes), Some(options)).await?;
+        Ok(())
+    }
+
+    /// The saved .torrent of a parked torrent, with what is known about it.
+    fn parked_torrent(&self, info_hash: &str) -> Option<(Bytes, ParkedTorrent)> {
+        let parked = self.parked.lock().unwrap().get(info_hash).cloned()?;
+        let bytes = std::fs::read(self.torrent_file(info_hash)).ok()?;
+        Some((Bytes::from(bytes), parked))
     }
 
     /// Resolves a magnet link or .torrent contents into a file list without starting the download.
@@ -162,12 +426,17 @@ impl Engine {
         }
     }
 
-    /// Starts downloading the given files of a previously inspected torrent.
+    /// Adds a previously inspected torrent and starts downloading the given files.
+    /// With no files the torrent is only watched online: data is fetched as the player asks for
+    /// it, kept apart from the downloads and deleted when the viewing ends.
     pub async fn add(&self, info_hash: &str, files: Vec<usize>, download_dir: &Path) -> Result<()> {
-        if let Ok(handle) = self.find(info_hash) {
+        let known = self.find(info_hash).is_ok() || self.parked.lock().unwrap().contains_key(info_hash);
+        if known {
             self.pending.lock().unwrap().remove(info_hash);
-            self.include_files(&handle, &files).await?;
-            return self.resume_handle(&handle).await;
+            if files.is_empty() {
+                return Ok(());
+            }
+            return self.select_files(info_hash, &files, download_dir).await;
         }
 
         let pending = self
@@ -176,28 +445,63 @@ impl Engine {
             .unwrap()
             .remove(info_hash)
             .ok_or_else(|| anyhow!("torrent_not_inspected"))?;
-
-        let output_folder = if pending.file_count > 1 {
-            download_dir.join(sanitize_folder_name(&pending.name))
-        } else {
-            download_dir.to_path_buf()
-        };
-        let options = AddTorrentOptions {
-            only_files: Some(files),
-            overwrite: true,
-            output_folder: Some(output_folder.to_string_lossy().into_owned()),
-            initial_peers: Some(pending.seen_peers),
-            ..Default::default()
-        };
-        self.session
-            .add_torrent(AddTorrent::from_bytes(pending.torrent_bytes), Some(options))
-            .await?;
-        Ok(())
+        self.add_from_bytes(
+            info_hash,
+            pending.torrent_bytes,
+            &pending.name,
+            pending.file_count,
+            files,
+            download_dir,
+            pending.seen_peers,
+            Vec::new(),
+        )
+        .await
     }
 
+    /// Torrents in the session, then the ones parked between online viewings.
     pub fn list(&self) -> Vec<TorrentView> {
-        self.session
-            .with_torrents(|torrents| torrents.map(|(_, handle)| torrent_view(handle)).collect())
+        let mut list: Vec<TorrentView> =
+            self.session.with_torrents(|torrents| torrents.map(|(_, handle)| torrent_view(handle)).collect());
+        {
+            let queued = self.queued.lock().unwrap();
+            for torrent in &mut list {
+                if torrent.state == "paused" && queued.contains(&torrent.info_hash) {
+                    torrent.state = STATE_QUEUED;
+                }
+            }
+        }
+        for (info_hash, parked) in self.parked.lock().unwrap().iter() {
+            if list.iter().any(|torrent| &torrent.info_hash == info_hash) {
+                continue;
+            }
+            list.push(TorrentView {
+                info_hash: info_hash.clone(),
+                name: parked.name.clone(),
+                output_folder: String::new(),
+                state: STATE_PARKED,
+                error: None,
+                progress_bytes: 0,
+                total_bytes: 0,
+                uploaded_bytes: 0,
+                finished: false,
+                download_speed: 0.0,
+                upload_speed: 0.0,
+                peers: 0,
+                files: parked
+                    .files
+                    .iter()
+                    .enumerate()
+                    .map(|(index, file)| TorrentFileView {
+                        index,
+                        path: file.path.clone(),
+                        length: file.length,
+                        included: false,
+                        downloaded: 0,
+                    })
+                    .collect(),
+            });
+        }
+        list
     }
 
     pub async fn pause(&self, info_hash: &str) -> Result<()> {
@@ -214,24 +518,87 @@ impl Engine {
     }
 
     pub async fn delete(&self, info_hash: &str, delete_files: bool) -> Result<()> {
-        let id = parse_hash(info_hash)?;
-        self.session
-            .delete(TorrentIdOrHash::Hash(id), delete_files)
-            .await
+        let _parking = self.parking.lock().await;
+        self.forget_parked(info_hash);
+        let Ok(handle) = self.find(info_hash) else {
+            return Ok(());
+        };
+        // What an online-only torrent fetched is never worth keeping.
+        let online_only = self.is_online_only(&handle);
+        self.session.delete(TorrentIdOrHash::Hash(handle.info_hash()), delete_files || online_only).await?;
+        if online_only {
+            let _ = std::fs::remove_dir_all(self.cache_data_folder(info_hash));
+        }
+        Ok(())
     }
 
-    /// Adds files to the download selection (never removes any).
-    pub async fn select_files(&self, info_hash: &str, files: &[usize]) -> Result<()> {
-        let handle = self.find(info_hash)?;
-        self.include_files(&handle, files).await
+    /// Starts saving the given files to `download_dir` (never stops saving any). A torrent that
+    /// was only watched online moves out of the cache and becomes an ordinary download.
+    pub async fn select_files(&self, info_hash: &str, files: &[usize], download_dir: &Path) -> Result<()> {
+        let _parking = self.parking.lock().await;
+        if let Ok(handle) = self.find(info_hash) {
+            if !self.is_online_only(&handle) {
+                self.include_files(&handle, files).await?;
+                return self.resume_handle(&handle).await;
+            }
+            // The cache is not where downloads live: start over in the download folder.
+            self.park(&handle).await?;
+        }
+        let (torrent_bytes, parked) = self.parked_torrent(info_hash).ok_or_else(|| anyhow!("torrent_not_found"))?;
+        self.forget_parked(info_hash);
+        self.add_from_bytes(
+            info_hash,
+            torrent_bytes,
+            &parked.name,
+            parked.files.len(),
+            files.to_vec(),
+            download_dir,
+            parked.peers,
+            parked.trackers,
+        )
+        .await
     }
 
-    /// Makes sure the file is being downloaded and returns the torrent, ready for `stream`.
-    pub async fn prepare_stream(&self, info_hash: &str, file_index: usize) -> Result<TorrentHandle> {
+    /// Returns the torrent, running and ready for `stream`. The file does not have to be selected
+    /// for download: a stream fetches the pieces it reads, and only those. A torrent parked after
+    /// an online viewing is brought back first.
+    pub async fn prepare_stream(&self, info_hash: &str) -> Result<TorrentHandle> {
+        let _parking = self.parking.lock().await;
+        if self.find(info_hash).is_err() {
+            let (torrent_bytes, parked) = self.parked_torrent(info_hash).ok_or_else(|| anyhow!("torrent_not_found"))?;
+            self.add_from_bytes(
+                info_hash,
+                torrent_bytes,
+                &parked.name,
+                parked.files.len(),
+                Vec::new(),
+                Path::new(""),
+                parked.peers,
+                parked.trackers,
+            )
+            .await?;
+        }
         let handle = self.find(info_hash)?;
-        self.include_files(&handle, &[file_index]).await?;
+        if self.is_online_only(&handle) {
+            self.played.lock().unwrap().insert(info_hash.to_owned());
+        }
         self.resume_handle(&handle).await?;
+        // A torrent added a moment ago is still checking its files and cannot be read yet.
+        tokio::time::timeout(STREAM_READY_TIMEOUT, handle.wait_until_initialized())
+            .await
+            .map_err(|_| anyhow!("torrent_not_ready"))??;
         Ok(handle)
+    }
+
+    /// Ends an online viewing: what was fetched for it is deleted. Does nothing for a torrent
+    /// that is being downloaded.
+    pub async fn release_online(&self, info_hash: &str) -> Result<()> {
+        let _parking = self.parking.lock().await;
+        self.played.lock().unwrap().remove(info_hash);
+        match self.find(info_hash) {
+            Ok(handle) if self.is_online_only(&handle) => self.park(&handle).await,
+            _ => Ok(()),
+        }
     }
 
     pub fn file_path(&self, info_hash: &str, file_index: usize) -> Result<PathBuf> {
