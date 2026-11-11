@@ -1,7 +1,3 @@
-//! The app's log: what the torrent engine, the trackers, the server and the window ran into, in
-//! `%APPDATA%\com.lembegor.kinuza\logs`. One file per start; the last few starts are kept, and a
-//! file stops growing at a size limit so that a long session cannot fill the disk.
-
 use std::{
     fs::File,
     io::Write,
@@ -9,11 +5,8 @@ use std::{
     sync::Mutex,
 };
 
-/// `kinuza.log` is this start, `kinuza.1.log` the one before, and so on.
 const KEPT_STARTS: usize = 5;
 const FILE_LIMIT_BYTES: u64 = 20 * 1024 * 1024;
-/// The app at "info"; the torrent library at "info", its trackers at "debug" (one line per
-/// announce, with the error when one fails); everything else only when something is wrong.
 const DEFAULT_FILTER: &str = "warn,kinuza_lib=info,librqbit=info,librqbit_tracker_comms=debug";
 
 pub fn folder(data_dir: &Path) -> PathBuf {
@@ -24,7 +17,6 @@ fn file_name(index: usize) -> String {
     if index == 0 { "kinuza.log".to_owned() } else { format!("kinuza.{index}.log") }
 }
 
-/// A file that stops growing at its limit and says so once.
 struct CappedFile {
     file: File,
     written: u64,
@@ -52,8 +44,6 @@ impl Write for CappedFile {
     }
 }
 
-/// Personal tracker keys (`pk=…` in a RuTracker announce address) never reach the file: the log
-/// is meant to be read and sent, the key is the user's own.
 fn redact(line: &[u8]) -> std::borrow::Cow<'_, [u8]> {
     const KEY: &[u8] = b"pk=";
     if !line.windows(KEY.len()).any(|window| window == KEY) {
@@ -76,14 +66,11 @@ fn redact(line: &[u8]) -> std::borrow::Cow<'_, [u8]> {
     std::borrow::Cow::Owned(out)
 }
 
-/// Starts the log for this run. `KINUZA_LOG` (an `EnvFilter` such as
-/// `info,librqbit::torrent_state::live=debug`) asks for more detail.
 pub fn start(data_dir: &Path, version: &str) {
     let folder = folder(data_dir);
     if std::fs::create_dir_all(&folder).is_err() {
         return;
     }
-    // The oldest goes, the others move up one.
     let _ = std::fs::remove_file(folder.join(file_name(KEPT_STARTS - 1)));
     for index in (0..KEPT_STARTS - 1).rev() {
         let _ = std::fs::rename(folder.join(file_name(index)), folder.join(file_name(index + 1)));
@@ -106,7 +93,6 @@ pub fn start(data_dir: &Path, version: &str) {
         return;
     }
 
-    // A crash leaves its reason in the log rather than nowhere.
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         tracing::error!("crash: {info}");
@@ -115,7 +101,6 @@ pub fn start(data_dir: &Path, version: &str) {
     tracing::info!("Kinuza {version} started");
 }
 
-/// A line from the window: problems the interface reports (see the journal there).
 #[tauri::command]
 pub fn log_write(level: String, message: String) {
     let message: String = message.chars().take(2000).collect();
@@ -126,7 +111,6 @@ pub fn log_write(level: String, message: String) {
     }
 }
 
-/// Opens the folder with the logs in Explorer.
 #[tauri::command]
 pub fn logs_open(state: tauri::State<'_, crate::AppState>) -> Result<(), String> {
     let folder = folder(&state.data_dir);

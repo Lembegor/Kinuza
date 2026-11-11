@@ -1,5 +1,3 @@
-//! Finds an installed desktop video player to hand a file or stream to.
-
 use std::{
     path::{Path, PathBuf},
     process::Command,
@@ -14,9 +12,7 @@ pub struct ExternalPlayer {
 
 struct Candidate {
     name: &'static str,
-    /// Executable name looked up in PATH.
     command: &'static str,
-    /// Locations relative to the Program Files folders.
     install_paths: &'static [&'static str],
 }
 

@@ -1,5 +1,3 @@
-// Small global overlays: toasts, the confirm dialog and the update notice.
-
 import { useEffect, useState } from "react";
 import { CircleAlert, CircleCheck, Info, RefreshCw, X } from "lucide-react";
 import { useT } from "../lib/i18n";
@@ -20,7 +18,6 @@ export function Toasts() {
             <Icon size={18} />
             <span>{toast.text}</span>
             {toast.action && (
-              // The click also reaches the toast itself, which closes it.
               <button className="toast__action" onClick={toast.action.run}>
                 {toast.action.label}
               </button>

@@ -1,6 +1,3 @@
-// "What happened": when something does not work, this page says why in plain words. A set of
-// checks of what the app depends on, and the journal of problems it ran into lately.
-
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { CircleAlert, CircleCheck, Copy, FolderOpen, Info, LoaderCircle, RefreshCw, Trash2 } from "lucide-react";
@@ -14,29 +11,18 @@ import { useSettings } from "../state/settings";
 import { useUi } from "../state/ui";
 
 const GiB = 1024 ** 3;
-/** Below this a film in good quality may not fit; below `lowSpaceBytes` hardly anything will. */
 const tightSpaceBytes = 20 * GiB;
 const lowSpaceBytes = 5 * GiB;
-/** What the tracker is asked to see whether it answers; any word would do. */
 const trackerProbeQuery = "Kinuza";
-/** Torrents named in the hint before the rest are only counted. */
 const namedTorrentsLimit = 3;
-/**
- * The key for searching subtitles on the internet is built into the app, like the player's own
- * reference to it; without one that search is not offered.
- */
 const onlineSubtitlesKey: string = import.meta.env.VITE_OPENSUBTITLES_API_KEY ?? "";
 
-/** "ok": works. "note": worth knowing, nothing to fix. "problem": this is why something does not work. */
 type CheckStatus = "ok" | "note" | "problem";
 
 interface CheckResult {
   status: CheckStatus;
-  /** The state in a few words. */
   text: string;
-  /** What to do about it, or why it is fine. */
   hint?: string;
-  /** Where the thing can be fixed. */
   link?: { to: string; label: string };
 }
 
@@ -59,7 +45,6 @@ async function checkCatalog(): Promise<CheckResult> {
   return { status: "problem", text: t(`diagnostics.catalog.${health}`), hint: t(`diagnostics.catalog.${health}.hint`), link: settingsLink() };
 }
 
-/** The tracker's page came, but not in a shape the app can read. */
 const unreadablePageErrors: string[] = [rutrackerErrors.parseFailed, rutrackerErrors.markupChanged, rutrackerErrors.unexpectedPage];
 
 async function checkTracker(): Promise<CheckResult> {
@@ -67,9 +52,7 @@ async function checkTracker(): Promise<CheckResult> {
     await rutracker.search(trackerProbeQuery);
     return { status: "ok", text: t("diagnostics.tracker.ok") };
   } catch (error) {
-    // "tracker_unexpected_page" is followed by the page's title after a colon.
     const code = String(error).split(":")[0];
-    // Not being signed in is how the app starts out; the forum did answer.
     if (code === rutrackerErrors.authRequired) {
       return { status: "note", text: t("diagnostics.tracker.signedOut"), hint: t("diagnostics.tracker.signedOut.hint") };
     }
@@ -139,11 +122,9 @@ const checks: Check[] = [
   { id: "torrents", title: "diagnostics.torrents", run: checkTorrents },
 ];
 
-/** Runs every check at once; each reports as soon as it is done. A result still pending is absent. */
 function useChecks(): { results: Record<string, CheckResult>; running: boolean; run: () => void } {
   const [results, setResults] = useState<Record<string, CheckResult>>({});
   const [pending, setPending] = useState(0);
-  /** Counts runs, so that a slow answer from an earlier run does not overwrite a newer one. */
   const latestRun = useRef(0);
 
   const run = useCallback(() => {
@@ -153,7 +134,6 @@ function useChecks(): { results: Record<string, CheckResult>; running: boolean; 
     for (const check of checks) {
       void check
         .run()
-        // A check that itself breaks down is a finding too: the thing could not even be asked.
         .catch((error): CheckResult => ({ status: "problem", text: t("diagnostics.failed"), hint: describeError(error) }))
         .then((result) => {
           if (thisRun !== latestRun.current) return;
@@ -165,7 +145,6 @@ function useChecks(): { results: Record<string, CheckResult>; running: boolean; 
 
   useEffect(() => {
     run();
-    // Leaving the page abandons the run in flight.
     return () => {
       latestRun.current++;
     };
@@ -210,13 +189,11 @@ const areaNames: Record<JournalArea, MessageKey> = {
   system: "journal.area.system",
 };
 
-/** An area recorded by a version of the app that had other areas is shown as it was written. */
 function areaName(area: JournalArea): string {
   const key = areaNames[area];
   return key ? t(key) : area;
 }
 
-/** The journal as text to paste into a message, newest first like on the page. */
 function journalText(entries: JournalEntry[], version: string, locale: string): string {
   const heading = t("diagnostics.journal.heading", { version, time: new Date().toLocaleString(locale) });
   const lines = entries.map((entry) => {
@@ -275,7 +252,6 @@ function Journal() {
       ) : (
         <ul className="journal">
           {newestFirst.map((entry, index) => (
-            // Counted from the oldest, so an entry keeps its key when newer ones arrive above it.
             <li key={newestFirst.length - index}>
               <time>{formatMoment(entry.time)}</time>
               <span className="tag">{areaName(entry.area)}</span>

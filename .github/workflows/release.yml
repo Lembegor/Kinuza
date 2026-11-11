@@ -1,19 +1,9 @@
-# Builds the signed installer and the update feed (latest.json) and publishes them as a GitHub
-# release when a version tag (v1.2.3) is pushed. scripts/publish.ps1 creates and pushes that tag.
-#
-# Repository secrets (Settings -> Secrets and variables -> Actions):
-#   TAURI_SIGNING_PRIVATE_KEY    contents of %USERPROFILE%\.tauri\kinuza.key; installed apps accept
-#                                only updates signed with it
-#   VITE_TMDB_API_KEY            catalog key, as in .env
-#   VITE_OPENSUBTITLES_API_KEY   subtitles key, as in .env (optional: without it the app has no
-#                                online subtitle search)
 name: Release
 
 on:
   push:
     tags: ["v*"]
 
-# Two builds of one tag would fight over the same release.
 concurrency:
   group: release-${{ github.ref_name }}
   cancel-in-progress: false
@@ -46,7 +36,6 @@ jobs:
             echo "::error::Secret VITE_TMDB_API_KEY is not set: the catalog would be empty in this build."
             exit 1
           fi
-          # The checkout keeps only the commit of the tag; its message (the release notes) is fetched here.
           git fetch --force --no-tags origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
           notes=$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME")
           {
@@ -78,7 +67,6 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "Kinuza __VERSION__"
-          # Shown on the release page and in the app's "update available" card.
           releaseBody: ${{ steps.meta.outputs.notes }}
           releaseDraft: false
           prerelease: false

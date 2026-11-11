@@ -12,11 +12,10 @@ import { appLanguages, languageName } from "../lib/languages";
 import { useAsync } from "../lib/useAsync";
 import { useLibrary } from "../state/library";
 import { useSettings } from "../state/settings";
-import { useTorrents } from "../state/torrents";
+import { isDownload, useTorrents } from "../state/torrents";
 import { useUi } from "../state/ui";
 import { useUpdater, type UpdateStatus } from "../state/updater";
 
-/** What to say about each state of the updater; nothing while it is idle. */
 const updateLabels: Record<UpdateStatus, MessageKey | null> = {
   idle: null,
   checking: "settings.updates.status.checking",
@@ -27,7 +26,6 @@ const updateLabels: Record<UpdateStatus, MessageKey | null> = {
   error: "settings.updates.status.error",
 };
 
-/** `preferredQuality` of a user who wants the best copy there is. */
 const bestQuality = 0;
 
 const qualityOptions = [
@@ -45,11 +43,9 @@ function Toggle({ checked, onChange }: { checked: boolean; onChange: (value: boo
   );
 }
 
-/** Marks a file as a backup made by this app. */
 const backupMarker = "kinuza-backup";
 const subtitlesOff = "off";
 
-/** A whole number typed by the user, never negative. */
 function NumberSetting({ value, step = 1, unit, onChange }: { value: number; step?: number; unit?: string; onChange: (value: number) => void }) {
   return (
     <>
@@ -87,7 +83,7 @@ export default function Settings() {
     }
   };
   const downloadedBytes = useTorrents((state) =>
-    state.list.reduce((sum, torrent) => sum + torrent.files.reduce((files, file) => files + file.downloaded, 0), 0),
+    state.list.filter(isDownload).reduce((sum, torrent) => sum + torrent.files.reduce((files, file) => files + file.downloaded, 0), 0),
   );
   const languageLabel = (code: string) => {
     const name = languageName(code, locale);
@@ -125,7 +121,6 @@ export default function Settings() {
         toast(t("settings.backup.invalid"), "error");
         return;
       }
-      // Merged, not replaced: whatever changed later, here or in the backup, is what stays.
       useLibrary.getState().mergeAccountData({
         version: accountDataVersion,
         tracked: account.tracked,

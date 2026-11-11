@@ -1,5 +1,3 @@
-// Three small flags that say at a glance which of the app's languages a release has.
-
 import { useT } from "../lib/i18n";
 import { appLanguages, languageName, type AppLanguage } from "../lib/languages";
 
@@ -32,10 +30,6 @@ export function FlagArt({ language }: { language: AppLanguage }) {
   );
 }
 
-/**
- * `available` holds two-letter language codes. Every app language gets a flag: in colour when
- * the release has it, greyed out when it does not. `locale` is the language the tooltips are in.
- */
 export function LanguageFlags({ available, locale }: { available: readonly string[]; locale: string }) {
   const { t } = useT();
   return (

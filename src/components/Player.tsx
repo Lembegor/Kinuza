@@ -1,6 +1,3 @@
-// Full-window player: streams a torrent file while it downloads, switches quality between sources,
-// audio tracks, subtitles, resume and next episode.
-
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import {
   ArrowLeft,
@@ -61,37 +58,29 @@ import { isWatched, titleKey, unitKey, useLibrary, type Source } from "../state/
 import { useSettings } from "../state/settings";
 import { fileProgress, useTorrents } from "../state/torrents";
 import { useUi, type PlayerSession } from "../state/ui";
+import { report } from "../lib/journal";
+import { mpv } from "../lib/mpv";
 import { WindowButtons } from "./Shell";
 import { useConvertedAudio } from "./useConvertedAudio";
-import { useEmbeddedSubtitles, useMediaTracks } from "./useMediaTracks";
+import { useEmbeddedSubtitles, useMediaTracks, type MediaTracksState } from "./useMediaTracks";
+import { useMpvMode, useMpvVideo, type MediaHandlers } from "./useMpvVideo";
 
 const controlsHideDelayMs = 3000;
 const progressSaveIntervalMs = 5000;
 const seekStepSeconds = 10;
-/** Shift with an arrow key jumps this far. */
 const longSeekStepSeconds = 60;
 const volumeStep = 0.05;
-/** Presses of a seek key this close together add up on screen: "+10 s", "+20 s". */
 const seekRunGapMs = 1000;
 const hintLifetimeMs = 900;
-/** How long after the player lets go of a torrent its online data is deleted, unless the next episode took it over. */
 const releaseDelayMs = 1500;
-/** Audio the built-in player decodes itself; anything else is converted on the fly. */
 const builtInAudioCodecs = new Set(["aac", "mp3", "opus", "vorbis", "flac"]);
 const subtitlesOff = "off";
-/**
- * Pictures the built-in player cannot decode, as FFmpeg names their codecs; such a film goes
- * straight to conversion instead of failing first.
- */
 const convertedVideoCodecs = new Set(["mpeg4", "msmpeg4v2", "msmpeg4v3", "mpeg2video", "mpeg1video", "wmv1", "wmv2", "wmv3", "vc1", "rv30", "rv40", "flv1", "h263", "theora"]);
 
-/** One press moves the subtitles or the sound by this much. */
 const delayStepSeconds = 0.1;
 const longestDelaySeconds = 10;
-/** A chapter is offered for skipping until this close to its end. */
 const skipOfferEndsSeconds = 2;
 
-/** Chapters worth a "skip" button, by the names releases give them. */
 const skippableChapters: { kind: "intro" | "credits" | "recap"; pattern: RegExp }[] = [
   { kind: "intro", pattern: /\b(intro|opening|op)\b|заставк|опенинг/i },
   { kind: "credits", pattern: /\b(credits|ending|ed|outro)\b|титр|эндинг/i },
@@ -102,13 +91,10 @@ function skipKind(chapter: Chapter): "intro" | "credits" | "recap" | null {
   return skippableChapters.find(({ pattern }) => pattern.test(chapter.title))?.kind ?? null;
 }
 
-/** The developer's OpenSubtitles key, baked into the build; without it the online search is not offered. */
 const onlineSubtitlesKey: string = import.meta.env.VITE_OPENSUBTITLES_API_KEY ?? "";
-/** Shared words between a release name and a file name from which the subtitles count as timed to this copy. */
 const sameReleaseWords = 3;
 const onlineSubtitleErrors = ["subtitles_key_invalid", "subtitles_quota", "subtitles_unavailable"] as const;
 
-/** Words that tell releases apart: "1080p", "bluray", a group's name. Short ones are noise. */
 function releaseWords(name: string): Set<string> {
   return new Set(name.toLowerCase().split(/[^a-z0-9а-яё]+/).filter((word) => word.length >= 3));
 }
@@ -126,7 +112,6 @@ function clampDelay(seconds: number): number {
 function playsUnconverted(track: AudioTrackInfo): boolean {
   return builtInAudioCodecs.has(track.codec) || track.codec.startsWith("pcm_");
 }
-/** Positions before this are not worth resuming from. */
 const minResumeSeconds = 15;
 const nextEpisodeCountdownSeconds = 8;
 const silentAudioCheckDelayMs = 5000;
@@ -141,7 +126,6 @@ const subtitleScales: { label: MessageKey; value: number }[] = [
 
 type Menu = "quality" | "audio" | "subtitles" | "speed" | null;
 
-/** The slice of the non-standard AudioTrackList API this player relies on. */
 interface AudioTrackLike {
   label: string;
   language: string;
@@ -163,10 +147,6 @@ interface SubtitleOption extends SubtitleLabel {
   file: TorrentFile;
 }
 
-/**
- * Picks where playback starts: an explicit choice, else the preferred quality, else the best copy.
- * `sources` is sorted best first; `maxQuality` 0 means no limit.
- */
 function pickInitialSource(sources: Source[], preferredId: string | undefined, maxQuality: number): Source | undefined {
   const preferred = sources.find((source) => source.id === preferredId);
   if (preferred || sources.length === 0) return preferred;
@@ -175,13 +155,11 @@ function pickInitialSource(sources: Source[], preferredId: string | undefined, m
 
   if (maxQuality > 0) {
     const within = sources.filter((source) => qualityRank(source.quality) <= maxQuality);
-    // Everything is above the limit: the lowest one is the closest match.
     const pool = within.length > 0 ? within : sources.slice(-1);
     const top = qualityRank(pool[0].quality);
     const sameQuality = pool.filter((source) => qualityRank(source.quality) === top);
     return sameQuality.find(isReady) ?? sameQuality[0];
   }
-  // A fully downloaded copy starts instantly, so it wins over a better one still downloading.
   return sources.find(isReady) ?? sources[0];
 }
 
@@ -199,14 +177,12 @@ function readAudioOptions(video: VideoWithExtras): { options: AudioOption[]; sel
   return { options, selected };
 }
 
-/** How an audio track is named in the menu: language, the release's own title, format. */
 function audioTrackLabel(track: AudioTrackInfo, locale: string): string {
   const format = [track.codec.toUpperCase(), track.channels.replace(/\(.*\)/, "")].filter(Boolean).join(" ");
   const language = languageName(languageCode(track.language), locale);
   return [language, track.title, format].filter(Boolean).join(" · ") || t("player.track", { number: track.index + 1 });
 }
 
-/** "Forced" subtitles translate only signs and foreign lines; releases mark them by a flag or just in the name. */
 function showsSignsOnly(track: SubtitleTrackInfo): boolean {
   return track.isForced || /forced|форсир|надпис/i.test(track.title);
 }
@@ -243,7 +219,6 @@ function SeekBar({
   current: number;
   duration: number;
   buffered: { start: number; end: number }[];
-  /** Chapters marked in the file; their borders are shown on the bar and their names while hovering. */
   chapters: Chapter[];
   onSeek: (time: number) => void;
 }) {
@@ -257,7 +232,6 @@ function SeekBar({
     return Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
   };
 
-  // Seeking a torrent re-prioritises pieces, so it happens once on release, not while dragging.
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     event.currentTarget.setPointerCapture(event.pointerId);
     setDrag(ratioAt(event.clientX));
@@ -352,16 +326,19 @@ function PlayerView({ session }: { session: PlayerSession }) {
   const [muted, setMuted] = useState(settings.muted);
   const externalPlayer = useAsync(getAppInfo, []).data?.externalPlayer ?? null;
 
-  // Tracks of the file as FFmpeg sees them; the player's own list has only what it can decode.
-  const media = useMediaTracks(source ?? null);
+  const mpvChoice = useMpvMode();
+  const usingMpv = mpvChoice.mode === "ready";
+  const mpvPlayer = useMpvVideo(usingMpv);
+  if (usingMpv) (videoRef as { current: VideoWithExtras | null }).current = mpvPlayer.video as unknown as VideoWithExtras;
+  const htmlMedia = useMediaTracks(mpvChoice.mode === "unavailable" ? (source ?? null) : null);
+  const media: MediaTracksState = usingMpv
+    ? { tracks: mpvPlayer.tracks, ffmpegInstalled: true, installing: false, installProgress: 0, installBytes: 0, installFailed: false, install: () => undefined }
+    : htmlMedia;
   const originalLanguage = useAsync(() => tmdb.details(session.title.type, session.title.id), [session.title.type, session.title.id]).data?.language ?? "";
-  /** The audio track in use, as a position in `media.tracks.audio`; null until one has been chosen. */
   const [audioTrack, setAudioTrack] = useState<number | null>(null);
-  /** The same position when that track has to be converted to be heard; null when the player decodes it itself. */
   const [convertedTrack, setConvertedTrack] = useState<number | null>(null);
   const [embeddedSubtitle, setEmbeddedSubtitle] = useState<number | null>(null);
   const [metadataReady, setMetadataReady] = useState(false);
-  // How this title is watched is remembered for it alone: one series does not change another.
   const preferencesKey = titleKey(session.title.type, session.title.id);
   const preferences = useLibrary((state) => state.preferences[preferencesKey]);
   const rememberForTitle = useLibrary((state) => state.setTitlePreferences);
@@ -369,9 +346,6 @@ function PlayerView({ session }: { session: PlayerSession }) {
   const [audioDelay, setAudioDelay] = useState(preferences?.audioDelay ?? 0);
   const chapters = media.tracks?.chapters ?? [];
 
-  // A film the player cannot decode is played through conversion: the video element then gets a
-  // stream that begins at `conversionStart`, and its own clock counts from there. Everything that
-  // deals in film time (the bar, progress, subtitles, seeking) goes through `filmTime`/`filmLength`.
   const [conversionStart, setConversionStart] = useState<number | null>(null);
   const conversionRef = useRef<number | null>(null);
   conversionRef.current = conversionStart;
@@ -382,22 +356,14 @@ function PlayerView({ session }: { session: PlayerSession }) {
     () => (conversionRef.current !== null ? statedLength.current : (videoRef.current?.duration ?? 0)),
     [],
   );
-  // The player cannot shift its own sound in time, so a delayed track goes through conversion too.
-  // A converted film carries its sound inside the stream.
-  const heardConverted = conversionStart !== null ? null : (convertedTrack ?? (audioDelay !== 0 ? audioTrack : null));
-  // A chapter the release marks as the intro, the recap or the credits can be skipped. Only what
-  // the file itself marks is offered: there is no guessing where an intro might be.
+  const heardConverted = usingMpv || conversionStart !== null ? null : (convertedTrack ?? (audioDelay !== 0 ? audioTrack : null));
   const skippable = chapters.find((chapter) => current >= chapter.start && current < chapter.end - skipOfferEndsSeconds && skipKind(chapter) !== null);
-  /** The user picked a track for this file by hand, so defaults must not override it. */
   const pickedAudio = useRef(false);
   const subtitlesDecided = useRef(false);
   const [hint, setHint] = useState<{ text: string; id: number } | null>(null);
-  /** The panel with subtitles found on the internet is open. */
   const [onlinePanel, setOnlinePanel] = useState(false);
-  /** Language whose results the panel shows; empty until the first results choose one. */
   const [onlineLanguage, setOnlineLanguage] = useState("");
 
-  /** Where playback should start once metadata arrives: saved progress or the spot before a quality switch. */
   const resumeAt = useRef<number>(
     (() => {
       const saved = useLibrary.getState().progress[session.unitKey];
@@ -427,7 +393,6 @@ function PlayerView({ session }: { session: PlayerSession }) {
       .sort(compareSubtitleLabels);
   }, [torrent, source]);
 
-  // --- source and playback lifecycle -------------------------------------------------------------
 
   useEffect(() => {
     if (!source) return;
@@ -462,19 +427,33 @@ function PlayerView({ session }: { session: PlayerSession }) {
     };
   }, [conversionStart, audioTrack, source?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  /** Plays the film through conversion from where it is (or was meant to resume). */
   const startConversion = useCallback(() => {
     setFailed(false);
     setBuffering(true);
     setConversionStart(resumeAt.current > 0 ? resumeAt.current : filmTime());
   }, [filmTime]);
 
-  // A picture known not to decode goes to conversion at once; so does a film that failed while
-  // FFmpeg was still being downloaded.
   const unplayablePicture = convertedVideoCodecs.has(media.tracks?.videoCodec ?? "");
   useEffect(() => {
-    if (conversionStart === null && media.tracks && (unplayablePicture || failed)) startConversion();
+    if (!usingMpv && conversionStart === null && media.tracks && (unplayablePicture || failed)) startConversion();
   }, [media.tracks, unplayablePicture, failed]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!usingMpv || !url) return;
+    void mpvPlayer.video.load(url, resumeAt.current).catch((error) => {
+      report("player", "journal.mpv.play", error);
+      setFailed(true);
+      setBuffering(false);
+    });
+  }, [usingMpv, url]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (usingMpv) void mpv.set("audio-delay", audioDelay);
+  }, [usingMpv, audioDelay]);
+
+  useEffect(() => {
+    if (usingMpv) void mpv.set("sub-scale", settings.subtitleScale);
+  }, [usingMpv, settings.subtitleScale]);
 
   const saveProgress = useCallback(() => {
     const video = videoRef.current;
@@ -497,12 +476,8 @@ function PlayerView({ session }: { session: PlayerSession }) {
     return () => clearInterval(timer);
   }, [playing, saveProgress]);
 
-  // Closing the app mid-film must not lose the position reached since the last periodic save.
   useEffect(() => beforeAppClose(saveProgress), [saveProgress]);
 
-  // What an online viewing fetched is deleted once the player lets go of the torrent: on closing
-  // the player, on switching to another copy, on closing the app. Going on to the next episode of
-  // the same torrent keeps it, so that is checked after the next player has had time to open.
   const playedTorrent = source?.infoHash;
   useEffect(() => {
     if (!playedTorrent) return;
@@ -517,7 +492,6 @@ function PlayerView({ session }: { session: PlayerSession }) {
     };
   }, [playedTorrent]);
 
-  // Leaving the player keeps the position and returns the window from fullscreen.
   useEffect(
     () => () => {
       saveProgress();
@@ -544,7 +518,6 @@ function PlayerView({ session }: { session: PlayerSession }) {
     if (!video || !Number.isFinite(length) || length <= 0) return;
     const target = Math.min(Math.max(0, time), Math.max(0, length - 0.5));
     if (conversionRef.current !== null) {
-      // A converted stream cannot be sought: a new one is asked for from the new spot.
       setConversionStart(target);
       setBuffering(true);
     } else {
@@ -562,7 +535,6 @@ function PlayerView({ session }: { session: PlayerSession }) {
     return () => clearTimeout(timer);
   }, [hint]);
 
-  /** Seconds sought by the current run of key presses, and when the last press was. */
   const seekRun = useRef({ total: 0, at: 0 });
   const seekBy = useCallback(
     (delta: number) => {
@@ -611,12 +583,10 @@ function PlayerView({ session }: { session: PlayerSession }) {
     });
   }, []);
 
-  // The mini player: the whole window becomes a small frame that stays on top of other windows.
   const [mini, setMini] = useState(false);
   const toggleMini = useCallback(() => {
     setMini((value) => {
       if (!value) {
-        // A fullscreen window cannot be shrunk.
         setFullscreen(false);
         void setWindowFullscreen(false, rootRef.current).then(() => setMiniWindow(true));
       } else {
@@ -625,16 +595,13 @@ function PlayerView({ session }: { session: PlayerSession }) {
       return !value;
     });
   }, []);
-  // Leaving the player in any way gives the window back its size.
   useEffect(() => () => void setMiniWindow(false), []);
 
-  // --- volume ------------------------------------------------------------------------------------
 
   useEffect(() => {
     const video = videoRef.current;
     if (video) {
       video.volume = volume;
-      // While a converted track plays, the film's own sound stays off: two tracks at once would overlap.
       video.muted = muted || heardConverted !== null;
     }
     const timer = setTimeout(() => useSettings.getState().patch({ volume, muted }), settingsSaveDelayMs);
@@ -653,7 +620,6 @@ function PlayerView({ session }: { session: PlayerSession }) {
     [showHint],
   );
 
-  // --- controls visibility -----------------------------------------------------------------------
 
   const hideTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const wakeControls = useCallback(() => {
@@ -669,12 +635,10 @@ function PlayerView({ session }: { session: PlayerSession }) {
 
   const controlsShown = controlsVisible || !playing || menu !== null || failed;
 
-  // --- keyboard ----------------------------------------------------------------------------------
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.ctrlKey || event.metaKey || event.altKey) return;
-      // A dialog opened over the player (a link arriving from the browser) keeps its own typing.
       if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
       const video = videoRef.current;
       const stepRate = (direction: 1 | -1) => {
@@ -716,7 +680,6 @@ function PlayerView({ session }: { session: PlayerSession }) {
           else close();
         },
       };
-      // The digit keys jump to tenths of the film: 0 is the start, 5 the middle.
       if (/^[0-9]$/.test(event.key) && video && Number.isFinite(filmLength())) {
         event.preventDefault();
         seekTo((filmLength() * Number(event.key)) / 10);
@@ -724,7 +687,6 @@ function PlayerView({ session }: { session: PlayerSession }) {
         wakeControls();
         return;
       }
-      // Russian layout: the same physical keys type other letters.
       const sameKeys: Record<string, string> = { "а": "f", "ь": "m", "л": "k", "о": "j", "д": "l", "т": "n", "с": "c", "ф": "a", "х": "[", "ъ": "]", "п": "g", "р": "h", "ы": "s", "ш": "i" };
       const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
       const handler = handlers[event.key] ?? handlers[key] ?? handlers[sameKeys[key] ?? ""];
@@ -737,7 +699,6 @@ function PlayerView({ session }: { session: PlayerSession }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [togglePlay, seekBy, seekTo, changeVolume, toggleFullscreen, playNext, close, menu, fullscreen, wakeControls, rate, showHint, subtitleDelay, skippable, toggleMini, onlinePanel]);
 
-  // --- subtitles ---------------------------------------------------------------------------------
 
   useEffect(() => {
     if (cues.length === 0) {
@@ -754,12 +715,15 @@ function PlayerView({ session }: { session: PlayerSession }) {
     return () => cancelAnimationFrame(frame);
   }, [cues, subtitleDelay]);
 
-  const embeddedCues = useEmbeddedSubtitles(() => ({ time: filmTime(), duration: filmLength() }), source ?? null, embeddedSubtitle);
+  const embeddedCues = useEmbeddedSubtitles(() => ({ time: filmTime(), duration: filmLength() }), source ?? null, usingMpv ? null : embeddedSubtitle);
+
+  useEffect(() => {
+    if (usingMpv) void mpv.set("sub-delay", subtitleDelay);
+  }, [usingMpv, subtitleDelay]);
   useEffect(() => {
     if (embeddedSubtitle !== null) setCues(embeddedCues);
   }, [embeddedCues, embeddedSubtitle]);
 
-  /** A choice made by hand is remembered for this title; one made for the user is not. */
   const rememberSubtitles = (language: string | null, byUser: boolean) => {
     subtitlesDecided.current = true;
     if (byUser && language) rememberForTitle(session.title, { subtitleLanguage: language });
@@ -779,12 +743,12 @@ function PlayerView({ session }: { session: PlayerSession }) {
     showHint(t("player.delay.audio.hint", { value: formatDelay(next) }));
   };
 
-  /** "+0,3 с": a delay with its sign, in the interface language's number format. */
   const formatDelay = (seconds: number) =>
     t("player.delay.value", { seconds: `${seconds > 0 ? "+" : seconds < 0 ? "−" : ""}${Math.abs(seconds).toLocaleString(locale, { minimumFractionDigits: 1 })}` });
 
   const selectEmbeddedSubtitle = (track: SubtitleTrackInfo, byUser: boolean) => {
     setCues([]);
+    if (usingMpv) void mpv.set("sid", mpvPlayer.video.subtitleId(track.index) ?? "no");
     setEmbeddedSubtitle(track.index);
     setSubtitleKey(`embedded:${track.index}`);
     setSubtitleLabel(embeddedSubtitleLabel(track, locale));
@@ -793,9 +757,19 @@ function PlayerView({ session }: { session: PlayerSession }) {
   };
 
   const applySubtitles = (bytes: ArrayBuffer, key: string, label: string) => {
-    const parsed = parseSubtitles(decodeSubtitleBytes(bytes));
+    const text = decodeSubtitleBytes(bytes);
+    const parsed = parseSubtitles(text);
     if (parsed.length === 0) {
       toast(t("player.subtitles.noneInFile"), "error");
+      return;
+    }
+    if (usingMpv) {
+      setEmbeddedSubtitle(null);
+      setCues([]);
+      setSubtitleKey(key);
+      setSubtitleLabel(label);
+      setMenu(null);
+      void mpv.addSubtitleText(text, label).catch((error) => toast(describeError(error), "error"));
       return;
     }
     setEmbeddedSubtitle(null);
@@ -823,13 +797,21 @@ function PlayerView({ session }: { session: PlayerSession }) {
       const { open } = await import("@tauri-apps/plugin-dialog");
       const picked = await open({ title: t("player.subtitles.fileDialog"), filters: [{ name: t("common.subtitles"), extensions: ["srt", "ass", "ssa", "vtt"] }] });
       if (typeof picked !== "string") return;
+      if (usingMpv) {
+        await mpv.command("sub-add", picked, "select", baseName(picked));
+        setEmbeddedSubtitle(null);
+        setCues([]);
+        setSubtitleKey(`disk:${picked}`);
+        setSubtitleLabel(baseName(picked));
+        setMenu(null);
+        return;
+      }
       applySubtitles(await backend.readFileBytes(picked), `disk:${picked}`, baseName(picked));
     } catch (error) {
       toast(describeError(error), "error");
     }
   };
 
-  // --- subtitles from the internet ---
   const [online, setOnline] = useState<{ loading: boolean; items: (OnlineSubtitle & { sameRelease: boolean })[] | null; error: string }>({
     loading: false,
     items: null,
@@ -856,8 +838,6 @@ function PlayerView({ session }: { session: PlayerSession }) {
         episode: session.episode ?? null,
         languages,
       });
-      // Subtitles timed to this very release need no adjusting, so they come first; then the
-      // language the user wants most, then what most people chose.
       const playing = releaseWords(`${source.torrentName} ${source.fileName}`);
       const items = found
         .map((item) => ({ ...item, shared: sharedWords(releaseWords(item.release), playing) }))
@@ -870,7 +850,6 @@ function PlayerView({ session }: { session: PlayerSession }) {
         )
         .map(({ shared, ...item }) => ({ ...item, sameRelease: shared >= sameReleaseWords }));
       setOnline({ loading: false, items, error: "" });
-      // The most wanted language that actually has subtitles is shown first.
       setOnlineLanguage(languages.find((code) => items.some((item) => item.language === code)) ?? items[0]?.language ?? "");
     } catch (error) {
       setOnline({ loading: false, items: null, error: onlineError(error) });
@@ -889,6 +868,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
   };
 
   const disableSubtitles = () => {
+    if (usingMpv) void mpv.set("sid", "no");
     setEmbeddedSubtitle(null);
     setCues([]);
     setSubtitleKey(null);
@@ -896,34 +876,35 @@ function PlayerView({ session }: { session: PlayerSession }) {
     rememberSubtitles(subtitlesOff, true);
   };
 
-  // --- audio tracks and playback rate ------------------------------------------------------------
 
-  /** Switches between the tracks the player decodes itself (its own list, when FFmpeg is not there to give a fuller one). */
   const selectAudio = (index: number) => {
     const video = videoRef.current;
     const tracks = video?.audioTracks;
     if (!video || !tracks) return;
     for (let i = 0; i < tracks.length; i++) tracks[i].enabled = i === index;
-    // Re-seeking to the same spot makes the decoder pick up the new track at once.
     video.currentTime = video.currentTime;
     setAudio((value) => ({ ...value, selected: index }));
     setMenu(null);
   };
 
-  /** Makes `index` (a position in `media.tracks.audio`) the track that is heard. */
   const applyAudioTrack = useCallback(
     (index: number) => {
       const tracks = media.tracks?.audio;
       const video = videoRef.current;
       const track = tracks?.[index];
       if (!tracks || !video || !track) return;
+      if (usingMpv) {
+        const id = mpvPlayer.video.audioId(index);
+        if (id !== null) void mpv.set("aid", id);
+        setAudioTrack(index);
+        return;
+      }
       if (conversionRef.current !== null) {
         setAudioTrack(index);
         setConversionStart(filmTime());
         return;
       }
 
-      // The player lists only the tracks it can decode, in file order; a different count means the lists cannot be matched.
       const builtIn = tracks.filter(playsUnconverted);
       const own = video.audioTracks;
       const position = builtIn.indexOf(track);
@@ -933,26 +914,23 @@ function PlayerView({ session }: { session: PlayerSession }) {
         video.currentTime = video.currentTime;
         setConvertedTrack(null);
       } else if (position === 0 && !listsMatch) {
-        // No way to switch, but this is the track the player starts with anyway.
         setConvertedTrack(null);
       } else {
         setConvertedTrack(index);
       }
       setAudioTrack(index);
     },
-    [media.tracks],
+    [media.tracks, usingMpv, mpvPlayer.video],
   );
 
-  // Default sound: the language the user picked last, else the film's original language.
   useEffect(() => {
     const tracks = media.tracks?.audio;
     if (!tracks || tracks.length === 0 || !metadataReady || pickedAudio.current) return;
     const wanted = preferences?.audioLanguage || settings.audioLanguage || originalLanguage;
     const inLanguage = tracks.filter((track) => languageCode(track.language) === wanted);
     const choice =
-      // The same studio as last time, when this title has a remembered one.
       inLanguage.find((track) => preferences?.audioTitle && track.title === preferences.audioTitle) ??
-      inLanguage.find(playsUnconverted) ??
+      inLanguage.find((track) => (usingMpv ? track.isDefault : playsUnconverted(track))) ??
       inLanguage[0] ??
       (preferences?.audioLanguage || settings.audioLanguage ? undefined : tracks.find((track) => track.isOriginal)) ??
       tracks.find((track) => track.isDefault) ??
@@ -970,11 +948,8 @@ function PlayerView({ session }: { session: PlayerSession }) {
 
   useConvertedAudio(videoRef, source ?? null, heardConverted, volume, muted, audioDelay);
 
-  // Default subtitles: the language the user picked last, else the interface language, unless
-  // the sound is already in that language and the user never asked for subtitles.
   useEffect(() => {
     if (!metadataReady || subtitlesDecided.current) return;
-    // With FFmpeg present, wait for the file's own tracks and for the sound to be settled.
     if (media.ffmpegInstalled === null || (media.ffmpegInstalled && media.tracks === null)) return;
     if (media.tracks && media.tracks.audio.length > 0 && audioTrack === null) return;
     subtitlesDecided.current = true;
@@ -999,9 +974,8 @@ function PlayerView({ session }: { session: PlayerSession }) {
     setMenu(null);
   };
 
-  // A file whose audio codec is unsupported plays silently; notice it and switch to converted sound.
   useEffect(() => {
-    if (!playing || muted) return;
+    if (usingMpv || !playing || muted) return;
     const timer = setTimeout(() => {
       const video = videoRef.current;
       if (video && video.currentTime > 2 && video.webkitAudioDecodedByteCount === 0) setSilentAudio(true);
@@ -1009,7 +983,6 @@ function PlayerView({ session }: { session: PlayerSession }) {
     return () => clearTimeout(timer);
   }, [playing, muted, url]);
 
-  // --- end of episode ----------------------------------------------------------------------------
 
   useEffect(() => {
     if (countdown === null) return;
@@ -1027,6 +1000,62 @@ function PlayerView({ session }: { session: PlayerSession }) {
     if (nextEpisode && settings.autoNextEpisode) setCountdown(nextEpisodeCountdownSeconds);
   };
 
+  const handlers: MediaHandlers = {
+    onPlay: () => setPlaying(true),
+    onPause: () => {
+      setPlaying(false);
+      saveProgress();
+    },
+    onWaiting: () => setBuffering(true),
+    onPlaying: () => {
+      setBuffering(false);
+      setEnded(false);
+    },
+    onLoadedMetadata: () => {
+      const video = videoRef.current;
+      if (!video) return;
+      video.playbackRate = rate;
+      if (conversionRef.current !== null) {
+        setDuration(statedLength.current);
+      } else {
+        setDuration(video.duration);
+        if (!usingMpv && resumeAt.current > 0 && resumeAt.current < video.duration - 5) video.currentTime = resumeAt.current;
+      }
+      resumeAt.current = 0;
+      if (!usingMpv) setAudio(readAudioOptions(video));
+      setMetadataReady(true);
+      setResolution(video.videoWidth > 0 ? `${video.videoWidth}×${video.videoHeight}` : "");
+      const detected = qualityFromSize(video.videoWidth, video.videoHeight);
+      if (detected && source && !source.quality) useLibrary.getState().setSourceQuality(session.unitKey, source.id, detected);
+    },
+    onDurationChange: () => {
+      const video = videoRef.current;
+      if (video && conversionRef.current === null) setDuration(video.duration);
+    },
+    onTimeUpdate: () => setCurrent(filmTime()),
+    onProgress: () => {
+      if (usingMpv) {
+        setBuffered(mpvPlayer.video.bufferedRanges.map((range) => ({ start: range.start, end: range.end })));
+        return;
+      }
+      const ranges = videoRef.current?.buffered;
+      if (!ranges) return;
+      const offset = conversionRef.current ?? 0;
+      setBuffered(Array.from({ length: ranges.length }, (_, index) => ({ start: offset + ranges.start(index), end: offset + ranges.end(index) })));
+    },
+    onSeeked: () => saveProgress(),
+    onEnded: () => onEnded(),
+    onError: () => {
+      if (!usingMpv && conversionRef.current === null && media.tracks) {
+        startConversion();
+        return;
+      }
+      setFailed(true);
+      setBuffering(false);
+    },
+  };
+  mpvPlayer.video.handlers = handlers;
+
   const openExternally = async () => {
     if (!source) return;
     try {
@@ -1038,7 +1067,6 @@ function PlayerView({ session }: { session: PlayerSession }) {
     }
   };
 
-  // --- render ------------------------------------------------------------------------------------
 
   if (!source) {
     return (
@@ -1055,7 +1083,6 @@ function PlayerView({ session }: { session: PlayerSession }) {
   }
 
   const downloaded = fileProgress(torrent, source.fileIndex);
-  // The light stretch shows how far ahead playback is safe; a finished file needs no such hint.
   const bufferedAhead = downloaded >= 1 ? [] : buffered.filter((range) => range.start <= current + 1 && range.end > current);
   const subtitle =
     session.episode !== undefined
@@ -1070,7 +1097,9 @@ function PlayerView({ session }: { session: PlayerSession }) {
       onMouseMove={wakeControls}
       onMouseDown={wakeControls}
     >
-      {url && (
+      {usingMpv && <div className="player__surface" onClick={togglePlay} onDoubleClick={toggleFullscreen} />}
+
+      {url && mpvChoice.mode === "unavailable" && (
         <video
           ref={videoRef}
           key={url}
@@ -1078,57 +1107,18 @@ function PlayerView({ session }: { session: PlayerSession }) {
           autoPlay
           onClick={togglePlay}
           onDoubleClick={toggleFullscreen}
-          onPlay={() => setPlaying(true)}
-          onPause={() => {
-            setPlaying(false);
-            saveProgress();
-          }}
-          onWaiting={() => setBuffering(true)}
-          onPlaying={() => {
-            setBuffering(false);
-            setEnded(false);
-          }}
+          onPlay={handlers.onPlay}
+          onPause={handlers.onPause}
+          onWaiting={handlers.onWaiting}
+          onPlaying={handlers.onPlaying}
           onCanPlay={() => setBuffering(false)}
-          onLoadedMetadata={(event) => {
-            const video = event.currentTarget as VideoWithExtras;
-            video.playbackRate = rate;
-            if (conversionRef.current !== null) {
-              // The stream already begins where playback should; its own length says nothing about the film's.
-              setDuration(statedLength.current);
-            } else {
-              setDuration(video.duration);
-              if (resumeAt.current > 0 && resumeAt.current < video.duration - 5) video.currentTime = resumeAt.current;
-            }
-            resumeAt.current = 0;
-            setAudio(readAudioOptions(video));
-            setMetadataReady(true);
-            setResolution(video.videoWidth > 0 ? `${video.videoWidth}×${video.videoHeight}` : "");
-            // A release name does not always state the quality; the decoded picture does.
-            const detected = qualityFromSize(video.videoWidth, video.videoHeight);
-            if (detected && !source.quality) useLibrary.getState().setSourceQuality(session.unitKey, source.id, detected);
-          }}
-          onDurationChange={(event) => {
-            if (conversionRef.current === null) setDuration(event.currentTarget.duration);
-          }}
-          onTimeUpdate={() => setCurrent(filmTime())}
-          onProgress={(event) => {
-            const ranges = event.currentTarget.buffered;
-            const offset = conversionRef.current ?? 0;
-            setBuffered(
-              Array.from({ length: ranges.length }, (_, index) => ({ start: offset + ranges.start(index), end: offset + ranges.end(index) })),
-            );
-          }}
-          onSeeked={saveProgress}
-          onEnded={onEnded}
-          onError={() => {
-            // With FFmpeg at hand, a film the player cannot decode is converted instead of given up on.
-            if (conversionRef.current === null && media.tracks) {
-              startConversion();
-              return;
-            }
-            setFailed(true);
-            setBuffering(false);
-          }}
+          onLoadedMetadata={handlers.onLoadedMetadata}
+          onDurationChange={handlers.onDurationChange}
+          onTimeUpdate={handlers.onTimeUpdate}
+          onProgress={handlers.onProgress}
+          onSeeked={handlers.onSeeked}
+          onEnded={handlers.onEnded}
+          onError={handlers.onError}
         />
       )}
 
@@ -1213,6 +1203,11 @@ function PlayerView({ session }: { session: PlayerSession }) {
                 {t("common.close")}
               </button>
             </div>
+          </div>
+        ) : mpvChoice.mode === "installing" ? (
+          <div className="player__buffering">
+            <LoaderCircle size={46} className="spin" />
+            <span>{t("player.mpv.installing", { percent: Math.round(mpvChoice.progress * 100) })}</span>
           </div>
         ) : buffering ? (
           <div className="player__buffering">
@@ -1363,7 +1358,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
 
           <div className="player__spacer" />
 
-          <button className={`player__button ${cues.length > 0 ? "is-on" : ""}`} aria-label={t("common.subtitles")} onClick={() => setMenu(menu === "subtitles" ? null : "subtitles")}>
+          <button className={`player__button ${cues.length > 0 || (usingMpv && subtitleKey !== null) ? "is-on" : ""}`} aria-label={t("common.subtitles")} onClick={() => setMenu(menu === "subtitles" ? null : "subtitles")}>
             <Captions size={20} />
           </button>
           {(audio.options.length > 0 || (media.tracks?.audio.length ?? 0) > 1) && (

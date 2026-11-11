@@ -1,6 +1,3 @@
-// Catalog: titles picked by kind, genres, years, country of origin and rating.
-// The filters live in the address, so going back to the page or reopening it restores them.
-
 import { useEffect, useMemo, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { ChevronDown, RotateCcw, SearchX } from "lucide-react";
@@ -32,13 +29,9 @@ const defaultFilters: DiscoverFilters = {
   sort: "popular",
 };
 
-/** Lowest ratings on offer, out of 10. */
 const ratingSteps = [5, 6, 7, 8, 9];
-/** Nothing older is worth a line in the year lists. */
 const earliestYear = 1900;
-/** Titles the catalog returns per page; as many placeholders stand in for a page that is loading. */
 const pageSize = 20;
-/** Countries that make most of what people watch; they are offered before the full list. */
 const majorCountries = ["US", "GB", "FR", "DE", "IT", "ES", "JP", "KR", "CN", "IN", "CA", "AU", "SE", "DK", "PL", "UA", "TR", "BR"];
 const countryCodePattern = /^[A-Z]{2}$/;
 
@@ -51,7 +44,6 @@ function readYear(value: string | null): number | null {
   return Number.isInteger(year) && year >= earliestYear && year <= latestYear() ? year : null;
 }
 
-/** The filters an address asks for; anything it gets wrong falls back to the default. */
 function readFilters(params: URLSearchParams): DiscoverFilters {
   const years = [readYear(params.get("from")), readYear(params.get("to"))];
   const reversed = years[0] !== null && years[1] !== null && years[0] > years[1];
@@ -77,7 +69,6 @@ function readPageCount(params: URLSearchParams): number {
   return Number.isInteger(pages) && pages > 1 ? pages : 1;
 }
 
-/** The address for a set of filters; defaults are left out to keep it short. */
 function toSearch(filters: DiscoverFilters, pageCount = 1): URLSearchParams {
   const params = new URLSearchParams();
   if (filters.kind !== defaultFilters.kind) params.set("kind", filters.kind);
@@ -91,7 +82,6 @@ function toSearch(filters: DiscoverFilters, pageCount = 1): URLSearchParams {
   return params;
 }
 
-/** The catalog reshuffles between requests, so a title can come back on the next page. */
 function withoutRepeats(items: MediaItem[]): MediaItem[] {
   return [...new Map(items.map((item) => [item.id, item])).values()];
 }
@@ -120,7 +110,6 @@ function CountryOptions({ countries }: { countries: Country[] }) {
   );
 }
 
-/** A drop-down of the filter bar; it lights up when it narrows the list. */
 function FilterSelect({
   label,
   value,
@@ -154,8 +143,6 @@ export default function Browse() {
   const genres = genreList.data?.kind === filters.kind ? genreList.data.genres : null;
   const countries = useAsync(tmdb.countries, []);
 
-  // Films and series number their genres differently, so after a switch of kind only the chosen
-  // genres the new kind also has still apply. Until its list is known, a query with genres waits.
   const query = useMemo<DiscoverFilters | null>(() => {
     if (filters.genres.length === 0) return filters;
     if (!genres) return null;
@@ -173,14 +160,11 @@ export default function Browse() {
       hasMore: pageCount < pages[0].totalPages,
     };
   }, [queryKey, pageCount]);
-  // Results of the previous filters must not sit under the new ones while the new list loads.
   const shown = results.data && results.data.queryKey === queryKey ? results.data : null;
 
   const filterSearch = toSearch(filters).toString();
   useEffect(() => useBrowse.getState().remember(filterSearch), [filterSearch]);
 
-  // A change of filters replaces the address instead of adding to history: Back leaves the catalog
-  // rather than undoing the filters one by one.
   const update = (patch: Partial<DiscoverFilters>) => setParams(toSearch({ ...filters, ...patch }), { replace: true });
   const showMore = () => setParams(toSearch(filters, pageCount + 1), { replace: true });
   const reset = () => update({ ...defaultFilters, kind: filters.kind });

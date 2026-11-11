@@ -1,6 +1,3 @@
-// The first start: the language, then a few titles the user likes (recommendations start from
-// them), then three lines on how the app is used. Every step after the language can be skipped.
-
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { Check, Link2, Play, Search, X, type LucideIcon } from "lucide-react";
 import { useT, type MessageKey } from "../lib/i18n";
@@ -15,17 +12,11 @@ import { WindowButtons } from "./Shell";
 type Step = "language" | "picks" | "howTo";
 
 const steps: Step[] = ["language", "picks", "howTo"];
-/** Picks from which recommendations come out well; fewer still work, so this is advice, not a gate. */
 const recommendedPicks = 5;
 const searchDebounceMs = 350;
-/** As many as the home page looks up for recommendations; warming more would be wasted requests. */
 const warmedPicks = 10;
 const skeletonCardCount = 24;
 
-/**
- * What the grid opens with: the titles the most people have rated, since those are the ones a
- * newcomer is likeliest to have seen. `share` is how many of a kind go into each round of the mix.
- */
 const startingLists: { kind: DiscoverKind; pages: number; share: number }[] = [
   { kind: "movie", pages: 2, share: 2 },
   { kind: "tv", pages: 2, share: 2 },
@@ -37,13 +28,11 @@ async function startingTitles(): Promise<MediaItem[]> {
     startingLists.map(async ({ kind, pages }) => {
       const loaded = await Promise.allSettled(Array.from({ length: pages }, (_, index) => tmdb.mostVoted(kind, index + 1)));
       const failure = loaded.find((page) => page.status === "rejected");
-      // A kind that could not be loaded at all means the catalog is out of reach; a missing second page does not.
       if (failure && loaded.every((page) => page.status === "rejected")) throw failure.reason;
       return loaded.flatMap((page) => (page.status === "fulfilled" ? page.value : []));
     }),
   );
 
-  // Films, series and anime are dealt in turn, so the first screen has something for everyone.
   const mixed: MediaItem[] = [];
   const seen = new Set<string>();
   const cursors = lists.map(() => 0);
@@ -51,7 +40,6 @@ async function startingTitles(): Promise<MediaItem[]> {
     lists.forEach((list, index) => {
       for (const item of list.slice(cursors[index], cursors[index] + startingLists[index].share)) {
         const key = titleKey(item.type, item.id);
-        // The most popular anime are among the most popular series too.
         if (!seen.has(key)) mixed.push(item);
         seen.add(key);
       }
@@ -123,16 +111,12 @@ function PicksStep({
   const [text, setText] = useState("");
   const typed = text.trim();
   const settled = useDebounced(typed, searchDebounceMs);
-  // Typing waits for a pause before the catalog is asked; clearing the box needs no waiting.
   const query = typed === "" ? "" : settled;
-  // The catalog answers in the interface language, so going back to change it loads the lists anew.
   const starting = useAsync(startingTitles, [language]);
   const found = useAsync(() => (query ? tmdb.search(query) : Promise.resolve<MediaItem[]>([])), [query, language]);
   const searching = query !== "";
   const source = searching ? found : starting;
 
-  // Everything picked on this screen, kept even when unpicked again: a title found through the
-  // search stays in sight once the search is cleared, and a slip of the hand does not make it vanish.
   const [touched, setTouched] = useState(() => new Map(picks));
   const toggle = (item: MediaItem) => {
     setTouched((current) => new Map(current).set(titleKey(item.type, item.id), item));
@@ -146,7 +130,6 @@ function PicksStep({
     return [...[...touched.values()].filter((item) => !listedKeys.has(titleKey(item.type, item.id))), ...listed];
   }, [searching, found.data, starting.data, touched]);
 
-  // The grid is one stop for Tab; the arrow keys move inside it. `cursor` is the card Tab lands on.
   const [cursor, setCursor] = useState(0);
   const gridRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -185,7 +168,6 @@ function PicksStep({
         return;
     }
     event.preventDefault();
-    // Up from the first row leads back to the search box above it.
     if (event.key === "ArrowUp" && target < 0) searchRef.current?.focus();
     else focusCard(target);
   };
@@ -295,8 +277,6 @@ const howToSteps: { icon: LucideIcon; title: MessageKey; text: MessageKey }[] = 
 function HowToStep({ picks, onBack, onStart }: { picks: MediaItem[]; onBack: () => void; onStart: () => void }) {
   const { t } = useT();
 
-  // While the user reads, the catalog is asked what the home page will need for its
-  // recommendations; the answers are cached, so the rows are there when the page opens.
   useEffect(() => {
     for (const item of picks.slice(0, warmedPicks)) void tmdb.taste(item.type, item.id).catch(() => undefined);
   }, [picks]);
@@ -313,7 +293,6 @@ function HowToStep({ picks, onBack, onStart }: { picks: MediaItem[]; onBack: () 
                 <Icon size={20} />
               </span>
               <span className="howto__number">{index + 1}</span>
-              {/* The button is called by the name it really has on a title's page. */}
               <strong>{t(title, { button: t("common.addTorrent") })}</strong>
               <p>{t(text)}</p>
             </li>
@@ -335,13 +314,9 @@ function HowToStep({ picks, onBack, onStart }: { picks: MediaItem[]; onBack: () 
 
 export function Onboarding() {
   const language = useSettings((state) => state.language);
-  // Someone who already has a list is only asked for the language, as before the introduction existed.
   const firstRun = useLibrary((state) => state.firstRun);
   const [step, setStep] = useState<Step>(language ? "picks" : "language");
-  /** Picked titles by `type:id`, in the order they were picked. */
   const [picks, setPicks] = useState<Map<string, MediaItem>>(new Map());
-  // Skipping the picks means "none": titles ticked half-way are not slipped into the user's list.
-  // They are not forgotten either, in case the user steps back.
   const [picksSkipped, setPicksSkipped] = useState(false);
   const liked = useMemo(() => (picksSkipped ? [] : [...picks.values()]), [picks, picksSkipped]);
 
@@ -353,7 +328,6 @@ export function Onboarding() {
       return next;
     });
 
-  // Nothing is written until the very end, so going back and changing the picks needs no undoing.
   const finish = () => useLibrary.getState().finishOnboarding(liked.map(toTitleRef));
   const leavePicks = (skipped: boolean) => {
     setPicksSkipped(skipped);
@@ -362,7 +336,6 @@ export function Onboarding() {
 
   return (
     <>
-      {/* The window's own bar without search and history: there is nowhere to go yet. */}
       <header className="titlebar" data-tauri-drag-region>
         <div className="titlebar__brand" data-tauri-drag-region>
           <span className="brand-mark" />

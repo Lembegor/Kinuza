@@ -1,9 +1,3 @@
-# Builds a signed Kinuza installer and the update feed (latest.json) for one version.
-# Usage:
-#   powershell -ExecutionPolicy Bypass -File scripts/release.ps1 -Version 0.2.0 -Notes "What changed"
-#   add -Publish to upload the release to GitHub (needs the gh CLI, logged in).
-# Keep this file ASCII only: Windows PowerShell 5.1 misreads BOM-less UTF-8.
-
 param(
     [Parameter(Mandatory = $true)][string]$Version,
     [string]$Notes = "",

@@ -1,5 +1,3 @@
-// Title page: details, sources for a movie, seasons and episodes for a series.
-
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import {
@@ -35,7 +33,6 @@ import { fileOf, fileProgress, useTorrents } from "../state/torrents";
 import { useUi, type AddSourceTarget } from "../state/ui";
 
 const specialsSeason = 0;
-/** Directors or creators named under the title; an anthology can have a dozen. */
 const namedDirectorCount = 4;
 
 export function sortSources(sources: Source[]): Source[] {
@@ -53,7 +50,6 @@ async function revealFile(source: Source): Promise<void> {
   }
 }
 
-/** Turns a source that is only watched online into one that is saved to disk. */
 async function downloadSource(source: Source): Promise<void> {
   try {
     await backend.selectFiles(source.infoHash, [source.fileIndex], useSettings.getState().downloadDir || null);
@@ -64,7 +60,6 @@ async function downloadSource(source: Source): Promise<void> {
   }
 }
 
-/** Download state of the file behind a source. */
 function SourceStatus({ source }: { source: Source }) {
   const torrent = useTorrents((state) => state.byHash[source.infoHash]);
   const { t } = useT();
@@ -238,7 +233,6 @@ function EpisodeRow({ title, episode }: { title: TitleRef; episode: Episode }) {
           {[formatDate(episode.airDate), formatRuntime(episode.runtimeMinutes)].filter(Boolean).join(" · ")}
         </div>
         {episode.overview && (
-          // What happens in an episode not yet watched is a spoiler: it stays veiled until pointed at.
           <p className={`episode__overview ${watched ? "" : "is-veiled"}`} tabIndex={watched ? undefined : 0} title={watched ? undefined : t("title.episode.spoiler")}>
             {episode.overview}
           </p>
@@ -360,7 +354,6 @@ function SeriesEpisodes({
   );
 }
 
-/** The episode to offer on the main button: the one in progress, else the first unwatched with a source. */
 function useResumeEpisode(details: Details | null): { season: number; episode: number; name?: string; resumed: boolean } | null {
   const progress = useLibrary((state) => state.progress);
   const sources = useLibrary((state) => state.sources);
@@ -385,7 +378,6 @@ function useResumeEpisode(details: Details | null): { season: number; episode: n
   }, [details, progress, sources]);
 }
 
-/** The title's rating on IMDb; the catalog's own rating stands in only when IMDb has none. */
 function TitleRating({ imdbId, catalogRating }: { imdbId: string | null; catalogRating: number }) {
   const imdb = useAsync(() => (imdbId ? backend.imdbRating(imdbId) : Promise.resolve(null)), [imdbId]);
   const { t, tn, locale } = useT();
@@ -413,8 +405,6 @@ export default function TitlePage() {
   const id = Number(params.id);
   const [searchParams, setSearchParams] = useSearchParams();
   const { t, tn } = useT();
-  // Remembered per title: the page stays mounted when one title leads to another, and the
-  // trailer of the first must not carry over to the second.
   const [trailerTitleId, setTrailerTitleId] = useState<number | null>(null);
 
   const details = useAsync(() => tmdb.details(type, id), [type, id]);
@@ -439,7 +429,6 @@ export default function TitlePage() {
     return () => setPageTarget(null);
   }, [target, setPageTarget]);
 
-  // A tracked series needs its episode count to know when it has been watched to the end.
   useEffect(() => {
     if (!data || !title) return;
     const regularEpisodes = data.seasons

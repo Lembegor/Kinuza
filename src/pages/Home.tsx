@@ -12,13 +12,11 @@ import { useUi } from "../state/ui";
 
 const heroRotationMs = 10000;
 const heroItemCount = 6;
-/** Progress shorter than this is treated as an accidental start, not something to resume. */
 const minResumeSeconds = 30;
 const continueRowLimit = 12;
 const secondsPerMinute = 60;
 const minutesPerHour = 60;
 
-/** A film and a series may share a number, so the kind is part of a slide's identity. */
 function slideKey(slide: MediaItem): string {
   return titleKey(slide.type, slide.id);
 }
@@ -30,7 +28,6 @@ function Hero({ items }: { items: MediaItem[] }) {
   const [paused, setPaused] = useState(false);
   const slides = useMemo(() => items.filter((item) => item.backdrop && item.overview).slice(0, heroItemCount), [items]);
 
-  // Restarts on every slide change, so a slide picked by hand stays for the full interval.
   useEffect(() => {
     if (slides.length < 2 || paused) return;
     const timer = setTimeout(() => setIndex((value) => (value + 1) % slides.length), heroRotationMs);
@@ -45,7 +42,6 @@ function Hero({ items }: { items: MediaItem[] }) {
 
   return (
     <section className="hero" onMouseEnter={() => setPaused(true)} onMouseLeave={() => setPaused(false)}>
-      {/* A soft, blurred copy fills the width; the sharp picture keeps its own proportions on the right. */}
       <img key={`ambient:${slideKey(current)}`} className="hero__ambient" src={imageUrl(current.backdrop, "w780") ?? undefined} alt="" draggable={false} />
       {slides.map((slide, slideIndex) => (
         <img
@@ -82,7 +78,6 @@ function Hero({ items }: { items: MediaItem[] }) {
         </div>
       </div>
       {slides.length > 1 && (
-        // Arrows and dots share one corner, away from the title.
         <div className="hero__nav">
           <button className="hero__arrow" aria-label={t("home.hero.previous")} onClick={() => step(-1)}>
             <ChevronLeft size={20} />
@@ -143,7 +138,6 @@ function ContinueCard({ unitKey, progress }: { unitKey: string; progress: Progre
     });
   };
 
-  // The picture resumes playback; the name and the corner button lead to the title's page.
   return (
     <div className="continue-card">
       <button className="continue-card__art" aria-label={t("home.continue.resume", { title: title.title })} onClick={resume}>
@@ -190,7 +184,6 @@ function ContinueRow() {
   );
 }
 
-/** One card per series that has episodes out and not watched yet; the series with the latest episode first. */
 function NewEpisodesRow() {
   const { t, tn } = useT();
   const calendar = useEpisodeCalendar();
@@ -201,7 +194,6 @@ function NewEpisodesRow() {
       if (!isNewEpisode(episode, progress, calendar.today)) continue;
       bySeries.set(episode.title.id, [...(bySeries.get(episode.title.id) ?? []), episode]);
     }
-    // The schedule runs from the earliest day, so the last episode of each list is the latest.
     const latest = (episodes: CalendarEpisode[]) => episodes[episodes.length - 1];
     return [...bySeries.values()]
       .sort((a, b) => latest(b).airDate.localeCompare(latest(a).airDate))
@@ -216,7 +208,6 @@ function NewEpisodesRow() {
   return <PosterRow title={t("home.row.newEpisodes")} items={items} />;
 }
 
-/** "Not interested" on a recommendation: it goes at once, and a toast offers to take that back. */
 function dismissRecommendation(title: TitleRef): void {
   const { dismiss, restoreDismissed } = useLibrary.getState();
   dismiss(title);
@@ -262,7 +253,6 @@ export default function Home() {
       <div className="page__rows">
         <ContinueRow />
         <NewEpisodesRow />
-        {/* A skeleton row holds the place while the picks load, so the page does not jump. */}
         {feed.available && feed.rows === null && <PosterRow title={t("feed.forYou")} items={null} />}
         {feed.rows?.map((row) => <PosterRow key={row.id} title={row.title} items={row.items} onDismiss={dismissRecommendation} />)}
         {planned.length > 0 && <PosterRow title={t("home.row.planned")} items={planned} />}

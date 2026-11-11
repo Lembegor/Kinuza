@@ -1,34 +1,23 @@
-// A journal of recent problems: what went wrong in the background, where the user would otherwise
-// only notice that something does not work. Kept in memory and on disk, so it survives a restart.
-
 import { create } from "zustand";
 import { backend } from "./backend";
 import type { MessageKey } from "./i18n";
 
 const storeName = "journal";
-/** The oldest entries beyond this are dropped: the journal is for what happened lately. */
 const maxEntries = 200;
 const saveDelayMs = 500;
-/** Longest technical detail kept with an entry; some errors carry a whole page of text. */
 const maxDetailLength = 300;
 
-/** The part of the app a problem belongs to. */
 export type JournalArea = "catalog" | "downloads" | "player" | "import" | "settings" | "updates" | "system";
 
 export interface JournalEntry {
-  /** When the problem happened last, in milliseconds. */
   time: number;
   area: JournalArea;
-  /** Names the message that says, in plain words, what did not work. */
   message: MessageKey;
-  /** The error as the program reported it: a code or a message. Empty when there is none. */
   detail: string;
-  /** How many times in a row the same problem happened. */
   count: number;
 }
 
 interface JournalState {
-  /** Oldest first. */
   entries: JournalEntry[];
 }
 
@@ -55,7 +44,6 @@ function isEntry(value: unknown): value is JournalEntry {
 
 let loading: Promise<void> | null = null;
 
-/** Reads what earlier sessions recorded; problems reported in the meantime stay after it. */
 export function loadJournal(): Promise<void> {
   loading ??= backend
     .storeGet(storeName)
@@ -64,7 +52,6 @@ export function loadJournal(): Promise<void> {
       const earlier = Array.isArray(stored) ? stored.filter(isEntry) : [];
       useJournal.setState((state) => ({ entries: [...earlier, ...state.entries].slice(-maxEntries) }));
     })
-    // A journal that cannot be read starts empty; reporting that here would only go round in a circle.
     .catch((error) => console.error("journal: load failed", error));
   return loading;
 }
@@ -74,23 +61,15 @@ let saveTimer: ReturnType<typeof setTimeout> | undefined;
 function scheduleSave(): void {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
-    // Saving before the stored entries are read would replace them with this session's alone.
     void loadJournal()
       .then(() => backend.storeSet(storeName, JSON.stringify(useJournal.getState().entries)))
       .catch((error) => console.error("journal: save failed", error));
   }, saveDelayMs);
 }
 
-/**
- * Records a problem for the "What happened" page. `message` is what the user reads; `detail` is
- * the caught error, kept for whoever looks into it. A problem that repeats without anything else
- * happening in between (a poll failing every second) is counted on one entry instead of filling
- * the journal.
- */
 export function report(area: JournalArea, message: MessageKey, detail?: unknown): void {
   console.error(`${area}: ${message}`, detail ?? "");
   const text = detailText(detail);
-  // Also into the log file, next to what the engine was doing at that moment.
   void backend.logWrite("error", `${area}: ${message}${text ? ` (${text})` : ""}`).catch(() => undefined);
   const time = Date.now();
   useJournal.setState((state) => {

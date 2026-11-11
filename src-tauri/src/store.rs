@@ -1,5 +1,3 @@
-//! Small named JSON documents (library, settings) kept in the app data folder.
-
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -23,7 +21,6 @@ pub fn store_get(state: State<'_, AppState>, name: String) -> Result<Option<Stri
     }
 }
 
-/// Writes atomically: a crash mid-write leaves the previous document intact.
 #[tauri::command]
 pub fn store_set(state: State<'_, AppState>, name: String, value: String) -> Result<(), String> {
     let path = document_path(&state.data_dir, &name)?;
@@ -47,7 +44,6 @@ fn document_path(data_dir: &Path, name: &str) -> Result<PathBuf, String> {
     Ok(data_dir.join(STORE_FOLDER_NAME).join(format!("{name}.json")))
 }
 
-/// A per-launch token that keeps other local programs from guessing stream URLs.
 pub fn random_token() -> String {
     use std::{
         collections::hash_map::RandomState,

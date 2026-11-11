@@ -1,6 +1,3 @@
-// The parts of an anime franchise in the order they came out: seasons, films and OVAs, which the
-// general catalog folds into one series or scatters without a link between them.
-
 import { useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { animeInfo, type AnimeFormat, type AnimePart } from "../lib/anilist";
@@ -8,7 +5,6 @@ import { useT, type MessageKey } from "../lib/i18n";
 import { useAsync } from "../lib/useAsync";
 import { Row } from "./Cards";
 
-/** One part is the title itself; there is no order to show. */
 const minParts = 2;
 
 const formatLabels: Record<AnimeFormat, MessageKey> = {
@@ -26,7 +22,6 @@ function AnimeCard({ part, current }: { part: AnimePart; current: boolean }) {
   const cardRef = useRef<HTMLButtonElement>(null);
   const name = part.english || part.romaji;
 
-  // A long franchise opens on the part being looked at. Only the row is scrolled.
   useEffect(() => {
     const card = cardRef.current;
     const track = card?.parentElement;
@@ -40,7 +35,6 @@ function AnimeCard({ part, current }: { part: AnimePart; current: boolean }) {
       aria-current={current ? "page" : undefined}
       disabled={current}
       title={part.romaji}
-      // The catalog knows these parts under its own numbers; the name finds the right page.
       onClick={() => navigate(`/search?q=${encodeURIComponent(name)}`)}
     >
       <div className="poster-card__art">
@@ -61,7 +55,6 @@ export function AnimeOrder({ names, type, year }: { names: string[]; type: "movi
   const { t } = useT();
   const loaded = useAsync(() => animeInfo({ names, type, year }), [names.join("|"), type, year]);
   const info = loaded.data;
-  // An extra: without an answer, or with nothing to put in order, the page is complete as it is.
   if (!info || info.parts.length < minParts) return null;
   return (
     <Row title={t("anime.order.title")}>

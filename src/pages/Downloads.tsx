@@ -6,7 +6,7 @@ import { backend, describeError, isDesktop, type TorrentView } from "../lib/back
 import { formatBytes, formatEta, formatSpeed } from "../lib/format";
 import { t, useT, type MessageKey } from "../lib/i18n";
 import { useLibrary, type Progress, type Source } from "../state/library";
-import { etaSeconds, torrentProgress, useTorrents } from "../state/torrents";
+import { etaSeconds, isDownload, torrentProgress, useTorrents } from "../state/torrents";
 import { useUi } from "../state/ui";
 
 const stateLabels: Record<string, MessageKey> = {
@@ -16,7 +16,6 @@ const stateLabels: Record<string, MessageKey> = {
   error: "downloads.state.error",
 };
 
-/** Nothing in the torrent is being saved: it is only watched online. */
 function isOnlineOnly(torrent: TorrentView): boolean {
   return torrent.files.length > 0 && torrent.files.every((file) => !file.included);
 }
@@ -32,7 +31,6 @@ function statusText(torrent: TorrentView): string {
   return eta ? t("downloads.status.remaining", { time: eta }) : t("downloads.status.searching");
 }
 
-/** Maps info hashes to the title they were attached to, using saved sources and watch history. */
 function useTorrentTitles(): Record<string, { path: string; label: string }> {
   const sources = useLibrary((state) => state.sources);
   const tracked = useLibrary((state) => state.tracked);
@@ -153,8 +151,7 @@ function TorrentCard({ torrent, link }: { torrent: TorrentView; link?: { path: s
 
 export default function Downloads() {
   const everything = useTorrents((state) => state.list);
-  // Torrents parked between online viewings hold nothing on disk and are not downloads.
-  const torrents = useMemo(() => everything.filter((torrent) => torrent.state !== "parked"), [everything]);
+  const torrents = useMemo(() => everything.filter(isDownload), [everything]);
   const openAddSource = useUi((state) => state.openAddSource);
   const titles = useTorrentTitles();
   const { t } = useT();

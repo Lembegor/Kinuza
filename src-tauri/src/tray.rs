@@ -1,6 +1,3 @@
-//! The icon in the notification area. With "keep running in the tray" on, closing the window
-//! only hides it: downloads go on, and the icon brings the window back or quits for real.
-
 use serde::Deserialize;
 use tauri::{
     menu::{Menu, MenuItem},
@@ -12,10 +9,8 @@ const TRAY_ID: &str = "main";
 const MAIN_WINDOW_LABEL: &str = "main";
 const MENU_OPEN: &str = "open";
 const MENU_QUIT: &str = "quit";
-/// Sent to the window when "Quit" is chosen, so it can save what it has to and then close.
 pub const QUIT_EVENT: &str = "tray-quit";
 
-/// The texts of the tray menu, in the interface language.
 #[derive(Deserialize)]
 pub struct TrayLabels {
     open: String,
@@ -31,10 +26,8 @@ fn show_main_window(app: &AppHandle) {
     }
 }
 
-/// Shows the tray icon, or removes it. Called again when the interface language changes.
 #[tauri::command]
 pub fn tray_configure(app: AppHandle, enabled: bool, labels: TrayLabels) -> Result<(), String> {
-    // Rebuilt from scratch: the menu's texts may have changed.
     let _ = app.remove_tray_by_id(TRAY_ID);
     if !enabled {
         return Ok(());
@@ -50,7 +43,6 @@ pub fn tray_configure(app: AppHandle, enabled: bool, labels: TrayLabels) -> Resu
             .on_menu_event(|app, event| match event.id().as_ref() {
                 MENU_OPEN => show_main_window(app),
                 MENU_QUIT => {
-                    // The window saves the playback position and the library before it goes.
                     if app.emit(QUIT_EVENT, ()).is_err() {
                         app.exit(0);
                     }

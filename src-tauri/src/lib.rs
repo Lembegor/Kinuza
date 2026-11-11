@@ -6,8 +6,9 @@ mod ffmpeg;
 mod imdb;
 mod launch;
 mod logging;
+mod mpv;
 mod online_subtitles;
-mod rutracker; // Модуль RuTracker
+mod rutracker;
 mod server;
 mod store;
 mod tray;
@@ -16,39 +17,35 @@ use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
 };
-use tokio::sync::Mutex as TokioMutex; // Алиас для асинхронного мьютекса RuTracker
+use tokio::sync::Mutex as TokioMutex;
 
 use tauri::{Emitter, Manager};
 
 use engine::Engine;
 
-/// Everything the commands need; created once in `setup`.
 pub struct AppState {
     pub engine: Arc<Engine>,
     pub stream_base_url: String,
     pub data_dir: PathBuf,
     pub default_download_dir: PathBuf,
-    /// A link the app was started with; the window picks it up once it is ready.
     pub pending_launch: Mutex<Option<launch::LaunchRequest>>,
 }
 
 const DOWNLOAD_FOLDER_NAME: &str = "Kinuza";
 const SESSION_FOLDER_NAME: &str = "session";
-/// What online viewing fetches lives here, apart from the downloads, until the viewing ends.
 const STREAM_CACHE_FOLDER_NAME: &str = "stream-cache";
 
 pub fn run() {
     tauri::Builder::default()
-        // Инициализация состояния RuTracker
         .manage(TokioMutex::new(rutracker::RutrackerState::new()))
         .manage(imdb::ImdbState::default())
         .manage(ffmpeg::FfmpegState::default())
+        .manage(mpv::MpvState::default())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.unminimize();
                 let _ = window.set_focus();
             }
-            // A second launch carrying a link forwards it to the window that is already open.
             if let Some(request) = launch::from_args(args) {
                 let _ = app.emit(launch::LAUNCH_EVENT, request);
             }
@@ -96,15 +93,27 @@ pub fn run() {
             ffmpeg::ffmpeg_status,
             ffmpeg::ffmpeg_install,
             ffmpeg::media_tracks,
+            mpv::mpv_status,
+            mpv::mpv_install,
+            mpv::mpv_command,
+            mpv::mpv_set,
+            mpv::mpv_add_subtitle_text,
             
-            // Новые команды RuTracker
             rutracker::rutracker_login_window,
             rutracker::rutracker_search,
             rutracker::rutracker_magnet,
             rutracker::rutracker_video_sizes,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Kinuza");
+        .build(tauri::generate_context!())
+        .expect("error while building Kinuza")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                tauri::async_runtime::block_on(mpv::shutdown(&app.state::<mpv::MpvState>()));
+                if let Some(state) = app.try_state::<AppState>() {
+                    mpv::clear_subtitle_files(&state.data_dir);
+                }
+            }
+        });
 }
 
 

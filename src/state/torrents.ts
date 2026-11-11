@@ -24,7 +24,14 @@ export const useTorrents = create<TorrentsState>((set) => ({
   },
 }));
 
-/** Polls the engine while the window is visible. Returns a stop function. */
+export function isDownload(torrent: TorrentView): boolean {
+  return torrent.state !== "parked" && torrent.files.some((file) => file.included);
+}
+
+export function isActiveDownload(torrent: TorrentView): boolean {
+  return isDownload(torrent) && !torrent.finished && torrent.state !== "paused";
+}
+
 export function startTorrentPolling(): () => void {
   const tick = () => {
     if (document.visibilityState === "visible") void useTorrents.getState().refresh();
@@ -38,7 +45,6 @@ export function fileOf(torrent: TorrentView | undefined, fileIndex: number): Tor
   return torrent?.files.find((file) => file.index === fileIndex);
 }
 
-/** Download progress of one file, 0..1. */
 export function fileProgress(torrent: TorrentView | undefined, fileIndex: number): number {
   const file = fileOf(torrent, fileIndex);
   if (!file || file.length === 0) return 0;

@@ -1,5 +1,3 @@
-// The personal part of the home page: rows of titles picked for this user from what they rated and watched.
-
 import { useMemo } from "react";
 import type { Dismissal } from "../lib/account";
 import { t } from "../lib/i18n";
@@ -17,35 +15,24 @@ import {
 import { useAsync } from "../lib/useAsync";
 import { titleKey, useLibrary, type TrackEntry } from "./library";
 
-/** Liked titles looked up in the catalog; more adds requests without changing the picture much. */
 const likedSeedLimit = 10;
-/** Disliked titles looked up, to steer away from what resembles them. */
 const dislikedSeedLimit = 3;
-/** Dismissed recommendations looked up as well: the latest few say enough, and each costs a request. */
 const dismissedSeedLimit = 2;
 const forYouLimit = 20;
 const rowLimit = 18;
-/** Rows of the "because you liked X" kind. */
 const becauseRowLimit = 2;
 const genreRowLimit = 2;
-/** A person earns a row once this many liked titles share them. */
 const fewestTitlesForPersonRow = 2;
-/** Rows shorter than this look like a mistake rather than a recommendation. */
 const shortestRow = 5;
-/** Weighted catalog rating a title needs to appear in a "because you liked X" row. */
 const rowWorthyRating = 6.3;
-/** A personal rating from here up, or a finished title, reads as "liked"; below it the user is still watching. */
 const likedRating = 7;
 
-/** Genre ids that exist for series only under a combined id. */
 const seriesGenreIds: Record<number, number> = { 28: 10759, 12: 10759, 878: 10765, 14: 10765, 10752: 10768 };
-/** Film genres the series catalog does not have at all. */
 const filmOnlyGenres = new Set([27, 53, 10749, 36, 10402]);
 
 export interface FeedRow {
   id: string;
   title: string;
-  /** `note` under a card says why the title is there. */
   items: (MediaItem & { note?: string })[];
 }
 
@@ -69,7 +56,6 @@ function personTitle(person: PersonAffinity): string {
   return person.role === "director" ? t("feed.person.director", { name: person.name }) : t("feed.person.cast", { name: person.name });
 }
 
-/** Looks up the strongest signals in the catalog and assembles the rows. */
 async function buildFeed(
   tracked: Record<string, TrackEntry>,
   dismissed: Record<string, Dismissal>,
@@ -91,7 +77,6 @@ async function buildFeed(
   const profile = buildProfile(seeds);
   const genres = favoriteGenres(profile, genreRowLimit);
   const person = profile.people.find((candidate) => candidate.titles >= fewestTitlesForPersonRow) ?? null;
-  // Series get a genre row only if the user watches series more than films.
   const genreType: MediaType = profile.types.tv > profile.types.movie ? "tv" : "movie";
   const genreRequests = genres
     .filter((genre) => genreType === "movie" || !filmOnlyGenres.has(genre))
@@ -103,10 +88,8 @@ async function buildFeed(
     person ? tmdb.personFilms(person.id, person.role).catch(() => []) : Promise.resolve([]),
   ]);
 
-  // Anything the user already tracks, in any status, is not a recommendation; nor is what they turned down.
   const known = new Set([...Object.keys(tracked), ...Object.keys(dismissed)]);
   const shown = new Set<string>();
-  // Not tracked, not in an earlier row, and once only (a title can be both "recommended" and "similar").
   const fresh = <T extends MediaItem>(items: T[], limit: number): T[] => {
     const seen = new Set<string>();
     return items
@@ -140,8 +123,6 @@ async function buildFeed(
     push({
       id: `because:${titleKey(seed.signal.title.type, seed.signal.title.id)}`,
       title: becauseTitle(seed.signal, tracked[titleKey(seed.signal.title.type, seed.signal.title.id)]),
-      // The catalog's list runs long and thins out; only what is well rated belongs in a row of its own.
-      // Its looser "similar" list is left to the blended row above, where taste weighs it.
       items: fresh(bestRated(seed.source.recommendations, rowWorthyRating), rowLimit),
     });
   }
@@ -163,28 +144,19 @@ async function buildFeed(
 }
 
 export interface PersonalFeed {
-  /** The user has rated or watched enough for recommendations to exist. */
   available: boolean;
-  /** Null while the rows are being put together. */
   rows: FeedRow[] | null;
 }
 
-/**
- * Rows for the home page. They are rebuilt when the user's taste changes (a new rating, a
- * finished film), not on every saved playback position.
- */
 export function usePersonalFeed(): PersonalFeed {
   const tracked = useLibrary((state) => state.tracked);
   const loaded = useLibrary((state) => state.loaded);
   const dismissed = useLibrary((state) => state.dismissed);
-  // The age fade moves weights slowly; the day they are read on is precise enough and keeps this stable.
   const signals = useMemo(() => tasteSignals(tracked, Date.now()), [tracked]);
   const signature = useMemo(
     () => signals.map((signal) => `${titleKey(signal.title.type, signal.title.id)}=${signal.weight.toFixed(1)}`).join("|"),
     [signals],
   );
-  // A dismissal is not part of the signature on purpose: rebuilding would reshuffle every row under
-  // the user's cursor. The card is taken out below, and the next rebuild counts the dismissal in.
   const feed = useAsync(() => (loaded ? buildFeed(tracked, dismissed, signals) : Promise.resolve([])), [signature, loaded]);
   const rows = useMemo(
     () =>

@@ -1,6 +1,3 @@
-// Russian: the source dictionary. Every key defined here must exist in the other languages.
-// Keys ending in `.one`, `.few`, `.many`, `.other` are the forms of one message that depends on a number (see `tn`).
-
 export const ru = {
   "import.stopped": "Импорт остановлен",
   "settings.import": "Импорт из других сервисов",
@@ -222,6 +219,9 @@ export const ru = {
   "errors.trackerAuth": "Войдите на RuTracker, чтобы взять эту раздачу.",
   "errors.releaseUnavailable": "Не удалось получить раздачу с RuTracker. Попробуйте ещё раз или выберите другую.",
   "errors.trackerCancelled": "Окно RuTracker закрыто — раздача не получена.",
+  "player.mpv.installing": "Готовим плеер… {percent}%",
+  "journal.mpv.install": "Не удалось скачать плеер mpv",
+  "journal.mpv.play": "Плеер mpv не смог открыть фильм",
   "language.choose.title": "Выберите язык",
   "language.choose.note": "Его можно сменить в настройках.",
   "language.available": "{language}: есть",

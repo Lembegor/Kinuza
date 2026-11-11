@@ -19,7 +19,6 @@ const comparers: Record<Sort, (a: TrackEntry, b: TrackEntry) => number> = {
   title: (a, b) => a.title.localeCompare(b.title, currentLocale()),
 };
 
-/** "12 из 62 серий" for a series being watched; nothing when there is no progress to show. */
 function episodeNote(entry: TrackEntry, progress: Record<string, Progress>): string | undefined {
   if (entry.type !== "tv") return undefined;
   const watched = watchedEpisodeCount(progress, entry.id);

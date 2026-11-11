@@ -1,6 +1,3 @@
-// Keeps the tray icon matching the settings: present while "keep running in the tray" is on,
-// with its menu in the interface language.
-
 import { backend } from "../lib/backend";
 import { t } from "../lib/i18n";
 import { report } from "../lib/journal";

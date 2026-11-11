@@ -1,5 +1,3 @@
-// Parses SRT, WebVTT and ASS/SSA subtitles into plain timed cues.
-
 import { currentLocale, t, type MessageKey } from "./i18n";
 
 export interface Cue {
@@ -8,7 +6,6 @@ export interface Cue {
   text: string;
 }
 
-/** Subtitles in the wild are often Windows-1251; UTF-8 is tried first and must decode cleanly. */
 export function decodeSubtitleBytes(bytes: ArrayBuffer): string {
   try {
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
@@ -65,7 +62,6 @@ function parseAss(content: string): Cue[] {
     }
     if (!line.startsWith("Dialogue:") || fields.length === 0) continue;
 
-    // The text is the last field and may itself contain commas.
     const values = line.slice(9).split(",");
     const head = values.slice(0, fields.length - 1);
     const text = stripMarkup(values.slice(fields.length - 1).join(","));
@@ -81,14 +77,11 @@ export function parseSubtitles(content: string): Cue[] {
   return cues.sort((a, b) => a.start - b.start);
 }
 
-/** Cues are few thousand at most and usually overlap rarely, so a linear scan is enough. */
 export function activeCueText(cues: Cue[], time: number): string {
   const lines = cues.filter((cue) => time >= cue.start && time <= cue.end).map((cue) => cue.text);
-  // Some files carry a line twice (two events with one text); it is said once.
   return [...new Set(lines)].join("\n");
 }
 
-/** Language names in each interface language asked for so far. */
 const languageNamesByLocale = new Map<string, Intl.DisplayNames>();
 
 function languageNames(): Intl.DisplayNames {
@@ -101,7 +94,6 @@ function languageNames(): Intl.DisplayNames {
   return names;
 }
 
-/** Spellings that are not plain ISO 639-1/-3 codes: bibliographic codes and full English names. */
 const languageAliases: Record<string, string> = {
   rus: "ru", russian: "ru", eng: "en", english: "en", ukr: "uk", ukrainian: "uk",
   ger: "de", deu: "de", german: "de", fre: "fr", fra: "fr", french: "fr",
@@ -121,15 +113,11 @@ const subtitleFlags: Record<string, MessageKey> = {
   full: "player.subtitles.full",
 };
 
-/** Languages listed first in the subtitle menu. */
 const preferredLanguages = ["ru", "en"];
-/** With no video name to strip, only the tail of the file name is searched for a language. */
 const tailTokenCount = 2;
 
 export interface SubtitleLabel {
-  /** Language name, or the file name when the language is not recognised. */
   label: string;
-  /** Flags and format, e.g. "только надписи · SRT". */
   detail: string;
   languageCode: string | null;
 }
@@ -144,7 +132,6 @@ function toLanguageCode(token: string): string | null {
   }
 }
 
-/** Turns "Movie.ru.forced.srt" into "Русский" with the detail "только надписи · SRT". */
 export function describeSubtitleFile(fileName: string, videoFileName: string): SubtitleLabel {
   const extension = fileName.split(".").pop() ?? "";
   const stem = fileName.slice(0, fileName.length - extension.length - 1);

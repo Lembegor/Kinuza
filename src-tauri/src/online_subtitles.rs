@@ -1,11 +1,7 @@
-//! Subtitles from OpenSubtitles.com: a search by the catalog id of a film or episode, and the
-//! download of one result. The API key belongs to the app's developer and is passed in by the UI.
-
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const API_URL: &str = "https://api.opensubtitles.com/api/v1";
-/// The service requires every client to name itself.
 const USER_AGENT: &str = concat!("Kinuza v", env!("CARGO_PKG_VERSION"));
 const MAX_RESULTS: usize = 40;
 
@@ -16,21 +12,17 @@ const ERROR_UNAVAILABLE: &str = "subtitles_unavailable";
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubtitleQuery {
-    /// Catalog (TMDB) id of the film, or of the series for an episode.
     tmdb_id: u64,
     season: Option<u32>,
     episode: Option<u32>,
-    /// Two-letter codes, most wanted first.
     languages: Vec<String>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OnlineSubtitle {
-    /// What `online_subtitles_download` is asked for.
     file_id: u64,
     language: String,
-    /// The release the subtitles were timed to, as the uploader named it.
     release: String,
     downloads: u64,
     hearing_impaired: bool,
@@ -93,7 +85,6 @@ pub async fn online_subtitles_search(api_key: String, query: SubtitleQuery) -> R
         .collect())
 }
 
-/// The subtitle file's contents, in whatever encoding it was uploaded in.
 #[tauri::command]
 pub async fn online_subtitles_download(api_key: String, file_id: u64) -> Result<tauri::ipc::Response, String> {
     let client = client()?;

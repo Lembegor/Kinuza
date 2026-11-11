@@ -1,5 +1,3 @@
-// Controls for the user's list: watch status menu and the personal rating.
-
 import { useEffect, useRef, useState } from "react";
 import { Ban, Check, ChevronDown, Clock, Eye, ListPlus, Pause, Star, Trash2, type LucideIcon } from "lucide-react";
 import { useT } from "../lib/i18n";
@@ -13,7 +11,6 @@ export const statusIcons: Record<WatchStatus, LucideIcon> = {
   dropped: Ban,
 };
 
-/** Closes a popover on an outside click or Escape. */
 function useDismiss(open: boolean, close: () => void) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -108,7 +105,6 @@ export function RatingStars({ title }: { title: TitleRef }) {
               aria-label={t("library.rating.value", { value })}
               className={value <= shown ? "is-on" : ""}
               onMouseEnter={() => setHover(value)}
-              // Clicking the current rating again removes it.
               onClick={() => setRating(title, value === rating ? null : value)}
             >
               <Star size={19} fill={value <= shown ? "currentColor" : "none"} />
@@ -121,7 +117,6 @@ export function RatingStars({ title }: { title: TitleRef }) {
   );
 }
 
-/** Compact marker for poster cards: status icon and the personal rating. */
 export function TrackBadge({ type, id }: Pick<TitleRef, "type" | "id">) {
   const entry = useLibrary((state) => state.tracked[titleKey(type, id)]);
   const { t } = useT();

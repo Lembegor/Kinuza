@@ -1,7 +1,3 @@
-//! Registers Kinuza as the Windows handler for `magnet:` links and `.torrent` files (current user only).
-//!
-//! Turning it on remembers the handlers that were there before; turning it off puts them back.
-
 use anyhow::{Context, Result};
 use serde::Serialize;
 use winreg::{enums::HKEY_CURRENT_USER, RegKey};
@@ -21,7 +17,6 @@ const REGISTERED_APPLICATION_NAME: &str = "Kinuza";
 const PREVIOUS_MAGNET_COMMAND: &str = "MagnetCommand";
 const PREVIOUS_TORRENT_PROG_ID: &str = "TorrentProgId";
 
-/// Where Windows keeps a handler the user picked by hand; it wins over anything an app registers.
 const MAGNET_USER_CHOICE_KEY: &str =
     "Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\magnet\\UserChoice";
 const TORRENT_USER_CHOICE_KEY: &str =
@@ -31,9 +26,7 @@ const USER_CHOICE_PROG_ID: &str = "ProgId";
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AssociationStatus {
-    /// Kinuza is registered as the handler.
     pub enabled: bool,
-    /// The user chose another program in Windows settings, so Windows ignores the registration.
     pub overridden_by_windows: bool,
 }
 
@@ -67,7 +60,6 @@ pub fn enable() -> Result<()> {
     write_prog_id(&root, MAGNET_PROG_ID, "URL:Magnet link", true, &command, &icon)?;
     write_prog_id(&root, TORRENT_PROG_ID, "Torrent file", false, &command, &icon)?;
 
-    // The `magnet` class itself is what browsers look up.
     write_prog_id(&root, MAGNET_CLASS, "URL:Magnet link", true, &command, &icon)?;
 
     let (extension, _) = root.create_subkey(class_path(&[TORRENT_EXTENSION]))?;
@@ -75,7 +67,6 @@ pub fn enable() -> Result<()> {
     let (open_with, _) = extension.create_subkey(OPEN_WITH_KEY)?;
     open_with.set_value(TORRENT_PROG_ID, &"")?;
 
-    // Lets the user pick Kinuza in Windows "Default apps".
     let (capabilities, _) = root.create_subkey(CAPABILITIES_KEY)?;
     capabilities.set_value("ApplicationName", &"Kinuza")?;
     capabilities.set_value("ApplicationDescription", &"Kinuza media library and player")?;
@@ -138,7 +129,6 @@ pub fn disable() -> Result<()> {
     Ok(())
 }
 
-/// Saves whatever handled magnets and torrents before Kinuza, once, so `disable` can restore it.
 fn remember_previous_handlers(root: &RegKey, command: &str) -> Result<()> {
     let (previous, _) = root.create_subkey(PREVIOUS_HANDLERS_KEY)?;
 
@@ -194,7 +184,6 @@ fn current_exe() -> Result<String> {
         .into_owned())
 }
 
-/// The command Windows runs: the link or file path arrives as the first argument.
 fn open_command() -> Result<String> {
     Ok(format!("\"{}\" \"%1\"", current_exe()?))
 }

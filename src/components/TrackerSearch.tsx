@@ -1,5 +1,3 @@
-// Finds releases of a film or series on RuTracker and helps pick one: by resolution, voice-over, size and seeds.
-
 import { useEffect, useMemo, useState } from "react";
 import { ArrowUp, ExternalLink, HardDrive, LoaderCircle, Monitor, Search, Sparkles } from "lucide-react";
 import { animeInfo } from "../lib/anilist";
@@ -23,11 +21,9 @@ import { useSettings, type TrackerSort } from "../state/settings";
 import { useUi, type AddSourceTarget } from "../state/ui";
 import { LanguageFlags } from "./LanguageFlags";
 
-/** Topic pages opened per search to learn a resolution the title does not state. */
 const pageLookupLimit = 20;
 const anySeason = 0;
 
-/** Resolution chips, best first; `minRank` is the lowest vertical resolution that falls into the chip. */
 const resolutionFilters = [
   { id: "2160", label: "4K", minRank: 2000 },
   { id: "1080", label: "1080p", minRank: 1000 },
@@ -57,25 +53,17 @@ const voiceKindLabels: Record<VoiceKind, MessageKey> = {
   original: "tracker.voice.original",
 };
 
-/** The resolution aimed for when the user has not set a preferred quality: sharp, yet quick to start online. */
 const defaultWantedResolution = 1080;
-// How much each quality of a release counts when picking the best one.
 const scoreWeights = { resolution: 1.5, audio: 2, subtitles: 1.2, seeds: 0.8 };
 const unknownResolutionPenalty = 1.5;
-/** A release nobody is seeding will not play at all. */
 const noSeedsPenalty = 5;
 
-/** What the user would like a release to have. */
 interface Wanted {
   resolution: number;
   audio: string;
   subtitles: string;
 }
 
-/**
- * How good a pick a release is; higher is better. A resolution close to the wanted one, sound in
- * the wanted language (or at least subtitles to follow it by), and enough seeders to play.
- */
 function releaseScore(row: ReleaseRow, wanted: Wanted, originalLanguage: string): number {
   if (!row.isVideo) return -Infinity;
   const rank = qualityRank(row.resolution);
@@ -94,11 +82,9 @@ interface ReleaseRow {
   item: RutrackerItem;
   release: TrackerRelease;
   isVideo: boolean;
-  /** From the title, else from the topic page; empty while unknown. */
   resolution: string;
   pageSize: VideoSize | null;
   sizeBytes: number;
-  /** Seasons the release covers, inclusive; null when its title does not say. */
   seasons: [number, number] | null;
 }
 
@@ -107,7 +93,6 @@ function resolutionFilterOf(resolution: string): string | null {
   return resolutionFilters.find((filter) => rank >= filter.minRank)?.id ?? null;
 }
 
-/** A sound track in words, e.g. "Dubbed (HDrezka)" or "Multi-voice ×2"; a track of no known kind stays as the release writes it. */
 function audioTrackLabel(track: ReleaseAudioTrack): string {
   if (!track.kind) return track.raw;
   const count = track.count !== null ? ` ×${track.count}` : "";
@@ -115,7 +100,6 @@ function audioTrackLabel(track: ReleaseAudioTrack): string {
   return `${t(voiceKindLabels[track.kind])}${count}${detail}`;
 }
 
-/** The part of a series a release holds, as one line, e.g. "Season 2 · episodes 1–10 of 10". */
 function scopeLabel(scope: ReleaseScope): string {
   const { seasons, episodes } = scope;
   const seasonText = !seasons
@@ -126,7 +110,6 @@ function scopeLabel(scope: ReleaseScope): string {
   return [seasonText, episodes ? t("tracker.scope.episodes", episodes) : ""].filter(Boolean).join(" · ");
 }
 
-/** What to tell the user when a search fails; a code the app does not know is shown as it came. */
 function searchErrorText(failure: unknown): string {
   if (failure === rutrackerErrors.cancelled) return t("tracker.error.cancelled");
   if (failure === rutrackerErrors.timeout) return t("tracker.error.timeout");
@@ -140,14 +123,11 @@ function searchErrorText(failure: unknown): string {
   return failure;
 }
 
-/** What to type into the tracker's search for this title. */
 function defaultQuery(target: AddSourceTarget): string {
   const { title } = target;
   const original = target.originalTitle ?? "";
-  // Releases are named in Russian and in Latin script; a title in kanji or hangul finds nothing.
   const readable = /^[\p{Script=Latin}\p{Script=Cyrillic}\p{N}\p{P}\p{Zs}]+$/u.test(original);
   const name = readable ? original : title.title;
-  // A series runs for years, so its first year would hide the later seasons.
   return title.type === "movie" ? `${name} ${title.year}`.trim() : name;
 }
 
@@ -178,7 +158,6 @@ export function TrackerSearch({ target, onPick }: { target: AddSourceTarget; onP
 
   const prefs = useSettings((state) => state.trackerPrefs);
   const patchSettings = useSettings((state) => state.patch);
-  // Read at call time: two changes made before the next render must not undo each other.
   const setPrefs = (change: Partial<typeof prefs>) =>
     patchSettings({ trackerPrefs: { ...useSettings.getState().trackerPrefs, ...change } });
   const [season, setSeason] = useState(anySeason);
@@ -207,7 +186,6 @@ export function TrackerSearch({ target, onPick }: { target: AddSourceTarget; onP
   const [videoSizes, setVideoSizes] = useState<Record<string, VideoSize>>({});
   const [sizeLookupIds, setSizeLookupIds] = useState<ReadonlySet<string>>(new Set());
 
-  // A title often names the kind of copy but not its resolution; the release's own page usually does.
   useEffect(() => {
     const unresolved = items
       .filter((item) => {
@@ -226,7 +204,6 @@ export function TrackerSearch({ target, onPick }: { target: AddSourceTarget; onP
       .then((found) => {
         if (!stale) setVideoSizes(found);
       })
-      // The resolution is a convenience: without it the row shows a dash.
       .catch(() => undefined)
       .finally(() => {
         if (!stale) setSizeLookupIds(new Set());
@@ -254,7 +231,6 @@ export function TrackerSearch({ target, onPick }: { target: AddSourceTarget; onP
     [items, releases, videoSizes],
   );
 
-  // Everything except the resolution, so each resolution chip can show how many releases it would leave.
   const beforeResolution = useMemo(
     () =>
       rows.filter(
@@ -283,7 +259,6 @@ export function TrackerSearch({ target, onPick }: { target: AddSourceTarget; onP
       return [...matching].sort((a, b) => (scores.get(b.item.id) ?? 0) - (scores.get(a.item.id) ?? 0));
     }
     const direction = prefs.sort === "sizeDesc" ? -1 : 1;
-    // The search already comes ordered by seeds, which stays the tie-breaker.
     return [...matching].sort((a, b) => direction * (a.sizeBytes - b.sizeBytes));
   }, [beforeResolution, prefs.resolutions, prefs.sort, language, target.originalLanguage]);
 
@@ -306,16 +281,12 @@ export function TrackerSearch({ target, onPick }: { target: AddSourceTarget; onP
   };
 
   const pickItem = (item: RutrackerItem) => {
-    // The dialog shows the reading of the release and any failure from here on.
     setResolvingId(item.id);
     const release = rutracker.inspectRelease(item.id);
-    // A failure is shown by the dialog; the list becomes usable again for another pick.
     release.catch(() => undefined).finally(() => setResolvingId(null));
     onPick(release, item.id);
   };
 
-  // Anime releases are titled in romaji, which the catalog does not carry: "Shingeki no Kyojin",
-  // not the translated name. The other names are offered as one-click searches.
   const anime = useAsync(
     () =>
       target.originalLanguage === "ja"
@@ -335,7 +306,6 @@ export function TrackerSearch({ target, onPick }: { target: AddSourceTarget; onP
 
   const submitSearch = (event: React.FormEvent) => {
     event.preventDefault();
-    // The same query again is a retry: the effect above only reacts to a changed one.
     if (queryInput === activeQuery) void fetchResults();
     else setActiveQuery(queryInput);
   };
@@ -488,7 +458,6 @@ export function TrackerSearch({ target, onPick }: { target: AddSourceTarget; onP
   );
 }
 
-/** The release's resolution: from its title, else from its page, else a dash. */
 function TrackerResolution({ row, loading }: { row: ReleaseRow; loading: boolean }) {
   const { t } = useT();
   if (row.release.resolution) {
@@ -532,9 +501,7 @@ function TrackerItem({
   onPick,
 }: {
   row: ReleaseRow;
-  /** The release the app would pick itself: marked so the choice takes one glance. */
   best: boolean;
-  /** Two-letter code of the language the title was made in; what an unnamed "original" track is in. */
   originalLanguage: string;
   locale: string;
   pageSizeLoading: boolean;
@@ -575,7 +542,6 @@ function TrackerItem({
             </span>
           </div>
         </div>
-        {/* Music, games and other releases have no picture or voice-over details: their title is shown as it is. */}
         <strong className={`tracker-item__name ${isVideo ? "" : "tracker-item__name--full"}`} title={item.title}>
           {isVideo ? release.name : item.title}
         </strong>

@@ -1,5 +1,3 @@
-//! Tauri commands called from the UI. Errors cross the bridge as short machine-readable strings.
-
 use std::path::PathBuf;
 
 use librqbit::AddTorrent;
@@ -14,9 +12,7 @@ use crate::{
     AppState,
 };
 
-/// Subtitle files are small; anything bigger is refused instead of being pushed through the bridge.
 const MAX_READABLE_FILE_BYTES: u64 = 8 * 1024 * 1024;
-/// Torrent files are fetched over HTTP only from the Internet Archive.
 const ARCHIVE_TORRENT_PREFIX: &str = "https://archive.org/download/";
 
 type CommandResult<T> = Result<T, String>;
@@ -67,7 +63,6 @@ pub async fn torrent_inspect(
     state.engine.inspect(source).await.map_err(to_message)
 }
 
-/// A magnet link, or the address of a torrent file hosted by the Internet Archive.
 fn is_supported_link(link: &str) -> bool {
     link.to_ascii_lowercase().starts_with("magnet:?") || link.starts_with(ARCHIVE_TORRENT_PREFIX)
 }
@@ -136,13 +131,11 @@ pub async fn torrent_select_files(
         .map_err(to_message)
 }
 
-/// Ends an online viewing of a torrent: the data fetched for it is deleted.
 #[tauri::command]
 pub async fn torrent_release(state: State<'_, AppState>, info_hash: String) -> CommandResult<()> {
     state.engine.release_online(&info_hash).await.map_err(to_message)
 }
 
-/// Applies the speed limits, the download queue size and the seeding limit from the settings.
 #[tauri::command]
 pub fn torrent_set_policy(state: State<'_, AppState>, policy: crate::engine::DownloadPolicy) {
     state.engine.set_policy(policy);
@@ -151,14 +144,11 @@ pub fn torrent_set_policy(state: State<'_, AppState>, policy: crate::engine::Dow
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StorageInfo {
-    /// Free space on the disk that holds the download folder.
     free_bytes: u64,
     total_bytes: u64,
-    /// Space taken by what was watched online and is kept for the next viewing.
     cache_bytes: u64,
 }
 
-/// Free and total space of the disk downloads go to.
 #[tauri::command]
 pub fn storage_info(state: State<'_, AppState>, download_dir: Option<String>) -> CommandResult<StorageInfo> {
     let folder = download_dir
@@ -170,7 +160,6 @@ pub fn storage_info(state: State<'_, AppState>, download_dir: Option<String>) ->
     Ok(info)
 }
 
-/// Deletes what was kept from online viewings, except the film playing now. Returns the bytes freed.
 #[tauri::command]
 pub async fn stream_cache_clear(state: State<'_, AppState>) -> CommandResult<u64> {
     Ok(state.engine.clear_cache().await)
@@ -181,11 +170,9 @@ fn disk_space(folder: &std::path::Path) -> Option<StorageInfo> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
 
-    // The folder may not exist yet; its nearest existing parent is on the same disk.
     let existing = folder.ancestors().find(|path| path.exists())?;
     let wide: Vec<u16> = existing.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
     let (mut free, mut total) = (0u64, 0u64);
-    // SAFETY: `wide` is a NUL-terminated path that outlives the call; the out pointers are valid u64s.
     let ok = unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut free, &mut total, std::ptr::null_mut()) };
     (ok != 0).then_some(StorageInfo { free_bytes: free, total_bytes: total, cache_bytes: 0 })
 }
@@ -195,7 +182,6 @@ fn disk_space(_folder: &std::path::Path) -> Option<StorageInfo> {
     None
 }
 
-/// Saves text to a file the user chose in a save dialog (a backup of their lists, a log).
 #[tauri::command]
 pub fn write_text_file(path: String, contents: String) -> CommandResult<()> {
     std::fs::write(&path, contents).map_err(|_| "file_unwritable".to_owned())
@@ -214,7 +200,6 @@ pub fn file_location(
         .map_err(to_message)
 }
 
-/// Opens a torrent file in an installed desktop player (for formats the built-in player cannot decode).
 #[tauri::command]
 pub async fn open_external(
     state: State<'_, AppState>,
@@ -228,7 +213,6 @@ pub async fn open_external(
         .await
         .map_err(to_message)?;
 
-    // A finished file is opened from disk; an unfinished one is streamed so playback can start now.
     let target = if state.engine.is_file_complete(&info_hash, file_index) {
         state
             .engine
@@ -256,7 +240,6 @@ pub fn read_file_bytes(path: String) -> CommandResult<tauri::ipc::Response> {
     Ok(tauri::ipc::Response::new(bytes))
 }
 
-/// Returns the link the app was started with, once.
 #[tauri::command]
 pub fn take_launch_request(state: State<'_, AppState>) -> Option<LaunchRequest> {
     state.pending_launch.lock().ok()?.take()
@@ -267,7 +250,6 @@ pub fn associations_status() -> AssociationStatus {
     associations::status()
 }
 
-/// Makes Kinuza the handler of magnet links and .torrent files, or gives them back.
 #[tauri::command]
 pub fn associations_set(enabled: bool) -> CommandResult<AssociationStatus> {
     let result = if enabled {
@@ -279,7 +261,6 @@ pub fn associations_set(enabled: bool) -> CommandResult<AssociationStatus> {
     Ok(associations::status())
 }
 
-/// Opens the Windows page where the user picks default programs.
 #[tauri::command]
 pub fn open_default_apps_settings() -> CommandResult<()> {
     std::process::Command::new("explorer.exe")

@@ -1,5 +1,3 @@
-// In-app updates: check the release feed, download the signed installer, restart into the new version.
-
 import { create } from "zustand";
 import { isDesktop } from "../lib/backend";
 import { report } from "../lib/journal";
@@ -11,7 +9,6 @@ interface UpdaterState {
   status: UpdateStatus;
   version: string;
   notes: string;
-  /** Download progress, 0..1. */
   progress: number;
   dismissed: boolean;
   check: () => Promise<void>;
@@ -61,8 +58,6 @@ export const useUpdater = create<UpdaterState>((set, get) => ({
         }
         if (event.event === "Finished") set({ status: "installing", progress: 1 });
       });
-      // The installer closes the app by itself, without the usual goodbye: what has been watched
-      // and rated is written down first.
       await flushLibrary().catch((error) => report("updates", "journal.close.failed", error));
       await pending.install();
       const { relaunch } = await import("@tauri-apps/plugin-process");

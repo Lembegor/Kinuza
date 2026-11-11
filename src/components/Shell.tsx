@@ -1,12 +1,10 @@
-// Window chrome: title bar with search and window buttons, side navigation.
-
 import { useEffect, useRef, useState } from "react";
 import { NavLink, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { ArrowLeft, ArrowRight, CalendarDays, Copy, Download, House, LayoutGrid, ListVideo, Minus, Search, Settings, Square, X } from "lucide-react";
 import { isDesktop } from "../lib/backend";
 import { useT } from "../lib/i18n";
 import { useBrowse } from "../state/browse";
-import { useTorrents } from "../state/torrents";
+import { isActiveDownload, useTorrents } from "../state/torrents";
 
 const searchDebounceMs = 350;
 
@@ -63,7 +61,6 @@ function SearchBox() {
   const [value, setValue] = useState(onSearchPage ? (params.get("q") ?? "") : "");
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // Leaving the search page clears the box so it never shows a stale query.
   useEffect(() => {
     if (!onSearchPage) setValue("");
   }, [onSearchPage]);
@@ -143,10 +140,7 @@ export function Titlebar() {
 
 export function Sidebar() {
   const { t } = useT();
-  const activeDownloads = useTorrents(
-    (state) => state.list.filter((torrent) => !torrent.finished && torrent.state !== "paused").length,
-  );
-  // The catalog reopens with the filters it was left with.
+  const activeDownloads = useTorrents((state) => state.list.filter(isActiveDownload).length);
   const browseSearch = useBrowse((state) => state.search);
 
   return (

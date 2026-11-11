@@ -1,5 +1,3 @@
-//! Loopback HTTP server that lets the player read torrent files with Range requests while they download.
-
 use std::{io::SeekFrom, sync::Arc};
 
 use axum::{
@@ -19,50 +17,36 @@ use crate::{engine::Engine, ffmpeg};
 
 const STREAM_CHUNK_BYTES: usize = 256 * 1024;
 const AUDIO_CHUNK_BYTES: usize = 16 * 1024;
-/// Converted audio waiting to be sent; FFmpeg pauses when the player has enough buffered.
 const AUDIO_QUEUE_CHUNKS: usize = 32;
-/// Stereo AAC at this rate is transparent for film soundtracks.
 const AUDIO_BITRATE: &str = "192k";
-/// Converted video keeps its proportions and is never taller than Full HD.
 const CONVERTED_PICTURE: &str = "scale=-2:'min(1080,ih)'";
-/// A keyframe at least this often (in frames): playback can only begin on one.
 const CONVERTED_KEYFRAME_GAP: &str = "48";
-/// The longest stretch of subtitles read in one request.
 const MAX_SUBTITLE_WINDOW_SECONDS: f64 = 900.0;
-/// A stretch of film is found in the file by its share of the running time; films are not
-/// evenly dense, so this much more of the file is allowed on top, as a share and in bytes.
 const SUBTITLE_READ_MARGIN: f64 = 1.25;
 const SUBTITLE_READ_EXTRA_BYTES: u64 = 32 * 1024 * 1024;
-/// The end of a file holds its index, which a limited reader must still be able to reach.
 const INDEX_TAIL_BYTES: u64 = 48 * 1024 * 1024;
 
 #[derive(Clone)]
 struct ServerState {
     engine: Arc<Engine>,
     token: Arc<str>,
-    /// This server's own address, for FFmpeg to read the torrent file through.
     base_url: Arc<str>,
     data_dir: Arc<std::path::Path>,
 }
 
 #[derive(Deserialize)]
 struct StreamQuery {
-    /// Last byte a reader may have, apart from the index at the end of the file. Lets a helper
-    /// that would otherwise read on to the end be stopped where its work is done.
     until: Option<u64>,
 }
 
 #[derive(Deserialize)]
 struct AudioQuery {
-    /// Position among the file's audio tracks, from zero.
     #[serde(default)]
     track: usize,
-    /// Where in the film the audio should begin, in seconds.
     #[serde(default)]
     start: f64,
 }
 
-/// Starts the server on a random loopback port and returns the base URL, including the access token.
 pub async fn start(engine: Arc<Engine>, token: String, data_dir: std::path::PathBuf) -> anyhow::Result<String> {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
     let port = listener.local_addr()?.port();
@@ -104,8 +88,6 @@ async fn stream_file(
     }
 }
 
-/// One audio track of a torrent file as stereo AAC, starting at `start` seconds. The response
-/// lasts as long as the player keeps reading; when it stops, FFmpeg is stopped too.
 async fn stream_audio(
     State(state): State<ServerState>,
     Path((token, info_hash, file_index)): Path<(String, String, usize)>,
@@ -142,7 +124,6 @@ async fn stream_audio(
             match output.read(&mut buffer).await {
                 Ok(0) | Err(_) => break,
                 Ok(read) => {
-                    // The player went away (a seek, another track, the film closed).
                     if sender.send(Ok(bytes::Bytes::copy_from_slice(&buffer[..read]))).await.is_err() {
                         break;
                     }
@@ -161,16 +142,12 @@ async fn stream_audio(
 
 #[derive(Deserialize)]
 struct ConvertedQuery {
-    /// Position among the file's audio tracks, from zero.
     #[serde(default)]
     audio: usize,
-    /// Where in the film to begin, in seconds.
     #[serde(default)]
     start: f64,
 }
 
-/// Picture and sound of a file the player cannot decode, converted as they play to H.264 and AAC
-/// in a container the player takes as a stream. It begins at `start`; seeking means asking again.
 async fn stream_converted(
     State(state): State<ServerState>,
     Path((token, info_hash, file_index)): Path<(String, String, usize)>,
@@ -191,11 +168,9 @@ async fn stream_converted(
 
     let spawned = ffmpeg::command(&executable)
         .args(["-loglevel", "error", "-ss", &start, "-i", &input, "-map", "0:v:0", "-map", &audio, "-sn", "-dn"])
-        // Players expect 8-bit 4:2:0; taller than Full HD only costs speed here.
         .args(["-vf", CONVERTED_PICTURE, "-pix_fmt", "yuv420p", "-c:v", encoder])
         .args(quality)
         .args(["-g", CONVERTED_KEYFRAME_GAP, "-c:a", "aac", "-ac", "2", "-b:a", AUDIO_BITRATE])
-        // A file made of small self-contained pieces can be played while it is still being written.
         .args(["-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -233,20 +208,14 @@ async fn stream_converted(
 
 #[derive(Deserialize)]
 struct SubtitleQuery {
-    /// Position among the file's subtitle tracks, from zero.
     #[serde(default)]
     track: usize,
-    /// Start of the stretch of film wanted, in seconds.
     #[serde(default)]
     start: f64,
-    /// Length of the stretch, in seconds.
     duration: f64,
-    /// Running time of the whole film, in seconds.
     length: f64,
 }
 
-/// A stretch of one embedded subtitle track as SRT text, with times counted from `start`.
-/// Subtitles are scattered through the file, so only the stretch about to be watched is read.
 async fn read_subtitles(
     State(state): State<ServerState>,
     Path((token, info_hash, file_index)): Path<(String, String, usize)>,
@@ -264,9 +233,6 @@ async fn read_subtitles(
         Ok(Some(total)) => total,
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
-    // Subtitle lines are sparse, so nothing in them tells FFmpeg that the stretch is over: left
-    // alone it reads on to the end of the file, and online that means downloading the whole film.
-    // It is given a file that ends where the stretch does instead.
     let start_seconds = query.start.max(0.0);
     let end_seconds = start_seconds + query.duration.clamp(1.0, MAX_SUBTITLE_WINDOW_SECONDS);
     let share = if query.length > 0.0 { (end_seconds / query.length).min(1.0) } else { 1.0 };
@@ -275,8 +241,6 @@ async fn read_subtitles(
     let start = format!("{start_seconds:.3}");
     let track = format!("0:s:{}", query.track);
 
-    // Sent line by line as FFmpeg reaches them: while watching online the stretch arrives from the
-    // network piece by piece, and the lines about to be spoken must not wait for its end.
     let spawned = ffmpeg::command(&executable)
         .args(["-loglevel", "error", "-ss", &start, "-i", &input, "-map", &track, "-flush_packets", "1", "-f", "srt", "pipe:1"])
         .stdout(std::process::Stdio::piped())
@@ -296,7 +260,6 @@ async fn read_subtitles(
             match output.read(&mut buffer).await {
                 Ok(0) | Err(_) => break,
                 Ok(read) => {
-                    // The player moved elsewhere in the film and dropped the request.
                     if sender.send(Ok(bytes::Bytes::copy_from_slice(&buffer[..read]))).await.is_err() {
                         break;
                     }
@@ -342,7 +305,6 @@ async fn serve_range(
         .and_then(|value| value.to_str().ok())
         .and_then(|value| parse_range(value, total));
 
-    // A limited reader gets the file up to its limit and the index at the very end, nothing in between.
     let requested = match (requested, until) {
         (Some((start, end)), Some(until)) => {
             let tail_start = total.saturating_sub(INDEX_TAIL_BYTES);
@@ -380,7 +342,6 @@ async fn serve_range(
     Ok((status, response_headers, body).into_response())
 }
 
-/// Parses a single `bytes=start-end` range; returns inclusive bounds clamped to the file.
 fn parse_range(value: &str, total: u64) -> Option<(u64, u64)> {
     if total == 0 {
         return None;
@@ -390,7 +351,6 @@ fn parse_range(value: &str, total: u64) -> Option<(u64, u64)> {
     let last = total - 1;
 
     if start_text.is_empty() {
-        // Suffix form: the last N bytes.
         let suffix: u64 = end_text.parse().ok()?;
         return Some((total.saturating_sub(suffix), last));
     }

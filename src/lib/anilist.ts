@@ -1,39 +1,26 @@
-// AniList: what the general catalog does not know about anime — the romaji name releases are
-// published under, and the parts of a franchise (seasons, films, OVAs) in the order they came out.
-// The catalog keeps a whole anime as one series; fans and trackers name every part separately.
-// Open API, no key; only the title being looked up is sent.
-
 const endpoint = "https://graphql.anilist.co";
-/** Rounds of following prequels and sequels; each is one request and reaches one part further. */
 const maxRounds = 8;
-/** A franchise longer than this is shown up to here. */
 const maxParts = 30;
 const searchCandidates = 8;
 
 export type AnimeFormat = "TV" | "TV_SHORT" | "MOVIE" | "OVA" | "ONA" | "SPECIAL";
 const shownFormats: ReadonlySet<string> = new Set<AnimeFormat>(["TV", "TV_SHORT", "MOVIE", "OVA", "ONA", "SPECIAL"]);
-/** Relations that continue the story; a part reached through them is looked at for more. */
 const storyRelations: ReadonlySet<string> = new Set(["PREQUEL", "SEQUEL", "PARENT"]);
-/** Relations worth showing but not following: their own side stories would lead away from the franchise. */
 const sideRelations: ReadonlySet<string> = new Set(["SIDE_STORY", "SUMMARY"]);
 
 export interface AnimePart {
   id: number;
-  /** The name in Latin script, as releases are titled. */
   romaji: string;
   english: string;
   format: AnimeFormat;
-  /** "2013-04-07"; shorter or empty when the date is not fully known. */
   startDate: string;
   year: number | null;
   cover: string | null;
-  /** How many episodes; null while it is airing or unknown. */
   episodes: number | null;
 }
 
 export interface AnimeInfo {
   current: AnimePart;
-  /** Every part found, the current one included, earliest first. */
   parts: AnimePart[];
 }
 
@@ -78,13 +65,11 @@ function toPart(raw: RawMedia): AnimePart | null {
 }
 
 export interface AnimeQuery {
-  /** Names to try, the most exact first: the original one, then the English one. */
   names: string[];
   type: "movie" | "tv";
   year: number | null;
 }
 
-/** The entry that is this title: the right kind, and from the same year give or take one. */
 async function findEntry({ names, type, year }: AnimeQuery): Promise<RawMedia | null> {
   for (const name of names.filter(Boolean)) {
     const data = await ask<{ Page: { media: RawMedia[] } }>(
@@ -103,7 +88,6 @@ async function findEntry({ names, type, year }: AnimeQuery): Promise<RawMedia | 
 
 const cache = new Map<string, Promise<AnimeInfo | null>>();
 
-/** What AniList knows about a title; null when it has no such anime. Answers are kept for the session. */
 export function animeInfo(query: AnimeQuery): Promise<AnimeInfo | null> {
   const key = JSON.stringify(query);
   const cached = cache.get(key);
@@ -139,7 +123,6 @@ async function loadAnime(query: AnimeQuery): Promise<AnimeInfo | null> {
     frontier = data.Page.media;
   }
 
-  // Undated parts are announcements; they go last.
   const ordered = [...parts.values()].sort((a, b) => (a.startDate || "9999").localeCompare(b.startDate || "9999")).slice(0, maxParts);
   return { current, parts: ordered };
 }

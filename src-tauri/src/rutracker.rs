@@ -1,8 +1,3 @@
-// RuTracker закрыт Cloudflare, который отсекает обычные HTTP-клиенты по TLS-отпечатку.
-// Поэтому страницы форума загружает настоящий WebView в скрытом окне, а данные из DOM
-// достаёт скрипт, результат которого возвращается в Rust через `eval_with_callback`.
-// Окно показывается только когда нужен пользователь: для входа и проверки Cloudflare.
-
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -19,29 +14,18 @@ const FORUM_HOST: &str = "rutracker.net";
 const WORKER_WINDOW_LABEL: &str = "rutracker-worker";
 const MAIN_WINDOW_LABEL: &str = "main";
 const PARKING_URL: &str = "about:blank";
-/// Настоящие запросы нумеруются с единицы; ноль отмечает ответы на опрос при парковке окна.
 const PARKING_REQUEST_ID: u64 = 0;
 const PARKING_PROBE_INTERVAL: Duration = Duration::from_millis(50);
 const PARKING_TIMEOUT: Duration = Duration::from_secs(2);
-/// Сколько ждать страницу, пока окно скрыто. Когда окно показано, ждём пользователя без ограничения.
 const HIDDEN_PAGE_TIMEOUT: Duration = Duration::from_secs(30);
-/// Как часто спрашивать страницу о её состоянии. Событие полной загрузки не годится:
-/// оно ждёт всех картинок и рекламы, а разметка с результатами готова намного раньше.
 const PROBE_INTERVAL: Duration = Duration::from_millis(400);
-/// Проверка Cloudflare обычно проходит сама за пару секунд; окно показываем, только если она затянулась.
 const CHALLENGE_GRACE: Duration = Duration::from_secs(6);
-/// Помечает текущий документ устаревшим перед переходом, чтобы опрос не принял его за новую страницу.
 const MARK_STALE_SCRIPT: &str = "window.__kinuzaStale = true;";
-/// Одна страница выдачи трекера.
 const MAX_SEARCH_RESULTS: usize = 50;
-/// Сколько страниц раздач открывать за один запрос размеров кадра.
 const MAX_SIZE_LOOKUPS: usize = 20;
-/// Параметры `tracker.php`: сортировать по числу сидов (`o=10`) по убыванию (`s=2`).
 const SEARCH_ORDER: &str = "o=10&s=2";
 const MAGNET_PREFIX: &str = "magnet:?xt=urn:btih:";
-/// .torrent раздачи скачать не удалось (форум ответил не файлом).
 const ERROR_TORRENT_FILE: &str = "torrent_file_unavailable";
-/// Сколько страниц раздач запрашивать одновременно: больше — быстрее, но похоже на атаку на сайт.
 const PARALLEL_TOPIC_FETCHES: usize = 4;
 const TOPIC_FETCH_TIMEOUT: Duration = Duration::from_secs(8);
 
@@ -49,14 +33,10 @@ const ERROR_AUTH_REQUIRED: &str = "auth_required";
 const ERROR_CANCELLED: &str = "cancelled";
 const ERROR_TIMEOUT: &str = "timeout";
 const ERROR_MAGNET_NOT_FOUND: &str = "magnet_not_found";
-/// Ошибки поиска уходят в интерфейс кодами: текст для них пишется там, на языке пользователя.
 const ERROR_PARSE_FAILED: &str = "tracker_parse_failed";
 const ERROR_MARKUP_CHANGED: &str = "tracker_markup_changed";
-/// За двоеточием следует заголовок страницы, которую открыл сайт.
 const ERROR_UNEXPECTED_PAGE: &str = "tracker_unexpected_page";
 
-/// Выполняется в странице форума и возвращает её состояние, либо `null`, пока страница не готова.
-/// `__EXTRACT__` заменяется функцией, достающей из DOM данные конкретного запроса.
 const PROBE_SCRIPT: &str = r##"(() => {
   if (window.__kinuzaStale || location.hostname !== "__HOST__" || document.readyState === "loading") return null;
   const challenge = typeof window._cf_chl_opt !== "undefined"
@@ -94,8 +74,6 @@ const SEARCH_EXTRACTOR: &str = r##"() => {
   };
 }"##;
 
-// Ссылка целиком, с адресами трекера (`&tr=`): без них раздачу можно искать только через DHT,
-// а он на RuTracker находит одного-двух участников вместо десятков.
 const MAGNET_EXTRACTOR: &str = r##"() => {
   const link = document.querySelector('a.magnet-link[href^="magnet:"], a[href^="magnet:"]');
   if (link) return link.getAttribute('href');
@@ -103,11 +81,6 @@ const MAGNET_EXTRACTOR: &str = r##"() => {
   return match ? match[0].replace(/&amp;/g, '&') : null;
 }"##;
 
-/// Скачивает .torrent раздачи `__ID__` так, как его получает вошедший пользователь (`dl.php`).
-/// В таком файле адрес трекера личный (с ключом пользователя), и трекер отдаёт по нему полный
-/// список раздающих; анонимный адрес из magnet-ссылки отдаёт одни и те же три десятка участников,
-/// почти все за NAT. Так раздачи берёт и qBittorrent. Файл приходит шестнадцатеричной строкой:
-/// вызов скрипта возвращает только JSON.
 const TORRENT_FILE_EXTRACTOR: &str = r##"() => {
   const job = (window.__kinuzaTorrent__ID__ ||= { started: false, done: false, data: null, error: null });
   if (!job.started) {
@@ -116,7 +89,6 @@ const TORRENT_FILE_EXTRACTOR: &str = r##"() => {
       try {
         const response = await fetch("dl.php?t=__ID__", { credentials: "same-origin", signal: AbortSignal.timeout(__FETCH_TIMEOUT_MS__) });
         const bytes = new Uint8Array(await response.arrayBuffer());
-        // Файл .torrent начинается со словаря ("d"); вместо него может прийти страница с отказом.
         if (!response.ok || bytes.length === 0 || bytes[0] !== 0x64) {
           job.error = "not_a_torrent:" + response.status;
           return;
@@ -134,10 +106,6 @@ const TORRENT_FILE_EXTRACTOR: &str = r##"() => {
   return job.done ? { pending: false, data: job.data, error: job.error } : { pending: true };
 }"##;
 
-/// Читает размер кадра со страниц раздач `__IDS__`. Открыта страница первой из них; остальные
-/// страница запрашивает сама через `fetch`, по несколько за раз, и разбирает их HTML.
-/// Работа асинхронная, а скрипт опроса обязан ответить сразу: первый вызов запускает её,
-/// следующие возвращают `pending`, пока она не закончится.
 const VIDEO_SIZES_EXTRACTOR: &str = r##"() => {
   const job = (window.__kinuzaVideoSizes ||= { started: false, done: false, sizes: {} });
   if (!job.started) {
@@ -145,7 +113,6 @@ const VIDEO_SIZES_EXTRACTOR: &str = r##"() => {
     const ids = __IDS__;
     const sizeIn = (text) => {
       const anywhere = [text];
-      // Размер из строки «Видео: …» надёжнее случайного «640x480» в описании.
       const videoLines = [...text.matchAll(/Видео\s*:/gi)].map((match) => text.slice(match.index, match.index + 240));
       for (const scope of [...videoLines, ...anywhere]) {
         for (const match of scope.matchAll(/(\d{3,4})\s?[xх×*]\s?(\d{3,4})/g)) {
@@ -181,7 +148,6 @@ const VIDEO_SIZES_EXTRACTOR: &str = r##"() => {
   return job.done ? { pending: false, sizes: job.sizes } : { pending: true };
 }"##;
 
-/// Вход не требует данных со страницы: достаточно знать, гость на ней пользователь или нет.
 const NO_EXTRACTOR: &str = "() => null";
 
 #[derive(Serialize, Clone)]
@@ -199,7 +165,6 @@ pub struct RutrackerItem {
 struct SearchPage {
     title: String,
     is_search_page: bool,
-    /// Строк в таблице результатов. Пустая выдача — это одна строка «Не найдено».
     row_count: usize,
     items: Vec<ScrapedItem>,
 }
@@ -212,7 +177,6 @@ struct ScrapedItem {
     seeds: u32,
 }
 
-/// Размер кадра видео в пикселях.
 #[derive(Serialize, Deserialize, Clone, Copy)]
 pub struct VideoSize {
     pub width: u32,
@@ -226,18 +190,14 @@ struct VideoSizeLookup {
     sizes: HashMap<String, VideoSize>,
 }
 
-/// То, что скрипт сообщил о загруженной странице.
 #[derive(Deserialize)]
 struct PageReport {
-    /// Страница — проверка Cloudflare, а не форум.
     challenge: bool,
-    /// Пользователь не вошёл в аккаунт.
     guest: bool,
     data: Value,
 }
 
 impl PageReport {
-    /// Результат `eval_with_callback` — JSON-значение выражения, то есть строка с JSON внутри.
     fn parse(raw: &str) -> Option<Self> {
         let json: String = serde_json::from_str(raw).ok()?;
         serde_json::from_str(&json).ok()
@@ -253,7 +213,6 @@ struct Worker {
     window: WebviewWindow,
     signals: UnboundedReceiver<Signal>,
     sender: UnboundedSender<Signal>,
-    /// Окно уничтожено: воркер нужно создать заново.
     closed: bool,
 }
 
@@ -268,8 +227,6 @@ impl Worker {
             .visible(false)
             .focused(false);
 
-        // WebView2 не создаст окно в том же профиле, если аргументы браузера отличаются
-        // от аргументов главного окна, поэтому берём их из конфига.
         let main_browser_args = app
             .config()
             .app
@@ -295,7 +252,6 @@ impl Worker {
             }
         });
 
-        // Скрытое окно не должно удерживать приложение запущенным после закрытия главного.
         if let Some(main) = main {
             let worker_window = window.clone();
             main.on_window_event(move |event| {
@@ -308,7 +264,6 @@ impl Worker {
         Ok(Self { window, signals, sender, closed: false })
     }
 
-    /// Отбрасывает сигналы прошлого запроса. Возвращает `false`, если окно успели закрыть.
     fn discard_pending(&mut self) -> bool {
         while let Ok(signal) = self.signals.try_recv() {
             if matches!(signal, Signal::Closed) {
@@ -324,9 +279,6 @@ impl Worker {
         let _ = self.window.set_focus();
     }
 
-    /// Прячет окно и уводит его с форума, чтобы страница не работала в фоне.
-    /// Дожидается, пока пустая страница действительно откроется: иначе этот переход
-    /// отменяет переход следующего запроса, если тот приходит сразу следом.
     async fn park(&mut self) {
         let _ = self.window.hide();
         let _ = self.window.navigate(PARKING_URL.parse().expect("valid parking url"));
@@ -358,8 +310,6 @@ impl Worker {
         }
     }
 
-    /// Опрашивает страницу и передаёт её состояние в `on_page`, пока тот не вернёт результат.
-    /// Проверку Cloudflare в `on_page` не передаёт: ждёт, пока она пройдёт, и показывает окно, если затянулась.
     async fn drive<T>(
         &mut self,
         request_id: u64,
@@ -377,7 +327,6 @@ impl Worker {
             tokio::select! {
                 _ = probe_timer.tick() => {
                     if !visible && Instant::now() >= hidden_deadline {
-                        // Страница могла зависнуть на полпути: следующий запрос начнёт с чистого окна.
                         let _ = self.window.destroy();
                         self.closed = true;
                         return Err(ERROR_TIMEOUT.to_owned());
@@ -434,8 +383,6 @@ impl RutrackerState {
         Self { worker: None, last_request_id: 0 }
     }
 
-    /// Открывает `url` в окне-воркере и возвращает то, что `on_page` решит по загруженной странице.
-    /// `visible` — показать окно сразу (вход), а не только при проверке Cloudflare.
     async fn request<T>(
         &mut self,
         app: &AppHandle,
@@ -500,7 +447,6 @@ fn parse_search_page(data: Value) -> Result<Vec<RutrackerItem>, String> {
     if !page.is_search_page {
         return Err(format!("{ERROR_UNEXPECTED_PAGE}:{}", page.title));
     }
-    // Строки есть, а раздач в них не нашлось: разметка сайта изменилась, и это не «ничего не найдено».
     if page.items.is_empty() && page.row_count > 1 {
         return Err(ERROR_MARKUP_CHANGED.to_owned());
     }
@@ -518,14 +464,11 @@ fn parse_search_page(data: Value) -> Result<Vec<RutrackerItem>, String> {
         })
         .collect();
 
-    // Сайт уже сортирует выдачу по сидам; повторяем здесь, чтобы порядок не зависел от его параметров.
     items.sort_by(|a, b| b.seeds.cmp(&a.seeds));
     items.truncate(MAX_SEARCH_RESULTS);
     Ok(items)
 }
 
-/// Показывает страницу входа форума и ждёт, пока пользователь войдёт.
-/// Сессия остаётся в профиле WebView, поэтому переживает перезапуск приложения.
 #[tauri::command]
 pub async fn rutracker_login_window(
     app: AppHandle,
@@ -544,7 +487,6 @@ pub async fn rutracker_search(
     state: tauri::State<'_, Mutex<RutrackerState>>,
     query: String,
 ) -> Result<Vec<RutrackerItem>, String> {
-    // Форум работает в windows-1251 и ждёт запрос в этой кодировке.
     let (encoded_query, _, _) = WINDOWS_1251.encode(&query);
     let url = forum_url(&format!(
         "tracker.php?nm={}&{SEARCH_ORDER}",
@@ -569,8 +511,6 @@ pub async fn rutracker_magnet(
     app: AppHandle,
     state: tauri::State<'_, Mutex<RutrackerState>>,
     id: String,
-    // Запрос, о котором пользователь не просил (проверка новых серий): окно форума не показывается,
-    // даже если сайт требует проверку — такой запрос просто не удаётся.
     quiet: Option<bool>,
 ) -> Result<String, String> {
     if !is_topic_id(&id) {
@@ -606,15 +546,12 @@ fn decode_hex(text: &str) -> Option<Vec<u8>> {
     (0..text.len()).step_by(2).map(|index| u8::from_str_radix(text.get(index..index + 2)?, 16).ok()).collect()
 }
 
-/// Разбирает .torrent раздачи `id`, скачанный с форума под учётной записью пользователя (см.
-/// `TORRENT_FILE_EXTRACTOR`), и возвращает список её файлов, как `torrent_inspect_link`.
 #[tauri::command]
 pub async fn rutracker_torrent_inspect(
     app: AppHandle,
     state: tauri::State<'_, Mutex<RutrackerState>>,
     app_state: tauri::State<'_, crate::AppState>,
     id: String,
-    // Как у `rutracker_magnet`: запрос в фоне не показывает окно форума.
     quiet: Option<bool>,
 ) -> Result<crate::engine::TorrentPreview, String> {
     if !is_topic_id(&id) {
@@ -645,7 +582,6 @@ pub async fn rutracker_torrent_inspect(
     app_state.engine.inspect_torrent_file(bytes::Bytes::from(bytes)).await.map_err(|error| error.to_string())
 }
 
-/// Размер кадра раздач `ids`, прочитанный с их страниц. Раздач, где его найти не удалось, в ответе нет.
 #[tauri::command]
 pub async fn rutracker_video_sizes(
     app: AppHandle,
@@ -669,7 +605,6 @@ pub async fn rutracker_video_sizes(
             match serde_json::from_value::<VideoSizeLookup>(page.data) {
                 Ok(lookup) if lookup.pending => None,
                 Ok(lookup) => Some(Ok(lookup.sizes)),
-                // Страница не та, что ожидалась: размеры просто останутся неизвестными.
                 Err(_) => Some(Ok(HashMap::new())),
             }
         })

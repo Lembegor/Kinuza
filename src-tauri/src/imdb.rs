@@ -1,8 +1,3 @@
-//! IMDb ratings from IMDb's own daily export (https://developer.imdb.com/non-commercial-datasets/).
-//! The export is one gzipped table of every rated title. It is downloaded about once a week,
-//! turned into a compact sorted file, and looked up there, so showing a rating needs no network.
-//! IMDb allows the export for personal and non-commercial use only.
-
 use std::{
     fs::{self, File},
     io::{BufRead, BufReader, Read, Seek, SeekFrom},
@@ -20,12 +15,9 @@ use crate::AppState;
 const RATINGS_URL: &str = "https://datasets.imdbws.com/title.ratings.tsv.gz";
 const FOLDER_NAME: &str = "imdb";
 const INDEX_FILE_NAME: &str = "ratings.bin";
-/// Ratings move slowly; a week-old copy is as good as a fresh one.
 const MAX_INDEX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
-/// After a failed download the old copy (or nothing) is served for this long before trying again.
 const RETRY_AFTER_FAILURE: Duration = Duration::from_secs(30 * 60);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
-/// One title: numeric id (4 bytes), rating times ten (1 byte), vote count (4 bytes), big-endian.
 const RECORD_BYTES: usize = 9;
 const RATING_SCALE: f32 = 10.0;
 
@@ -35,13 +27,11 @@ pub struct ImdbRating {
     votes: u32,
 }
 
-/// Serialises refreshes and remembers a failed one, so a title page does not start a download per visit.
 #[derive(Default)]
 pub struct ImdbState {
     last_failure: Mutex<Option<SystemTime>>,
 }
 
-/// `imdb_id` is the usual "tt1375666". Returns `None` for a title IMDb has no rating for.
 #[tauri::command]
 pub async fn imdb_rating(
     app: State<'_, AppState>,
@@ -90,10 +80,8 @@ async fn refresh(index: &Path) -> anyhow::Result<()> {
     tauri::async_runtime::spawn_blocking(move || write_index(&archive, &index)).await?
 }
 
-/// Parses the gzipped table and replaces the index file atomically.
 fn write_index(archive: &[u8], index: &PathBuf) -> anyhow::Result<()> {
     let mut records: Vec<(u32, u8, u32)> = Vec::new();
-    // The first line is the header "tconst averageRating numVotes"; it fails to parse and is skipped like any bad line.
     for line in BufReader::new(GzDecoder::new(archive)).lines() {
         let line = line?;
         let mut fields = line.split('\t');
@@ -128,7 +116,6 @@ fn write_index(archive: &[u8], index: &PathBuf) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Binary search over the fixed-size records on disk.
 fn lookup(index: &Path, id: u32) -> Option<ImdbRating> {
     let mut file = File::open(index).ok()?;
     let count = file.metadata().ok()?.len() / RECORD_BYTES as u64;

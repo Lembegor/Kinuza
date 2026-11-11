@@ -1,6 +1,3 @@
-// Frees disk space by itself: a download whose every film or episode has been watched is deleted,
-// if the user asked for that in the settings.
-
 import { backend } from "../lib/backend";
 import { t } from "../lib/i18n";
 import { report } from "../lib/journal";
@@ -9,7 +6,6 @@ import { useSettings } from "./settings";
 import { useTorrents } from "./torrents";
 import { useUi } from "./ui";
 
-/** Watching the last minutes and closing the player settle first; then the check runs. */
 const checkDelayMs = 4000;
 
 function deleteWatchedDownloads(): void {
@@ -25,7 +21,6 @@ function deleteWatchedDownloads(): void {
 
   for (const [infoHash, units] of unitsByTorrent) {
     const torrent = byHash[infoHash];
-    // Only finished downloads: a torrent watched online keeps nothing on disk, an unfinished one is still wanted.
     const downloaded = torrent !== undefined && torrent.finished && torrent.totalBytes > 0;
     if (!downloaded || units.includes(playing ?? "") || !units.every((unit) => isWatched(progress[unit]))) continue;
 
@@ -40,7 +35,6 @@ function deleteWatchedDownloads(): void {
   }
 }
 
-/** Starts watching the library for downloads that have been watched through. Returns a stop function. */
 export function startWatchedCleanup(): () => void {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const schedule = () => {

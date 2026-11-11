@@ -1,5 +1,3 @@
-/* Poster cards and rows */
-
 .row {
   margin-top: 34px;
 }
@@ -156,7 +154,6 @@
   width: auto;
 }
 
-/* A recommendation that can be waved away: the button sits over the poster's corner. */
 
 .poster-slot {
   position: relative;
@@ -186,7 +183,6 @@
   opacity: 1;
 }
 
-/* The poster lifts under the cursor; the button rides along with it. */
 .poster-slot:hover .poster-slot__dismiss {
   transform: translateY(-5px);
 }
@@ -288,7 +284,6 @@
   text-underline-offset: 3px;
 }
 
-/* Home hero */
 
 .hero {
   --hero-height: clamp(420px, 62vh, 640px);
@@ -301,7 +296,6 @@
   background: linear-gradient(180deg, #15151b, var(--bg));
 }
 
-/* Fills the full width with the picture's colours, so the sharp copy never has to be stretched or cropped to do it. */
 .hero__ambient {
   position: absolute;
   inset: -40px;
@@ -312,8 +306,6 @@
   animation: fade 1.1s;
 }
 
-/* The picture keeps its 16:9 shape at the hero's height and sits on the right; on a wide
-   window the text gets the space to its left instead of the picture losing its top and bottom. */
 .hero__backdrop {
   position: absolute;
   top: 0;
@@ -341,7 +333,6 @@
     linear-gradient(0deg, var(--bg) 0%, rgba(10, 10, 13, 0) 42%);
 }
 
-/* The whole banner opens the title; text and controls sit above it. */
 .hero__open {
   position: absolute;
   inset: 0;
@@ -460,7 +451,6 @@
   background: #fff;
 }
 
-/* Title page */
 
 .title-hero {
   position: relative;
@@ -656,7 +646,6 @@
   max-width: 640px;
 }
 
-/* Sources */
 
 .source-list {
   display: flex;
@@ -760,7 +749,6 @@
   background: rgba(255, 255, 255, 0.16);
 }
 
-/* Episodes */
 
 .episode-list {
   display: flex;
@@ -919,9 +907,7 @@
   max-width: 220px;
 }
 
-/* Cast */
 
-/* The padding leaves room for the ring a photo gets under the pointer: a scrolling strip clips whatever sticks out. */
 .cast {
   display: flex;
   gap: 18px;
@@ -987,7 +973,6 @@
   line-height: 1.25;
 }
 
-/* Downloads */
 
 .torrent-list {
   display: flex;
@@ -1070,7 +1055,6 @@
   gap: 2px;
 }
 
-/* Settings */
 
 .settings-group {
   margin-bottom: 34px;
@@ -1148,7 +1132,6 @@
   flex: 1;
 }
 
-/* The user's list: status, rating, card markers */
 
 .status-menu {
   position: relative;
@@ -1176,7 +1159,6 @@
 
 .popover {
   position: absolute;
-  /* Opens upwards: the hero clips anything that hangs below it. */
   bottom: calc(100% + 8px);
   left: 0;
   min-width: 230px;
@@ -1312,7 +1294,6 @@
   font-weight: 600;
 }
 
-/* An unwatched episode's description: blurred until the pointer (or keyboard focus) is on it. */
 .episode__overview.is-veiled {
   filter: blur(5px);
   opacity: 0.55;
@@ -1331,8 +1312,6 @@
   outline: none;
 }
 
-/* Number fields line up in one column whether or not a unit follows them, and the unit sits
-   level with the field. */
 .setting__actions:has(.input--number) {
   --setting-unit-width: 34px;
   align-items: center;
@@ -1350,7 +1329,6 @@
   line-height: 1;
 }
 
-/* Catalog */
 
 .chip--compact {
   height: 30px;
@@ -1388,7 +1366,6 @@
 .filter-select select {
   appearance: none;
   height: 36px;
-  /* A drop-down is as wide as its longest option; the cap keeps the whole bar on one line in a narrow window. */
   max-width: 176px;
   padding: 0 32px 0 12px;
   border-radius: var(--radius-s);
@@ -1422,7 +1399,6 @@
   pointer-events: none;
 }
 
-/* A filter that narrows the list stands out from those left alone. */
 .filter-select.is-set {
   color: var(--text);
 }
@@ -1448,13 +1424,11 @@
   background: var(--accent-soft);
 }
 
-/* Holds a line for the genres while their list loads, so the grid below does not jump. */
 .filters__genres {
   min-height: 30px;
   margin-bottom: 28px;
 }
 
-/* The catalog writes genre names in lower case in some languages; as buttons they read as labels. */
 .filters__genres .chip::first-letter {
   text-transform: uppercase;
 }
@@ -1465,7 +1439,6 @@
   margin-top: 32px;
 }
 
-/* Person page */
 
 .person {
   display: flex;
@@ -1561,7 +1534,6 @@
   margin-top: 8px;
 }
 
-/* Franchise row on the title page */
 
 .franchise-card:disabled {
   cursor: default;
@@ -1601,7 +1573,6 @@
   color: #06240f;
 }
 
-/* What kind of part of an anime franchise this is: a season, a film, an OVA. */
 .anime-card__format {
   position: absolute;
   top: 8px;
@@ -1616,12 +1587,10 @@
   backdrop-filter: blur(6px);
 }
 
-/* Not out yet: the poster is there, the film is not. */
 .franchise-card.is-upcoming img {
   filter: saturate(0.35) brightness(0.6);
 }
 
-/* Episode calendar */
 
 .calendar-new-count {
   display: inline-block;
@@ -1635,7 +1604,6 @@
   text-align: center;
 }
 
-/* The chip dims its counters; this one is the reason to press the chip. */
 .chip .calendar-new-count {
   margin-left: 7px;
   opacity: 1;
@@ -1663,7 +1631,6 @@
   font-weight: 800;
 }
 
-/* A day without a name of its own is headed by its date. */
 .calendar-day__head span:first-child {
   display: inline-block;
   color: var(--text);
@@ -1671,7 +1638,6 @@
   font-weight: 800;
 }
 
-/* Weekdays are written in lower case in Russian and Ukrainian; a heading starts with a capital. */
 .calendar-day__head span:first-child::first-letter {
   text-transform: uppercase;
 }
@@ -1754,7 +1720,6 @@
   font-size: 13px;
 }
 
-/* Kept even when empty, so cards with and without an episode name line up. */
 .calendar-card__name {
   min-height: 18px;
   color: var(--faint);

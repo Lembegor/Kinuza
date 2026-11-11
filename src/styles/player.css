@@ -233,7 +233,6 @@
   background: linear-gradient(0deg, rgba(0, 0, 0, 0.85), rgba(0, 0, 0, 0));
 }
 
-/* Seek bar */
 
 .seek {
   position: relative;
@@ -306,7 +305,6 @@
   pointer-events: none;
 }
 
-/* Controls */
 
 .player__controls {
   display: flex;
@@ -398,7 +396,6 @@
   flex: 1;
 }
 
-/* Menus */
 
 .player__menu {
   position: absolute;
@@ -480,7 +477,6 @@
   font-size: 12px;
 }
 
-/* Brief feedback for a key press: how far a seek went, the new volume or speed. */
 .player__hint {
   position: absolute;
   top: 14%;
@@ -498,7 +494,6 @@
   animation: fade 0.15s;
 }
 
-/* Chapter borders on the seek bar, and the chapter's name under the time while hovering. */
 .seek__chapter {
   position: absolute;
   top: 0;
@@ -519,7 +514,6 @@
   opacity: 0.75;
 }
 
-/* "Skip intro": offered only while a chapter the file marks as an intro, a recap or credits is playing. */
 .player__skip {
   position: absolute;
   right: 28px;
@@ -552,7 +546,6 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Results of the online subtitle search: a list that scrolls inside the menu. */
 .player__menu-list {
   max-height: 220px;
   overflow-y: auto;
@@ -572,8 +565,6 @@
   font-size: 12px;
 }
 
-/* Mini player: a small always-on-top window. Only what fits stays: play, the bar, the way back;
-   the rest of the frame drags the window. */
 .player.is-mini .player__top > :not(.window-buttons),
 .player.is-mini .player__controls > :not(.player__button--main):not(.player__button--mini),
 .player.is-mini .player__menu,
@@ -594,7 +585,6 @@
   font-size: 60%;
 }
 
-/* Subtitles found on the internet: a panel over the film, wide enough to read release names. */
 .player__panel {
   position: absolute;
   top: 50%;
@@ -717,4 +707,23 @@
 
 .player.is-mini .player__panel {
   display: none;
+}
+
+html.is-mpv,
+html.is-mpv body,
+html.is-mpv #root,
+html.is-mpv .app,
+html.is-mpv .player {
+  background: transparent !important;
+}
+
+html.is-mpv .titlebar,
+html.is-mpv .sidebar,
+html.is-mpv .content {
+  visibility: hidden;
+}
+
+.player__surface {
+  position: absolute;
+  inset: 0;
 }

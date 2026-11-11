@@ -1,6 +1,3 @@
-// Language codes as files, the catalog and the app each write them, brought to one form.
-
-/** Languages the app's interface is available in, in the order they are offered. */
 export const appLanguages = ["en", "uk", "ru"] as const;
 export type AppLanguage = (typeof appLanguages)[number];
 
@@ -8,7 +5,6 @@ export function isAppLanguage(code: string): code is AppLanguage {
   return (appLanguages as readonly string[]).includes(code);
 }
 
-/** Three-letter codes found in video files (ISO 639-2, both variants) to the two-letter ones used elsewhere. */
 const twoLetterCodes: Record<string, string> = {
   rus: "ru",
   ukr: "uk",
@@ -42,14 +38,12 @@ const twoLetterCodes: Record<string, string> = {
   kaz: "kk",
 };
 
-/** A two-letter code for whatever a file or the catalog calls the language; empty when it is unknown. */
 export function languageCode(raw: string | null | undefined): string {
   const code = (raw ?? "").trim().toLowerCase().split(/[-_]/)[0];
   if (code.length === 2) return code;
   return twoLetterCodes[code] ?? "";
 }
 
-/** The language's name in the given interface language, e.g. "английский"; the code itself if it has no name. */
 export function languageName(code: string, locale: string): string {
   if (!code) return "";
   try {

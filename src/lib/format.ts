@@ -13,7 +13,6 @@ export function formatSpeed(bytesPerSecond: number): string {
   return t("common.perSecond", { size: formatBytes(bytesPerSecond) });
 }
 
-/** 3725 -> "1:02:05", 125 -> "2:05". */
 export function formatClock(totalSeconds: number): string {
   if (!Number.isFinite(totalSeconds) || totalSeconds < 0) return "0:00";
   const seconds = Math.floor(totalSeconds % 60);
@@ -40,7 +39,6 @@ export function formatEta(seconds: number): string {
   return t("common.duration.hoursMinutes", { hours, minutes: minutes % 60 });
 }
 
-/** One formatter per locale: building one is costly, and a page of episodes formats many dates. */
 const dateFormatters = new Map<string, Intl.DateTimeFormat>();
 
 function dateFormatter(locale: string): Intl.DateTimeFormat {
@@ -56,8 +54,6 @@ const isoDayPattern = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 export function formatDate(isoDate: string): string {
   if (!isoDate) return "";
-  // A bare day ("1970-07-30") parses as midnight UTC, which west of UTC is still the evening
-  // before; built from its parts, it is that day wherever the user is.
   const day = isoDayPattern.exec(isoDate);
   const date = day ? new Date(Number(day[1]), Number(day[2]) - 1, Number(day[3])) : new Date(isoDate);
   return Number.isNaN(date.getTime()) ? "" : dateFormatter(currentLocale()).format(date);
@@ -65,7 +61,6 @@ export function formatDate(isoDate: string): string {
 
 const momentFormatters = new Map<string, Intl.DateTimeFormat>();
 
-/** A moment in a list of recent events: "11 нояб., 14:05:09". */
 export function formatMoment(timestamp: number): string {
   const locale = currentLocale();
   let formatter = momentFormatters.get(locale);

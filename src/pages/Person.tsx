@@ -1,5 +1,3 @@
-// Person page: who they are and the films and series they directed or acted in.
-
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { UserRound } from "lucide-react";
@@ -9,11 +7,9 @@ import { useT, type MessageKey } from "../lib/i18n";
 import { imageUrl, tmdb, type MediaItem } from "../lib/tmdb";
 import { useAsync } from "../lib/useAsync";
 
-/** Titles of a role shown before "show all": about two rows of the grid. */
 const collapsedCreditCount = 12;
 const actingDepartment = "Acting";
 
-/** TMDB names departments in English only. */
 const departmentLabels: Record<string, MessageKey> = {
   Acting: "person.department.acting",
   Directing: "person.department.directing",
@@ -30,15 +26,12 @@ const departmentLabels: Record<string, MessageKey> = {
   Crew: "person.department.crew",
 };
 
-/** A few lines of the biography, with the rest behind "show more" when there is a rest. */
 function Biography({ text }: { text: string }) {
   const { t } = useT();
   const [expanded, setExpanded] = useState(false);
   const [overflows, setOverflows] = useState(false);
   const textRef = useRef<HTMLParagraphElement>(null);
 
-  // Whether the text is cut depends on the window width, so it is measured again on every resize.
-  // An expanded text cannot be measured: it keeps the answer it had while collapsed.
   useEffect(() => {
     const element = textRef.current;
     if (!element || expanded) return;
@@ -138,7 +131,6 @@ export default function PersonPage() {
         </div>
       </section>
 
-      {/* The work a person is known for comes first. */}
       {data.department === actingDepartment ? [acted, directed] : [directed, acted]}
 
       {data.directed.length === 0 && data.acted.length === 0 && (

@@ -1,5 +1,3 @@
-// Adds a torrent: magnet link or .torrent file -> file list -> which movie or episodes the files are.
-
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Download, FileUp, Link2, LoaderCircle, Play, Search, X } from "lucide-react";
 import { backend, describeError, isDesktop, type TorrentFile, type TorrentPreview } from "../lib/backend";
@@ -40,7 +38,6 @@ function InputStep({
   error: string;
   target: AddSourceTarget | null;
   onLink: (link: string) => void;
-  /** A release picked in the tracker search, being read, and the topic it comes from. */
   onRelease: (release: Promise<TorrentPreview>, topicId: string) => void;
   onFile: (path: string) => void;
 }) {
@@ -199,7 +196,6 @@ function buildEpisodeRows(preview: TorrentPreview, seasons: SeasonInfo[], defaul
   });
 }
 
-/** "stream" fetches only what is being watched; "download" saves the whole file. Both play at once. */
 type AddMode = "stream" | "download";
 
 function AddActions({ note, disabled, onAdd }: { note?: string; disabled: boolean; onAdd: (mode: AddMode) => void }) {
@@ -355,7 +351,6 @@ function AddSourceFlow({ request }: { request: AddSourceRequest }) {
   const [error, setError] = useState("");
   const started = useRef(false);
   const cancelled = useRef(false);
-  /** The tracker topic of the torrent being added; a series added from one gets its new episodes by itself. */
   const topic = useRef<string | null>(null);
 
   const inspect = async (action: Promise<TorrentPreview>) => {
@@ -396,7 +391,6 @@ function AddSourceFlow({ request }: { request: AddSourceRequest }) {
     setBusy(true);
     try {
       const downloadDir = useSettings.getState().downloadDir || null;
-      // Watching online selects nothing for download: the player pulls what it shows.
       const downloaded = mode === "download" ? entries.map((entry) => entry.file.index) : [];
       await backend.addTorrent(preview.infoHash, downloaded, downloadDir);
       useLibrary.getState().addSources(entries.map((entry) => ({ unitKey: entry.unitKey, source: toSource(preview, entry.file) })));
@@ -411,7 +405,6 @@ function AddSourceFlow({ request }: { request: AddSourceRequest }) {
       if (mode === "download") {
         toast(t("addSource.toast.downloadStarted", { title: target.title.title }), "success");
       } else if (target.title.type === "movie" && entries.length === 1) {
-        // A film has one thing to watch, so it simply starts.
         useUi.getState().play({ title: target.title, unitKey: entries[0].unitKey });
       } else {
         toast(t("addSource.toast.ready", { title: target.title.title }), "success");

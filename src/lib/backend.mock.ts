@@ -1,8 +1,5 @@
-// Stand-in backend for previewing the UI in a browser. Never used inside the desktop app.
-
 import type { AppInfo, TorrentPreview, TorrentView } from "./backend";
 
-/** A small CC0 clip so the player can be previewed without the torrent engine. */
 export const mockStreamUrl = "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4";
 
 const GiB = 1024 ** 3;
@@ -53,7 +50,6 @@ function tick(): TorrentView[] {
   });
 }
 
-/** Tracker search results in the shapes real titles take, most seeded first. */
 const demoTrackerItems = [
   ["UHD BDRip 2160p, HDR10] [IMAX] Dub (WinMedia, HDRezka Studio) + MVO (Jaskier) + Original Eng + Sub (Rus, Eng)", "36.59 GB", 883],
   ["BDRip 1080p] [IMAX] MVO (HDrezka) + Dub (HDrezka, WinMedia) + Original Eng + Sub (Rus, Eng)", "21.96 GB", 402],
@@ -100,7 +96,6 @@ export async function mockInvoke(command: string, args: Record<string, unknown> 
     case "rutracker_login_window":
       return null;
     case "rutracker_video_sizes":
-      // One release states its frame size on the page, the other does not.
       await new Promise((resolve) => setTimeout(resolve, 1500));
       return { [demoTrackerItems[3].id]: { width: 1024, height: 426 } };
     case "rutracker_torrent_inspect":

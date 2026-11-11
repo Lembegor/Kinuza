@@ -8,8 +8,6 @@
   backdrop-filter: blur(6px);
   z-index: 50;
   animation: fade 0.18s;
-  /* Without this the grid track grows to the widest unwrapped line inside the dialog,
-     and the dialog, centred in that track, slides off to the right. */
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
 }
@@ -106,9 +104,7 @@
   background: rgba(23, 23, 29, 0.7);
 }
 
-/* Add torrent: input step */
 
-/* A column that hands leftover height to the tracker list, so the list scrolls instead of the dialog. */
 .add-input {
   display: flex;
   flex-direction: column;
@@ -187,7 +183,6 @@
   max-width: 380px;
 }
 
-/* Add torrent: title picker */
 
 .title-picker__list {
   display: flex;
@@ -254,7 +249,6 @@
   font-size: 12px;
 }
 
-/* Add torrent: file mapping */
 
 .mapping-head {
   display: flex;
@@ -337,7 +331,6 @@ label.file-row {
   font-weight: 800;
 }
 
-/* Free copies from the Internet Archive */
 
 .add-input > .archive {
   flex: 0 1 auto;
@@ -409,7 +402,6 @@ label.file-row {
   font-size: 12px;
 }
 
-/* Tracker search results */
 
 .tracker-auth {
   display: flex;
@@ -429,7 +421,6 @@ label.file-row {
   min-width: 0;
 }
 
-/* Other names the title is released under (romaji for anime) */
 .tracker-names {
   display: flex;
   flex-wrap: wrap;
@@ -522,7 +513,6 @@ label.file-row {
   font-weight: 700;
 }
 
-/* Resolution, size and seeds: fixed-width columns so they line up from row to row. */
 .tracker-item__stats {
   display: flex;
   align-items: center;
@@ -635,7 +625,6 @@ label.file-row {
   gap: 5px;
 }
 
-/* A language the release lacks stays in its place, greyed out, so the three flags read as a row of lights. */
 .language-flags__flag {
   display: block;
   width: 24px;
@@ -658,7 +647,6 @@ label.file-row {
   height: 100%;
 }
 
-/* The release the app would pick itself. */
 .tracker-item.is-best {
   background: rgba(230, 182, 85, 0.08);
   box-shadow: inset 0 0 0 1px rgba(230, 182, 85, 0.35);

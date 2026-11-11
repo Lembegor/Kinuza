@@ -1,5 +1,3 @@
-// The episode calendar: what the followed series air soon, and what they aired in the last two weeks.
-
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { CalendarDays, Check } from "lucide-react";
@@ -17,7 +15,6 @@ const views: { id: View; label: MessageKey }[] = [
 ];
 const skeletonCardCount = 6;
 
-/** A series' episodes of one day. A season released at once is one entry, not eight in a row. */
 interface Entry {
   title: TitleRef;
   season: number;
@@ -42,7 +39,6 @@ function groupByDay(episodes: CalendarEpisode[]): Day[] {
   return [...days].map(([day, entries]) => ({ day, entries: [...entries.values()] }));
 }
 
-/** "Today", "Tomorrow" or "Yesterday" for the days that have a name. */
 function relativeDayName(day: string, today: string): string | null {
   if (day === today) return t("calendar.today");
   if (day === shiftDay(today, 1)) return t("calendar.tomorrow");
@@ -50,10 +46,6 @@ function relativeDayName(day: string, today: string): string | null {
   return null;
 }
 
-/**
- * Whether the catalog has a real name for the episode. Until someone enters one it says "Episode 5"
- * in whatever language, which only repeats the number already on the card.
- */
 function hasOwnName(episode: CalendarEpisode): boolean {
   return !new RegExp(`^\\p{L}+\\s+${episode.episode}$`, "u").test(episode.name.trim());
 }
@@ -125,17 +117,14 @@ export default function CalendarPage() {
   const { today, episodes } = calendar;
 
   const upcoming = useMemo(() => groupByDay((episodes ?? []).filter((episode) => episode.airDate >= today)), [episodes, today]);
-  // What came out most recently is what the user is likeliest to be after.
   const aired = useMemo(() => groupByDay((episodes ?? []).filter((episode) => episode.airDate <= today)).reverse(), [episodes, today]);
   const newCount = useMemo(
     () => (episodes ?? []).filter((episode) => episode.airDate <= today && !isEpisodeWatched(episode, progress)).length,
     [episodes, today, progress],
   );
 
-  // Until the user picks a tab, the one that has something to show is open.
   const view = chosenView ?? (upcoming.length === 0 && aired.length > 0 ? "aired" : "upcoming");
   const days = view === "aired" ? aired : upcoming;
-  // Today leads the upcoming days even when nothing airs, so the list has a fixed point to read from.
   const shownDays = view === "upcoming" && days.length > 0 && days[0].day !== today ? [{ day: today, entries: [] }, ...days] : days;
 
   if (calendar.followed === 0 && episodes !== null) {
@@ -144,7 +133,6 @@ export default function CalendarPage() {
         <EmptyState
           icon={<CalendarDays size={40} />}
           title={t("calendar.empty.title")}
-          // The statuses are called what the list itself calls them.
           text={t("calendar.empty.text", { watching: statusLabel("watching"), planned: statusLabel("planned") })}
         />
       </div>

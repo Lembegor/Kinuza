@@ -28,14 +28,12 @@ import { notify } from "./state/notifications";
 import { useUpdater } from "./state/updater";
 
 const updateCheckDelayMs = 4000;
-/** The app lives in the tray for days; a new version is looked for again this often. */
 const updateCheckIntervalMs = 4 * 60 * 60 * 1000;
 
 function isTextField(target: EventTarget | null): boolean {
   return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement;
 }
 
-/** A magnet link pasted anywhere outside a text field opens the add dialog for the title on screen. */
 function useMagnetPaste(): void {
   useEffect(() => {
     const onPaste = (event: ClipboardEvent) => {
@@ -51,7 +49,6 @@ function useMagnetPaste(): void {
   }, []);
 }
 
-/** Dropping a .torrent file on the window opens the add dialog. Returns whether a drag is in progress. */
 function useTorrentDrop(): boolean {
   const [dragging, setDragging] = useState(false);
 
@@ -87,7 +84,6 @@ function useTorrentDrop(): boolean {
   return dragging;
 }
 
-/** Opens the add dialog for a link clicked in the browser or a .torrent opened from Explorer. */
 function openLaunchRequest(request: LaunchRequest): void {
   const { pageTarget, openAddSource } = useUi.getState();
   const source = request.kind === "magnet" ? { magnet: request.value } : { filePath: request.value };
@@ -124,7 +120,6 @@ async function enableLinkHandling(): Promise<void> {
   }
 }
 
-/** Keeps the Windows registration pointing at this executable; asks once whether to register at all. */
 function useLinkHandling(ready: boolean): void {
   useEffect(() => {
     if (!ready || !isDesktop) return;
@@ -175,7 +170,6 @@ export default function App() {
   const autoUpdate = useSettings((state) => state.autoUpdate);
   const libraryLoaded = useLibrary((state) => state.loaded);
   const language = useSettings((state) => state.language);
-  // The first start: the language is not chosen yet, or the user has nothing here and has not been shown around.
   const introducing = useLibrary((state) => state.firstRun) || !language;
   const { t } = useT();
 
@@ -190,15 +184,12 @@ export default function App() {
     if (!settingsLoaded || !autoUpdate) return;
     const timer = setTimeout(() => void useUpdater.getState().check(), updateCheckDelayMs);
     const repeat = setInterval(() => {
-      // A version already found (offered, postponed or being installed) is not asked about again.
       const { status } = useUpdater.getState();
       if (status !== "idle" && status !== "upToDate" && status !== "error") return;
       void useUpdater
         .getState()
         .check()
         .then(() => {
-          // Found while the app has been open for hours, likely in the tray: the card inside the
-          // window would go unseen, so the system says it too.
           const found = useUpdater.getState();
           if (found.status === "available") return notify(t("notifications.update"), `Kinuza ${found.version}`);
         })
@@ -214,11 +205,8 @@ export default function App() {
   const dragging = useTorrentDrop();
   const ready = settingsLoaded && libraryLoaded;
   useLaunchRequests(ready);
-  // The question about links is worded in the interface language, so it waits until one is chosen.
-  // It also waits for the introduction to end: one thing at a time.
   useLinkHandling(ready && !introducing);
 
-  // The webview's own context menu (reload, inspect) has no place in the app.
   useEffect(() => {
     if (!isDesktop || import.meta.env.DEV) return;
     const block = (event: MouseEvent) => {
@@ -229,7 +217,6 @@ export default function App() {
   }, []);
 
   if (!ready) return <div className="app app--loading" />;
-  // First start: nothing else is shown until the app knows which language to speak and the introduction is over.
   if (introducing) {
     return (
       <div className="app">

@@ -1,6 +1,3 @@
-// The rows of the settings page that import ratings and lists from other services: the button,
-// then the progress of a running import or the summary of a finished one.
-
 import { useRef, useState, type ChangeEvent } from "react";
 import { ChevronDown, ChevronUp, CircleAlert, CircleCheck } from "lucide-react";
 import { backend, describeError, isDesktop } from "../lib/backend";
@@ -24,7 +21,6 @@ const problemTexts: Record<ImportProblem, MessageKey> = {
   malformed: "import.error.malformed",
 };
 
-/** The file's name without the folders leading to it. */
 function baseName(path: string): string {
   return path.split(/[\\/]/).pop() ?? path;
 }
@@ -33,7 +29,6 @@ function Summary({ summary }: { summary: ImportSummary }) {
   const { t } = useT();
   const [missingShown, setMissingShown] = useState(false);
   const missing = summary.notFound.length;
-  // Counts that are always told, and those worth a line only when there is something to tell.
   const counts: { label: MessageKey; value: number; always: boolean }[] = [
     { label: "import.summary.added", value: summary.added, always: true },
     { label: "import.summary.updated", value: summary.updated, always: false },
@@ -83,12 +78,10 @@ export function ImportSetting() {
   const toast = useUi((state) => state.toast);
   const fileInput = useRef<HTMLInputElement>(null);
   const running = phase === "running";
-  // Finished, but not through the whole file: the catalog stopped answering on the way.
   const stopped = phase === "done" && summary !== null && summary.unchecked > 0;
   const heading: MessageKey = running ? "import.running" : stopped ? "import.stopped" : phase === "done" ? "import.done" : "import.failed";
 
   const pickFile = async () => {
-    // A browser has no native dialogs; the hidden file input below stands in for one.
     if (!isDesktop) {
       fileInput.current?.click();
       return;
@@ -105,7 +98,6 @@ export function ImportSetting() {
 
   const onFileChosen = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    // Cleared so that choosing the same file again is still a change.
     event.target.value = "";
     if (file) void start(new Uint8Array(await file.arrayBuffer()), file.name);
   };

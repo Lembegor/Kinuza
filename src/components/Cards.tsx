@@ -1,5 +1,3 @@
-// Poster cards, horizontal rows and shared loading/error placeholders.
-
 import { useRef, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { ChevronLeft, ChevronRight, CloudOff, Star, ThumbsDown } from "lucide-react";
@@ -8,7 +6,6 @@ import { hasApiKey, imageUrl, type MediaItem } from "../lib/tmdb";
 import type { TitleRef } from "../state/library";
 import { TrackBadge } from "./TrackControls";
 
-/** `note` replaces the year and type line, e.g. with episode progress. */
 type CardItem = TitleRef & Partial<Pick<MediaItem, "rating" | "isAnime">> & { note?: string };
 
 export function typeLabel(item: Pick<CardItem, "type" | "isAnime">): string {
@@ -46,10 +43,6 @@ export function PosterCard({ item }: { item: CardItem }) {
   );
 }
 
-/**
- * A card of a recommendation row with a "not interested" button over its corner. The button is a
- * neighbour of the card, not a part of it: the card is a button itself.
- */
 function DismissibleCard({ item, onDismiss }: { item: CardItem; onDismiss: (item: CardItem) => void }) {
   const { t } = useT();
   return (
@@ -60,7 +53,6 @@ function DismissibleCard({ item, onDismiss }: { item: CardItem; onDismiss: (item
         title={t("feed.dismiss")}
         aria-label={t("feed.dismiss.label", { title: item.title })}
         onClick={(event) => {
-          // The card is about to go; whoever got here by keyboard carries on from its neighbour.
           const slot = event.currentTarget.parentElement;
           const neighbour = slot?.nextElementSibling ?? slot?.previousElementSibling;
           neighbour?.querySelector<HTMLElement>(".poster-card")?.focus();
@@ -100,7 +92,6 @@ export function Row({ title, children }: { title: string; children: ReactNode })
   );
 }
 
-/** With `onDismiss` the row is one of recommendations: each card can be waved away. */
 export function PosterRow({ title, items, onDismiss }: { title: string; items: CardItem[] | null; onDismiss?: (item: TitleRef) => void }) {
   if (items && items.length === 0) return null;
   return (

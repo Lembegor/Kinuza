@@ -7,7 +7,6 @@ export interface AsyncState<T> {
   reload: () => void;
 }
 
-/** Runs an async loader when dependencies change; a stale result never overwrites a newer one. */
 export function useAsync<T>(loader: () => Promise<T>, dependencies: DependencyList): AsyncState<T> {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<unknown>(null);

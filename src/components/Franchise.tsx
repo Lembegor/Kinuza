@@ -1,5 +1,3 @@
-// The franchise a film belongs to: all its parts in release order, with what the user has seen.
-
 import { useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { Check, Star } from "lucide-react";
@@ -9,7 +7,6 @@ import { useAsync } from "../lib/useAsync";
 import { isWatched, titleKey, unitKey, useLibrary } from "../state/library";
 import { Row } from "./Cards";
 
-/** A "franchise" of one film has nowhere to lead. */
 const minParts = 2;
 const skeletonCount = 5;
 const isoDateLength = "2000-01-01".length;
@@ -22,15 +19,12 @@ function FranchiseCard({ part, current }: { part: CollectionPart; current: boole
   const { t } = useT();
   const navigate = useNavigate();
   const cardRef = useRef<HTMLButtonElement>(null);
-  // Seen in the player, or marked as completed by hand.
   const watched = useLibrary(
     (state) => isWatched(state.progress[unitKey("movie", part.id)]) || state.tracked[titleKey("movie", part.id)]?.status === "completed",
   );
   const released = isReleased(part);
   const poster = imageUrl(part.poster, "w342");
 
-  // A long franchise opens on the film being looked at, not on its first part. Only the row is
-  // scrolled: scrollIntoView would also move the page.
   useEffect(() => {
     const card = cardRef.current;
     const track = card?.parentElement;
@@ -74,7 +68,6 @@ export function FranchiseRow({ collection, currentId }: { collection: { id: numb
   const loaded = useAsync(() => tmdb.collection(collection.id), [collection.id]);
   const parts = loaded.data && loaded.data.id === collection.id ? loaded.data.parts : null;
 
-  // The row is an extra: when it cannot be loaded the page is complete without it.
   if (loaded.error || (parts && parts.length < minParts)) return null;
   return (
     <Row title={collection.name}>

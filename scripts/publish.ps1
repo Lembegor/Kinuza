@@ -1,12 +1,3 @@
-# Releases a new version of Kinuza in one step: sets the version, commits what is in the folder,
-# tags it and pushes. GitHub then builds the signed installer and publishes the release
-# (.github/workflows/release.yml); installed apps offer the update by themselves.
-#
-# Usage:
-#   powershell -ExecutionPolicy Bypass -File scripts/publish.ps1 -Version 0.2.0 -Notes "What changed"
-#
-# Keep this file ASCII only: Windows PowerShell 5.1 misreads BOM-less UTF-8.
-
 param(
     [Parameter(Mandatory = $true)][string]$Version,
     [string]$Notes = "",
@@ -32,7 +23,6 @@ if ([version]$Version -lt [version]$current) {
     throw "Version $Version is lower than the current $current. Installed apps only take a higher version."
 }
 
-# Released versions are final: installed apps already have them.
 $remoteTag = git ls-remote --tags origin "refs/tags/$tag"
 if ($LASTEXITCODE -ne 0) { throw "Cannot reach GitHub (git ls-remote failed)." }
 if ($remoteTag) {
@@ -40,7 +30,6 @@ if ($remoteTag) {
 }
 
 if (git tag -l $tag) {
-    # An earlier run got as far as the tag and then could not push (no access, no network).
     Write-Host "== Tag $tag exists here but not on GitHub: finishing the interrupted release"
 } else {
     Write-Host "== Checking that the app builds"
@@ -56,7 +45,6 @@ if (git tag -l $tag) {
         Invoke-Checked "git commit" { git commit -m "Kinuza $Version" }
     }
 
-    # The notes travel as the tag's message; a file keeps Cyrillic text intact on any console.
     if (-not $Notes.Trim()) { $Notes = "Kinuza $Version" }
     $notesFile = [System.IO.Path]::GetTempFileName()
     try {
