@@ -9,6 +9,7 @@ import { isNewEpisode, useEpisodeCalendar, type CalendarEpisode } from "../state
 import { usePersonalFeed } from "../state/feed";
 import { entryToRef, isWatched, titleKey, useLibrary, type Progress, type TitleRef } from "../state/library";
 import { useUi } from "../state/ui";
+import { useUpNext, type UpNextEpisode } from "../state/upNext";
 
 const heroRotationMs = 10000;
 const heroItemCount = 6;
@@ -184,6 +185,60 @@ function ContinueRow() {
   );
 }
 
+function UpNextCard({ item }: { item: UpNextEpisode }) {
+  const { t } = useT();
+  const play = useUi((state) => state.play);
+  const navigate = useNavigate();
+  const hasSource = useLibrary((state) => (state.sources[item.unitKey]?.length ?? 0) > 0);
+  const art = imageUrl(item.still, "w500") ?? imageUrl(item.title.backdrop, "w780") ?? imageUrl(item.title.poster, "w342");
+  const openTitle = () => navigate(`/title/tv/${item.title.id}?s=${item.season}`);
+  const start = () => {
+    if (!hasSource) {
+      openTitle();
+      return;
+    }
+    play({ title: item.title, unitKey: item.unitKey, season: item.season, episode: item.episode, episodeName: item.name });
+  };
+
+  return (
+    <div className="continue-card">
+      <button
+        className="continue-card__art"
+        aria-label={hasSource ? t("home.upNext.play", { title: item.title.title }) : t("home.upNext.find", { title: item.title.title })}
+        onClick={start}
+      >
+        {art && <img src={art} alt="" loading="lazy" draggable={false} />}
+        <span className="continue-card__play">
+          <Play size={22} fill="currentColor" />
+        </span>
+      </button>
+      <button className="continue-card__info" aria-label={t("home.continue.page", { title: item.title.title })} title={t("common.openPage")} onClick={openTitle}>
+        <Info size={16} />
+      </button>
+      <button className="continue-card__text" onClick={openTitle}>
+        <div className="poster-card__title">{item.title.title}</div>
+        <div className="poster-card__meta">
+          <span>{t("common.seasonEpisode", { season: item.season, episode: item.episode })}</span>
+          <span>{hasSource ? item.name : t("home.upNext.noSource")}</span>
+        </div>
+      </button>
+    </div>
+  );
+}
+
+function UpNextRow() {
+  const { t } = useT();
+  const items = useUpNext();
+  if (!items || items.length === 0) return null;
+  return (
+    <Row title={t("home.row.upNext")}>
+      {items.map((item) => (
+        <UpNextCard key={item.unitKey} item={item} />
+      ))}
+    </Row>
+  );
+}
+
 function NewEpisodesRow() {
   const { t, tn } = useT();
   const calendar = useEpisodeCalendar();
@@ -252,6 +307,7 @@ export default function Home() {
       <Hero items={trending.data ?? []} />
       <div className="page__rows">
         <ContinueRow />
+        <UpNextRow />
         <NewEpisodesRow />
         {feed.available && feed.rows === null && <PosterRow title={t("feed.forYou")} items={null} />}
         {feed.rows?.map((row) => <PosterRow key={row.id} title={row.title} items={row.items} onDismiss={dismissRecommendation} />)}

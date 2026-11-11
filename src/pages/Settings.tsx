@@ -93,12 +93,12 @@ export default function Settings() {
   const saveBackup = async () => {
     if (!isDesktop) return;
     try {
-      const { save } = await import("@tauri-apps/plugin-dialog");
       const day = new Date().toISOString().slice(0, 10);
-      const path = await save({
+      const path = await backend.pickSaveTarget({
         title: t("settings.backup.save"),
-        defaultPath: `${t("settings.backup.fileName")} ${day}.json`,
-        filters: [{ name: "JSON", extensions: ["json"] }],
+        defaultName: `${t("settings.backup.fileName")} ${day}.json`,
+        filterName: "JSON",
+        extensions: ["json"],
       });
       if (!path) return;
       const backup = { app: backupMarker, account: useLibrary.getState().exportAccountData() };
@@ -112,9 +112,8 @@ export default function Settings() {
   const restoreBackup = async () => {
     if (!isDesktop) return;
     try {
-      const { open } = await import("@tauri-apps/plugin-dialog");
-      const picked = await open({ title: t("settings.backup.restore"), filters: [{ name: "JSON", extensions: ["json"] }] });
-      if (typeof picked !== "string") return;
+      const picked = await backend.pickFile({ title: t("settings.backup.restore"), filterName: "JSON", extensions: ["json"] });
+      if (!picked) return;
       const backup = JSON.parse(new TextDecoder().decode(await backend.readFileBytes(picked)));
       const account = backup?.app === backupMarker ? backup.account : null;
       if (!account || typeof account.tracked !== "object" || typeof account.progress !== "object") {

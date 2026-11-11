@@ -3,6 +3,7 @@ mod commands;
 mod engine;
 mod external_player;
 mod ffmpeg;
+mod files;
 mod imdb;
 mod launch;
 mod logging;
@@ -34,6 +35,7 @@ pub struct AppState {
 const DOWNLOAD_FOLDER_NAME: &str = "Kinuza";
 const SESSION_FOLDER_NAME: &str = "session";
 const STREAM_CACHE_FOLDER_NAME: &str = "stream-cache";
+const STARTUP_ERROR_TEXT: &str = "Kinuza не смогла запуститься. Подробности записаны в журнал (папка logs в данных приложения).";
 
 pub fn run() {
     tauri::Builder::default()
@@ -41,6 +43,7 @@ pub fn run() {
         .manage(imdb::ImdbState::default())
         .manage(ffmpeg::FfmpegState::default())
         .manage(mpv::MpvState::default())
+        .manage(files::FileGrants::default())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.unminimize();
@@ -56,7 +59,14 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
-            let state = tauri::async_runtime::block_on(build_state(app.handle()))?;
+            let state = match tauri::async_runtime::block_on(build_state(app.handle())) {
+                Ok(state) => state,
+                Err(error) => {
+                    tracing::error!("startup failed: {error:#}");
+                    show_startup_error(&format!("{error:#}"));
+                    return Err(error.into());
+                }
+            };
             app.manage(state);
             Ok(())
         })
@@ -69,6 +79,7 @@ pub fn run() {
             commands::torrent_resume,
             commands::torrent_delete,
             commands::torrent_select_files,
+            commands::torrent_hold,
             commands::torrent_release,
             commands::torrent_set_policy,
             commands::storage_info,
@@ -76,10 +87,12 @@ pub fn run() {
             rutracker::rutracker_torrent_inspect,
             logging::log_write,
             logging::logs_open,
-            commands::write_text_file,
+            files::write_text_file,
+            files::file_pick,
+            files::file_save_target,
             commands::file_location,
             commands::open_external,
-            commands::read_file_bytes,
+            files::read_file_bytes,
             commands::take_launch_request,
             commands::associations_status,
             commands::associations_set,
@@ -98,7 +111,6 @@ pub fn run() {
             mpv::mpv_command,
             mpv::mpv_set,
             mpv::mpv_add_subtitle_text,
-            
             rutracker::rutracker_login_window,
             rutracker::rutracker_search,
             rutracker::rutracker_magnet,
@@ -116,6 +128,21 @@ pub fn run() {
         });
 }
 
+#[cfg(windows)]
+fn show_startup_error(detail: &str) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+    let wide = |text: &str| text.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+    let text = wide(&format!("{STARTUP_ERROR_TEXT}
+
+{detail}"));
+    let title = wide("Kinuza");
+    unsafe {
+        MessageBoxW(std::ptr::null_mut(), text.as_ptr(), title.as_ptr(), MB_OK | MB_ICONERROR);
+    }
+}
+
+#[cfg(not(windows))]
+fn show_startup_error(_detail: &str) {}
 
 async fn build_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
     let data_dir = app.path().app_data_dir()?;

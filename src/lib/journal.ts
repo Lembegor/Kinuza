@@ -7,7 +7,7 @@ const maxEntries = 200;
 const saveDelayMs = 500;
 const maxDetailLength = 300;
 
-export type JournalArea = "catalog" | "downloads" | "player" | "import" | "settings" | "updates" | "system";
+export type JournalArea = "catalog" | "library" | "downloads" | "player" | "import" | "settings" | "updates" | "system";
 
 export interface JournalEntry {
   time: number;
@@ -47,8 +47,8 @@ let loading: Promise<void> | null = null;
 export function loadJournal(): Promise<void> {
   loading ??= backend
     .storeGet(storeName)
-    .then((text) => {
-      const stored: unknown = text ? JSON.parse(text) : [];
+    .then((document) => {
+      const stored: unknown = document ? JSON.parse(document.text) : [];
       const earlier = Array.isArray(stored) ? stored.filter(isEntry) : [];
       useJournal.setState((state) => ({ entries: [...earlier, ...state.entries].slice(-maxEntries) }));
     })

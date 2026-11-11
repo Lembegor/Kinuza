@@ -6,7 +6,7 @@ import { Onboarding } from "./components/Onboarding";
 import { ConfirmDialog, Toasts, UpdateNotice } from "./components/Overlays";
 import { Player } from "./components/Player";
 import { Sidebar, Titlebar } from "./components/Shell";
-import { backend, describeError, isDesktop, onLaunchRequest, type LaunchRequest } from "./lib/backend";
+import { backend, describeError, getAppInfo, isDesktop, onLaunchRequest, type LaunchRequest } from "./lib/backend";
 import { t, useT } from "./lib/i18n";
 import { report } from "./lib/journal";
 import { isMagnetLink } from "./lib/parse";
@@ -176,9 +176,11 @@ export default function App() {
   useEffect(() => {
     void useSettings.getState().load();
     void useLibrary.getState().load();
+    void getAppInfo().then((info) => {
+      if (info.sessionReset) useUi.getState().toast(t("shell.sessionReset"), "info");
+    });
     return startTorrentPolling();
   }, []);
-
 
   useEffect(() => {
     if (!settingsLoaded || !autoUpdate) return;

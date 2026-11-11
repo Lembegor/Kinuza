@@ -16,7 +16,7 @@ use tokio::{
     sync::{mpsc, Mutex},
 };
 
-use crate::AppState;
+use crate::{files::FileGrants, AppState};
 
 const RELEASE_API: &str = "https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest";
 const FOLDER_NAME: &str = "mpv";
@@ -26,6 +26,21 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const PIPE_WAIT: Duration = Duration::from_secs(8);
 const EVENT_NAME: &str = "mpv-event";
 const SUBTITLES_FOLDER_NAME: &str = "mpv-subtitles";
+
+const ALLOWED_PROPERTIES: &[&str] = &[
+    "volume",
+    "mute",
+    "speed",
+    "pause",
+    "start",
+    "alang",
+    "audio-delay",
+    "sub-scale",
+    "sub-delay",
+    "sid",
+    "aid",
+];
+const LOADFILE_FLAGS: &[&str] = &["replace", "append"];
 
 const OBSERVED: &[&str] = &[
     "time-pos",
@@ -335,13 +350,49 @@ async fn send(app: &AppHandle, state: &MpvState, data_dir: &Path, message: Value
     running.commands.send(message.to_string()).map_err(|_| "mpv_gone".to_owned())
 }
 
+fn is_plain(value: &Value) -> bool {
+    matches!(value, Value::String(_) | Value::Number(_) | Value::Bool(_))
+}
+
+fn allowed_command(command: &[Value], stream_base_url: &str, grants: &FileGrants) -> bool {
+    if !command.iter().all(is_plain) {
+        return false;
+    }
+    let text = |index: usize| command.get(index).and_then(Value::as_str);
+    match text(0) {
+        Some("seek") => command.len() <= 3,
+        Some("stop") => command.len() == 1,
+        Some("loadfile") => {
+            let from_our_server = text(1).is_some_and(|url| url.starts_with(&format!("{stream_base_url}/")));
+            let flag_ok = command.len() == 2 || text(2).is_some_and(|flag| LOADFILE_FLAGS.contains(&flag));
+            from_our_server && command.len() <= 3 && flag_ok
+        }
+        Some("sub-add") => command.len() <= 5 && text(1).is_some_and(|path| grants.may_read(Path::new(path))),
+        _ => false,
+    }
+}
+
 #[tauri::command]
-pub async fn mpv_command(app: AppHandle, state: State<'_, AppState>, mpv: State<'_, MpvState>, command: Vec<Value>) -> Result<(), String> {
+pub async fn mpv_command(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    mpv: State<'_, MpvState>,
+    grants: State<'_, FileGrants>,
+    command: Vec<Value>,
+) -> Result<(), String> {
+    if !allowed_command(&command, &state.stream_base_url, &grants) {
+        tracing::warn!("mpv: refused command {:?}", command.first());
+        return Err("mpv_command_refused".to_owned());
+    }
     send(&app, &mpv, &state.data_dir, json!({ "command": command })).await
 }
 
 #[tauri::command]
 pub async fn mpv_set(app: AppHandle, state: State<'_, AppState>, mpv: State<'_, MpvState>, name: String, value: Value) -> Result<(), String> {
+    if !ALLOWED_PROPERTIES.contains(&name.as_str()) || !is_plain(&value) {
+        tracing::warn!("mpv: refused to set {name}");
+        return Err("mpv_property_refused".to_owned());
+    }
     send(&app, &mpv, &state.data_dir, json!({ "command": ["set_property", name, value] })).await
 }
 
@@ -379,4 +430,38 @@ pub async fn shutdown(mpv: &MpvState) {
 
 pub fn clear_subtitle_files(data_dir: &Path) {
     let _ = std::fs::remove_dir_all(data_dir.join(SUBTITLES_FOLDER_NAME));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BASE: &str = "http://127.0.0.1:5000/token";
+
+    fn allowed(command: Value) -> bool {
+        let grants = FileGrants::default();
+        allowed_command(command.as_array().unwrap(), BASE, &grants)
+    }
+
+    #[test]
+    fn plays_only_our_streams() {
+        assert!(allowed(json!(["loadfile", format!("{BASE}/stream/abc/0"), "replace"])));
+        assert!(!allowed(json!(["loadfile", "https://example.com/film.mkv", "replace"])));
+        assert!(!allowed(json!(["loadfile", format!("{BASE}/stream/abc/0"), "replace", -1, "script=evil.lua"])));
+        assert!(!allowed(json!(["loadfile", format!("{BASE}/stream/abc/0"), "insert-next"])));
+    }
+
+    #[test]
+    fn refuses_running_programs() {
+        assert!(!allowed(json!(["run", "cmd.exe", "/c", "calc"])));
+        assert!(!allowed(json!(["subprocess", ["calc"]])));
+        assert!(!allowed(json!(["load-script", "evil.lua"])));
+        assert!(allowed(json!(["seek", 12.5, "absolute+exact"])));
+        assert!(allowed(json!(["stop"])));
+    }
+
+    #[test]
+    fn adds_only_chosen_subtitles() {
+        assert!(!allowed(json!(["sub-add", "C:\\secret.txt", "select"])));
+    }
 }

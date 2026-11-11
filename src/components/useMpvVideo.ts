@@ -103,6 +103,12 @@ export class MpvVideo {
     void mpv.set("pause", true);
   }
 
+  prime(volume: number, muted: boolean, rate: number): void {
+    this.volumeNow = volume;
+    this.mutedNow = muted;
+    this.rateNow = rate;
+  }
+
   async load(url: string, start: number): Promise<void> {
     this.time = start;
     this.length = Number.NaN;
@@ -112,6 +118,9 @@ export class MpvVideo {
     this.bufferedRanges = [];
     this.trackList = [];
     this.chapterList = [];
+    await mpv.set("volume", Math.round(this.volumeNow * 100));
+    await mpv.set("mute", this.mutedNow);
+    await mpv.set("speed", this.rateNow);
     await mpv.set("start", start > 0 ? String(start) : "none");
     await mpv.set("pause", false);
     this.pausedNow = false;

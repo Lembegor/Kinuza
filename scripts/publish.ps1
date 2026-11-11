@@ -32,6 +32,21 @@ if ($remoteTag) {
 if (git tag -l $tag) {
     Write-Host "== Tag $tag exists here but not on GitHub: finishing the interrupted release"
 } else {
+    $branch = (git rev-parse --abbrev-ref HEAD).Trim()
+    if ($branch -ne "master") {
+        throw "Releases go out from master, but this is '$branch'. Switch with: git switch master"
+    }
+
+    $changed = @(git status --porcelain --untracked-files=all | ForEach-Object { $_.Substring(3).Trim('"') })
+    $secretLike = $changed | Where-Object { $_ -match '(^|/)\.env(\.|$)|\.(key|pem|pfx|p12)$|(^|/)secrets?(/|\.|$)' -and $_ -notmatch '(^|/)\.env\.example$' }
+    if ($secretLike) {
+        throw "These files look like secrets and would go into the public repository: $($secretLike -join ', '). Add them to .gitignore or move them out of the project."
+    }
+    if ($changed.Count -gt 0) {
+        Write-Host "== These changes go into the release:"
+        $changed | ForEach-Object { Write-Host "   $_" }
+    }
+
     Write-Host "== Checking that the app builds"
     Invoke-Checked "Type check (npm run typecheck)" { npm run typecheck }
 
@@ -65,6 +80,7 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host ""
 Write-Host "Version $Version is on its way. GitHub is building it now (about 15-25 minutes):"
 Write-Host "  https://github.com/$Repo/actions"
+Write-Host "The build checks the files first and publishes the release only if the update is complete."
 Write-Host "When the build is green, the release appears here:"
 Write-Host "  https://github.com/$Repo/releases/latest"
 Write-Host "Installed apps will offer the update on their next start (or within a few hours if they stay open)."

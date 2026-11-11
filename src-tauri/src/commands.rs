@@ -12,7 +12,7 @@ use crate::{
     AppState,
 };
 
-const MAX_READABLE_FILE_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_TORRENT_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const ARCHIVE_TORRENT_PREFIX: &str = "https://archive.org/download/";
 
 type CommandResult<T> = Result<T, String>;
@@ -28,6 +28,7 @@ pub struct AppInfo {
     stream_base_url: String,
     default_download_dir: String,
     external_player: Option<String>,
+    session_reset: bool,
 }
 
 #[tauri::command]
@@ -37,6 +38,7 @@ pub fn app_info(app: tauri::AppHandle, state: State<'_, AppState>) -> AppInfo {
         stream_base_url: state.stream_base_url.clone(),
         default_download_dir: state.default_download_dir.to_string_lossy().into_owned(),
         external_player: external_player::find().map(|player| player.name.to_owned()),
+        session_reset: state.engine.session_was_reset(),
     }
 }
 
@@ -55,6 +57,15 @@ pub async fn torrent_inspect(
             AddTorrent::from_url(link)
         }
         (None, Some(path)) => {
+            let path = PathBuf::from(path);
+            let is_torrent = path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("torrent"));
+            let size = std::fs::metadata(&path).map(|metadata| metadata.len()).unwrap_or(u64::MAX);
+            if !is_torrent || size > MAX_TORRENT_FILE_BYTES {
+                return Err("torrent_file_unreadable".to_owned());
+            }
             let bytes = std::fs::read(&path).map_err(|_| "torrent_file_unreadable".to_owned())?;
             AddTorrent::from_bytes(bytes)
         }
@@ -132,6 +143,11 @@ pub async fn torrent_select_files(
 }
 
 #[tauri::command]
+pub fn torrent_hold(state: State<'_, AppState>, info_hash: String) {
+    state.engine.hold_online(&info_hash);
+}
+
+#[tauri::command]
 pub async fn torrent_release(state: State<'_, AppState>, info_hash: String) -> CommandResult<()> {
     state.engine.release_online(&info_hash).await.map_err(to_message)
 }
@@ -187,11 +203,6 @@ fn disk_space(_folder: &std::path::Path) -> Option<StorageInfo> {
 }
 
 #[tauri::command]
-pub fn write_text_file(path: String, contents: String) -> CommandResult<()> {
-    std::fs::write(&path, contents).map_err(|_| "file_unwritable".to_owned())
-}
-
-#[tauri::command]
 pub fn file_location(
     state: State<'_, AppState>,
     info_hash: String,
@@ -232,16 +243,6 @@ pub async fn open_external(
     };
     external_player::launch(&player, &target).map_err(to_message)?;
     Ok(player.name.to_owned())
-}
-
-#[tauri::command]
-pub fn read_file_bytes(path: String) -> CommandResult<tauri::ipc::Response> {
-    let metadata = std::fs::metadata(&path).map_err(|_| "file_unreadable".to_owned())?;
-    if metadata.len() > MAX_READABLE_FILE_BYTES {
-        return Err("file_too_large".to_owned());
-    }
-    let bytes = std::fs::read(&path).map_err(|_| "file_unreadable".to_owned())?;
-    Ok(tauri::ipc::Response::new(bytes))
 }
 
 #[tauri::command]

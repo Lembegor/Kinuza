@@ -81,6 +81,8 @@ export async function mockInvoke(command: string, args: Record<string, unknown> 
     case "logs_open":
     case "torrent_set_policy":
     case "write_text_file":
+    case "file_pick":
+    case "file_save_target":
       return null;
     case "storage_info":
       return { freeBytes: 180 * GiB, totalBytes: 930 * GiB, cacheBytes: 3.4 * GiB };
@@ -108,6 +110,7 @@ export async function mockInvoke(command: string, args: Record<string, unknown> 
         streamBaseUrl: "http://127.0.0.1:0/preview",
         defaultDownloadDir: "C:\\Users\\you\\Videos\\Kinuza",
         externalPlayer: "VLC",
+        sessionReset: false,
       } satisfies AppInfo;
     case "torrent_inspect":
       await new Promise((resolve) => setTimeout(resolve, 900));
@@ -140,6 +143,7 @@ export async function mockInvoke(command: string, args: Record<string, unknown> 
       if (torrent) torrent.state = command === "torrent_pause" ? "paused" : "live";
       return null;
     }
+    case "torrent_hold":
     case "torrent_release":
       return null;
     case "torrent_select_files": {
@@ -156,8 +160,10 @@ export async function mockInvoke(command: string, args: Record<string, unknown> 
       if (index >= 0) torrents.splice(index, 1);
       return null;
     }
-    case "store_get":
-      return localStorage.getItem(storagePrefix + String(args.name));
+    case "store_get": {
+      const text = localStorage.getItem(storagePrefix + String(args.name));
+      return text === null ? null : { text, recovered: false };
+    }
     case "store_set":
       localStorage.setItem(storagePrefix + String(args.name), String(args.value));
       return null;

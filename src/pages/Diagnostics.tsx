@@ -181,6 +181,7 @@ function CheckRow({ check, result }: { check: Check; result: CheckResult | undef
 
 const areaNames: Record<JournalArea, MessageKey> = {
   catalog: "journal.area.catalog",
+  library: "journal.area.library",
   downloads: "journal.area.downloads",
   player: "journal.area.player",
   import: "journal.area.import",

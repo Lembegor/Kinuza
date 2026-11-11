@@ -11,7 +11,9 @@ import {
 } from "../lib/account";
 import { backend } from "../lib/backend";
 import { t, type MessageKey } from "../lib/i18n";
+import { report } from "../lib/journal";
 import type { MediaItem, MediaType } from "../lib/tmdb";
+import { useUi } from "./ui";
 
 const storeName = "library";
 const saveDelayMs = 500;
@@ -171,11 +173,37 @@ function withAutoStatus(
   return { ...tracked, [key]: { ...base, status, updatedAt: now } };
 }
 
-function migrate(data: Partial<LibraryData> & LegacyData): LibraryData {
-  const progress = data.progress ?? {};
-  const tracked: Record<string, TrackEntry> = { ...(data.tracked ?? {}) };
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
-  for (const [key, item] of Object.entries(data.saved ?? {})) {
+function isTitle(value: unknown): value is TitleRef {
+  return isRecord(value) && (value.type === "movie" || value.type === "tv") && typeof value.id === "number";
+}
+
+function validEntries<T>(value: unknown, valid: (item: unknown) => boolean): Record<string, T> {
+  if (!isRecord(value)) return {};
+  const kept: Record<string, T> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (valid(item)) kept[key] = item as T;
+  }
+  return kept;
+}
+
+function isProgress(item: unknown): boolean {
+  return isRecord(item) && typeof item.position === "number" && typeof item.duration === "number" && isTitle(item.title);
+}
+
+function isSourceList(item: unknown): boolean {
+  return Array.isArray(item) && item.every((source) => isRecord(source) && typeof source.infoHash === "string" && typeof source.fileIndex === "number");
+}
+
+function migrate(raw: unknown): LibraryData {
+  const data = (isRecord(raw) ? raw : {}) as Partial<LibraryData> & LegacyData;
+  const progress = validEntries<Progress>(data.progress, isProgress);
+  const tracked = validEntries<TrackEntry>(data.tracked, isTitle);
+
+  for (const [key, item] of Object.entries(validEntries<TitleRef & { addedAt: number }>(data.saved, isTitle))) {
     tracked[key] ??= { ...item, status: "planned", rating: null, updatedAt: item.addedAt };
   }
   for (const item of Object.values(progress)) {
@@ -191,12 +219,12 @@ function migrate(data: Partial<LibraryData> & LegacyData): LibraryData {
   }
   return {
     tracked,
-    sources: data.sources ?? {},
+    sources: validEntries<Source[]>(data.sources, isSourceList),
     progress,
-    removed: data.removed ?? {},
-    preferences: data.preferences ?? {},
-    dismissed: data.dismissed ?? {},
-    onboardedAt: data.onboardedAt,
+    removed: validEntries<number>(data.removed, (item) => typeof item === "number"),
+    preferences: validEntries<TitlePreferences>(data.preferences, isRecord),
+    dismissed: validEntries<Dismissal>(data.dismissed, isTitle),
+    onboardedAt: typeof data.onboardedAt === "number" ? data.onboardedAt : undefined,
   };
 }
 
@@ -206,8 +234,17 @@ function isEmpty(record: Record<string, unknown>): boolean {
 
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
 let unsaved: LibraryData | null = null;
+let savingBlocked = false;
+let saveFailureShown = false;
+
+function blockSaving(error: unknown): void {
+  savingBlocked = true;
+  report("library", "journal.library.load", error);
+  useUi.getState().toast(t("library.loadFailed"), "error");
+}
 
 function write(state: LibraryData): Promise<void> {
+  if (savingBlocked) return Promise.resolve();
   const data: LibraryData = {
     tracked: state.tracked,
     sources: state.sources,
@@ -217,7 +254,17 @@ function write(state: LibraryData): Promise<void> {
     dismissed: state.dismissed,
     onboardedAt: state.onboardedAt,
   };
-  return backend.storeSet(storeName, JSON.stringify(data)).catch((error) => console.error("library: save failed", error));
+  return backend.storeSet(storeName, JSON.stringify(data)).then(
+    () => {
+      saveFailureShown = false;
+    },
+    (error) => {
+      report("library", "journal.library.save", error);
+      if (saveFailureShown) return;
+      saveFailureShown = true;
+      useUi.getState().toast(t("library.saveFailed"), "error");
+    },
+  );
 }
 
 function scheduleSave(state: LibraryData): void {
@@ -260,12 +307,13 @@ export const useLibrary = create<LibraryState>((set, get) => {
 
     async load() {
       try {
-        const text = await backend.storeGet(storeName);
-        const data = migrate(text ? JSON.parse(text) : {});
+        const document = await backend.storeGet(storeName);
+        const data = migrate(document ? JSON.parse(document.text) : {});
         const firstRun = !data.onboardedAt && isEmpty(data.tracked) && isEmpty(data.progress);
         set({ ...data, firstRun, loaded: true });
+        if (document?.recovered) useUi.getState().toast(t("library.recovered"), "info");
       } catch (error) {
-        console.error("library: load failed", error);
+        blockSaving(error);
         set({ loaded: true });
       }
     },
@@ -415,6 +463,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
     },
 
     mergeAccountData(other) {
+      savingBlocked = false;
       update(() => {
         const merged = mergeAccountData(get().exportAccountData(), other);
         const { tracked, progress, removed, preferences, onboardedAt } = merged;

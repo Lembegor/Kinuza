@@ -27,7 +27,21 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": {
+        "default-src": "'self'",
+        "script-src": "'self'",
+        "style-src": "'self' 'unsafe-inline'",
+        "img-src": "'self' data: blob: https:",
+        "media-src": "'self' blob: http://127.0.0.1:*",
+        "connect-src": "'self' ipc: http://ipc.localhost http://127.0.0.1:* https://api.themoviedb.org https://graphql.anilist.co",
+        "frame-src": "https://www.youtube-nocookie.com https://www.youtube.com",
+        "font-src": "'self' data:",
+        "object-src": "'none'",
+        "base-uri": "'none'",
+        "form-action": "'none'"
+      },
+      "devCsp": null,
+      "dangerousDisableAssetCspModification": ["style-src"]
     }
   },
   "bundle": {
@@ -56,7 +70,8 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDNDNEMwMzNBQjZBOEY3NUMKUldSYzk2aTJPZ05NUFBKcndNQS9NS3dRdGRFRG5lSU50N1RURldzektTbnA0SnpoOXQzeFVnNmkK",
       "endpoints": [
-        "https://github.com/Lembegor/Kinuza/releases/latest/download/latest.json"
+        "https://github.com/Lembegor/Kinuza/releases/latest/download/latest.json",
+        "https://github.com/Lembegor/kinuza-updates/releases/latest/download/latest.json"
       ],
       "windows": {
         "installMode": "passive"

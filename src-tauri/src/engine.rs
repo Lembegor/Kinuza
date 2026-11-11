@@ -108,6 +108,32 @@ struct Watch {
 }
 
 const ANNOUNCE_SELECTION: Duration = Duration::from_secs(10);
+const RELEASE_GRACE: Duration = Duration::from_secs(5);
+const TOUCH_EVERY_MILLIS: u64 = 60_000;
+
+#[derive(Default)]
+struct Usage {
+    holders: usize,
+    active: Option<Instant>,
+    released: Option<Instant>,
+}
+
+impl Usage {
+    fn playing(&self) -> bool {
+        self.holders > 0
+            || self.active.is_some_and(|active| {
+                active.elapsed() < ONLINE_LINGER && self.released.map_or(true, |released| released < active)
+            })
+    }
+
+    fn in_use(&self) -> bool {
+        self.playing() || self.released.is_some_and(|released| released.elapsed() < ONLINE_LINGER)
+    }
+
+    fn just_released(&self) -> bool {
+        self.holders == 0 && self.released.is_some_and(|released| released.elapsed() < RELEASE_GRACE)
+    }
+}
 const FREE_SPACE_RESERVE: u64 = 2 * 1024 * 1024 * 1024;
 
 const EXTRA_TRACKERS: &[&str] = &[
@@ -133,16 +159,25 @@ pub struct Engine {
     pending: Mutex<HashMap<String, PendingTorrent>>,
     cache_dir: PathBuf,
     parked: Mutex<HashMap<String, ParkedTorrent>>,
-    played: Mutex<HashSet<String>>,
+    usage: Mutex<HashMap<String, Usage>>,
     parking: tokio::sync::Mutex<()>,
     policy: Mutex<DownloadPolicy>,
     queued: Mutex<HashSet<String>>,
     seeding_stopped: Mutex<HashSet<String>>,
-    released: Mutex<HashMap<String, Instant>>,
     last_played: Mutex<HashMap<String, u64>>,
     policy_known: std::sync::atomic::AtomicBool,
     watching: Mutex<HashMap<String, Watch>>,
     announced: Mutex<HashSet<String>>,
+    session_reset: bool,
+}
+
+fn set_aside(folder: &Path) -> Result<PathBuf> {
+    let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map(|elapsed| elapsed.as_secs()).unwrap_or(0);
+    let name = folder.file_name().and_then(|name| name.to_str()).unwrap_or("session");
+    let aside = folder.with_file_name(format!("{name}-damaged-{stamp}"));
+    std::fs::rename(folder, &aside).with_context(|| format!("could not move {} aside", folder.display()))?;
+    std::fs::create_dir_all(folder)?;
+    Ok(aside)
 }
 
 impl Engine {
@@ -151,11 +186,35 @@ impl Engine {
         std::fs::create_dir_all(&persistence_dir).ok();
         std::fs::create_dir_all(&cache_dir).ok();
 
+        let (session, session_reset) = match Self::open_session(&default_output, &persistence_dir).await {
+            Ok(session) => (session, false),
+            Err(error) => {
+                tracing::error!("session: could not start with the saved torrents: {error:#}");
+                let aside = set_aside(&persistence_dir)?;
+                match Self::open_session(&default_output, &persistence_dir).await {
+                    Ok(session) => {
+                        tracing::warn!("session: started fresh, the saved torrents were moved to {}", aside.display());
+                        (session, true)
+                    }
+                    Err(second) => {
+                        tracing::error!("session: could not start even without the saved torrents: {second:#}");
+                        let _ = std::fs::remove_dir_all(&persistence_dir);
+                        let _ = std::fs::rename(&aside, &persistence_dir);
+                        return Err(error);
+                    }
+                }
+            }
+        };
+        tracing::info!("session listening on {:?}, announcing port {:?}", session.listen_addr(), session.announce_port());
+        Self::assemble(session, session_reset, cache_dir)
+    }
+
+    async fn open_session(default_output: &Path, persistence_dir: &Path) -> Result<Arc<Session>> {
         let options = SessionOptions {
             fastresume: true,
             trackers: EXTRA_TRACKERS.iter().filter_map(|tracker| reqwest::Url::parse(tracker).ok()).collect(),
             persistence: Some(SessionPersistenceConfig::Json {
-                folder: Some(persistence_dir),
+                folder: Some(persistence_dir.to_path_buf()),
             }),
             listen: Some(ListenerOptions {
                 mode: librqbit::ListenerMode::TcpAndUtp,
@@ -172,11 +231,12 @@ impl Engine {
             }),
             ..Default::default()
         };
-        let session = Session::new_with_opts(default_output, options)
+        Session::new_with_opts(default_output.to_path_buf(), options)
             .await
-            .context("failed to start the torrent session")?;
-        tracing::info!("session listening on {:?}, announcing port {:?}", session.listen_addr(), session.announce_port());
+            .context("failed to start the torrent session")
+    }
 
+    fn assemble(session: Arc<Session>, session_reset: bool, cache_dir: PathBuf) -> Result<Arc<Self>> {
         let parked = std::fs::read_to_string(cache_dir.join(PARKED_INDEX_NAME))
             .ok()
             .and_then(|text| serde_json::from_str(&text).ok())
@@ -190,16 +250,16 @@ impl Engine {
             pending: Mutex::new(HashMap::new()),
             cache_dir,
             parked: Mutex::new(parked),
-            played: Mutex::new(HashSet::new()),
+            usage: Mutex::new(HashMap::new()),
             parking: tokio::sync::Mutex::new(()),
             policy: Mutex::new(DownloadPolicy::default()),
             queued: Mutex::new(HashSet::new()),
             seeding_stopped: Mutex::new(HashSet::new()),
-            released: Mutex::new(HashMap::new()),
             last_played: Mutex::new(last_played),
             policy_known: std::sync::atomic::AtomicBool::new(false),
             watching: Mutex::new(HashMap::new()),
             announced: Mutex::new(HashSet::new()),
+            session_reset,
         });
 
         let keeper = engine.clone();
@@ -225,6 +285,10 @@ impl Engine {
             cleaner.rest_leftovers().await;
         });
         Ok(engine)
+    }
+
+    pub fn session_was_reset(&self) -> bool {
+        self.session_reset
     }
 
     pub fn set_policy(&self, policy: DownloadPolicy) {
@@ -346,11 +410,7 @@ impl Engine {
     }
 
     fn log_swarms(&self) {
-        let hashes: Vec<String> = {
-            let played = self.played.lock().unwrap();
-            let released = self.released.lock().unwrap();
-            played.iter().chain(released.keys()).cloned().collect()
-        };
+        let hashes: Vec<String> = self.usage.lock().unwrap().keys().cloned().collect();
         for info_hash in hashes {
             let Ok(handle) = self.find(&info_hash) else { continue };
             let stats = handle.stats();
@@ -408,21 +468,28 @@ impl Engine {
     }
 
     fn touch(&self, info_hash: &str) {
-        self.last_played.lock().unwrap().insert(info_hash.to_owned(), unix_millis(SystemTime::now()));
-        self.save_last_played();
+        let now = unix_millis(SystemTime::now());
+        let previous = self.last_played.lock().unwrap().insert(info_hash.to_owned(), now);
+        if previous.map_or(true, |previous| now.saturating_sub(previous) >= TOUCH_EVERY_MILLIS) {
+            self.save_last_played();
+        }
     }
 
     fn forget_cached(&self, info_hash: &str) {
         self.watching.lock().unwrap().remove(info_hash);
         self.announced.lock().unwrap().remove(info_hash);
-        self.released.lock().unwrap().remove(info_hash);
+        self.usage.lock().unwrap().remove(info_hash);
         if self.last_played.lock().unwrap().remove(info_hash).is_some() {
             self.save_last_played();
         }
     }
 
     fn is_in_use(&self, info_hash: &str) -> bool {
-        self.played.lock().unwrap().contains(info_hash) || self.released.lock().unwrap().contains_key(info_hash)
+        self.usage.lock().unwrap().get(info_hash).is_some_and(Usage::in_use)
+    }
+
+    fn is_playing(&self, info_hash: &str) -> bool {
+        self.usage.lock().unwrap().get(info_hash).is_some_and(Usage::playing)
     }
 
     fn resting_online(&self, with_lingering: bool) -> Vec<TorrentHandle> {
@@ -431,7 +498,7 @@ impl Engine {
                 .map(|(_, handle)| handle.clone())
                 .filter(|handle| {
                     let info_hash = handle.info_hash().as_string();
-                    let busy = if with_lingering { self.played.lock().unwrap().contains(&info_hash) } else { self.is_in_use(&info_hash) };
+                    let busy = if with_lingering { self.is_playing(&info_hash) } else { self.is_in_use(&info_hash) };
                     self.is_online_only(handle) && !busy
                 })
                 .collect()
@@ -460,17 +527,16 @@ impl Engine {
     async fn rest_released(&self) {
         let _parking = self.parking.lock().await;
         let due: Vec<String> = {
-            let mut released = self.released.lock().unwrap();
-            let due: Vec<String> =
-                released.iter().filter(|(_, since)| since.elapsed() >= ONLINE_LINGER).map(|(hash, _)| hash.clone()).collect();
+            let mut usage = self.usage.lock().unwrap();
+            let due: Vec<String> = usage.iter().filter(|(_, usage)| !usage.in_use()).map(|(hash, _)| hash.clone()).collect();
             for hash in &due {
-                released.remove(hash);
+                usage.remove(hash);
             }
             due
         };
         for info_hash in due {
             if let Ok(handle) = self.find(&info_hash) {
-                if self.is_online_only(&handle) && !self.played.lock().unwrap().contains(&info_hash) {
+                if self.is_online_only(&handle) {
                     self.rest(&handle).await;
                 }
             }
@@ -510,7 +576,7 @@ impl Engine {
                     .map(|(_, handle)| handle.clone())
                     .filter(|handle| {
                         let info_hash = handle.info_hash().as_string();
-                        let busy = if with_lingering { self.played.lock().unwrap().contains(&info_hash) } else { self.is_in_use(&info_hash) };
+                        let busy = if with_lingering { self.is_playing(&info_hash) } else { self.is_in_use(&info_hash) };
                         self.is_online_only(handle) && busy
                     })
                     .collect::<Vec<_>>()
@@ -670,13 +736,13 @@ impl Engine {
             return Ok(());
         }
         let _parking = self.parking.lock().await;
-        if self.played.lock().unwrap().contains(info_hash) {
+        if self.is_playing(info_hash) {
             return Ok(());
         }
         tracing::info!("engine: {info_hash} takes the trackers of its .torrent file");
         self.watching.lock().unwrap().remove(info_hash);
         self.announced.lock().unwrap().remove(info_hash);
-        self.released.lock().unwrap().remove(info_hash);
+        self.usage.lock().unwrap().remove(info_hash);
         self.session.delete(TorrentIdOrHash::Hash(handle.info_hash()), false).await?;
         self.add_from_bytes(
             info_hash,
@@ -729,7 +795,7 @@ impl Engine {
                 .map(|(_, handle)| {
                     let mut view = torrent_view(handle);
                     if self.is_online_only(handle) {
-                        if !self.played.lock().unwrap().contains(&view.info_hash) {
+                        if !self.is_playing(&view.info_hash) {
                             view.state = STATE_PARKED;
                         }
                         for file in &mut view.files {
@@ -837,32 +903,58 @@ impl Engine {
         .await
     }
 
+    pub fn hold_online(&self, info_hash: &str) {
+        let mut usage = self.usage.lock().unwrap();
+        let entry = usage.entry(info_hash.to_owned()).or_default();
+        entry.holders += 1;
+        entry.active = Some(Instant::now());
+    }
+
+    fn note_stream_request(&self, info_hash: &str) -> bool {
+        let mut usage = self.usage.lock().unwrap();
+        let entry = usage.entry(info_hash.to_owned()).or_default();
+        if entry.just_released() {
+            return false;
+        }
+        entry.active = Some(Instant::now());
+        true
+    }
+
     pub async fn prepare_stream(self: &Arc<Self>, info_hash: &str, file: Option<usize>) -> Result<TorrentHandle> {
-        let _parking = self.parking.lock().await;
-        if self.find(info_hash).is_err() {
-            let (torrent_bytes, parked) = self.parked_torrent(info_hash).ok_or_else(|| anyhow!("torrent_not_found"))?;
-            self.add_from_bytes(
-                info_hash,
-                torrent_bytes,
-                &parked.name,
-                parked.files.len(),
-                Vec::new(),
-                Path::new(""),
-                parked.peers,
-                parked.trackers,
-            )
-            .await?;
-        }
-        let handle = self.find(info_hash)?;
-        let online = self.is_online_only(&handle);
-        if online {
-            self.played.lock().unwrap().insert(info_hash.to_owned());
-            self.released.lock().unwrap().remove(info_hash);
-            self.touch(info_hash);
-        }
+        let (handle, online, late) = {
+            let _parking = self.parking.lock().await;
+            if self.find(info_hash).is_err() {
+                let (torrent_bytes, parked) = self.parked_torrent(info_hash).ok_or_else(|| anyhow!("torrent_not_found"))?;
+                self.add_from_bytes(
+                    info_hash,
+                    torrent_bytes,
+                    &parked.name,
+                    parked.files.len(),
+                    Vec::new(),
+                    Path::new(""),
+                    parked.peers,
+                    parked.trackers,
+                )
+                .await?;
+            }
+            let handle = self.find(info_hash)?;
+            let online = self.is_online_only(&handle);
+            let late = online && !self.note_stream_request(info_hash);
+            if online && !late {
+                self.touch(info_hash);
+            }
+            (handle, online, late)
+        };
         tokio::time::timeout(STREAM_READY_TIMEOUT, handle.wait_until_initialized())
             .await
             .map_err(|_| anyhow!("torrent_not_ready"))??;
+        if late {
+            return Ok(handle);
+        }
+        let _parking = self.parking.lock().await;
+        if self.find(info_hash).is_err() {
+            return Err(anyhow!("torrent_not_found"));
+        }
         let announcing = match (online, file) {
             (true, Some(file)) => self.select_for_announce(&handle, file).await,
             _ => false,
@@ -882,7 +974,7 @@ impl Engine {
                 }
                 let info_hash = announced.info_hash().as_string();
                 let watched = match announced.only_files().as_deref() {
-                    Some(&[file]) if engine.played.lock().unwrap().contains(&info_hash) => Some(file),
+                    Some(&[file]) if engine.is_playing(&info_hash) => Some(file),
                     _ => None,
                 };
                 match watched {
@@ -959,11 +1051,21 @@ impl Engine {
 
     pub async fn release_online(&self, info_hash: &str) -> Result<()> {
         let _parking = self.parking.lock().await;
-        self.played.lock().unwrap().remove(info_hash);
+        let still_held = {
+            let mut usage = self.usage.lock().unwrap();
+            let entry = usage.entry(info_hash.to_owned()).or_default();
+            entry.holders = entry.holders.saturating_sub(1);
+            if entry.holders == 0 {
+                entry.released = Some(Instant::now());
+            }
+            entry.holders > 0
+        };
+        if still_held {
+            return Ok(());
+        }
         if let Ok(handle) = self.find(info_hash) {
             if self.is_online_only(&handle) {
                 self.touch(info_hash);
-                self.released.lock().unwrap().insert(info_hash.to_owned(), Instant::now());
                 self.deselect(&handle).await;
             }
         }
@@ -974,7 +1076,7 @@ impl Engine {
         use tokio::io::AsyncSeekExt;
 
         let info_hash = handle.info_hash().as_string();
-        if !self.is_online_only(handle) || !self.played.lock().unwrap().contains(&info_hash) {
+        if !self.is_online_only(handle) || !self.is_playing(&info_hash) {
             return;
         }
         if self.watching.lock().unwrap().get(&info_hash).is_some_and(|watch| watch.file == file) {

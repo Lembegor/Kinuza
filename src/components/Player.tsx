@@ -51,7 +51,7 @@ import {
   type Cue,
   type SubtitleLabel,
 } from "../lib/subtitles";
-import { tmdb } from "../lib/tmdb";
+import { imageUrl, tmdb } from "../lib/tmdb";
 import { useAsync } from "../lib/useAsync";
 import { sortSources } from "../pages/Title";
 import { isWatched, titleKey, unitKey, useLibrary, type Source } from "../state/library";
@@ -114,9 +114,14 @@ function playsUnconverted(track: AudioTrackInfo): boolean {
 }
 const minResumeSeconds = 15;
 const originalLanguageWaitMs = 2500;
+const probeWaitMs = 3000;
 const originalTrackTitle = /оригинал|original|\borig\b/i;
 const commentaryTrackTitle = /коммент|comment/i;
 const nextEpisodeCountdownSeconds = 8;
+const upNextTailSeconds = 40;
+const upNextCountdownSeconds = 10;
+const upNextMinDurationSeconds = 5 * 60;
+const upNextPreloadBytes = 16 * 1024 * 1024;
 const silentAudioCheckDelayMs = 5000;
 const settingsSaveDelayMs = 400;
 const maxTorrentSubtitles = 12;
@@ -462,6 +467,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
     loadedUrl.current = url;
     const wanted = asked || originalLanguage;
     void mpv.set("alang", wanted ? [wanted, ...threeLetterCodes(wanted)].join(",") : "");
+    mpvPlayer.video.prime(volume, muted, rate);
     void mpvPlayer.video.load(url, resumeAt.current).catch((error) => {
       report("player", "journal.mpv.play", error);
       setFailed(true);
@@ -503,14 +509,11 @@ function PlayerView({ session }: { session: PlayerSession }) {
   const playedTorrent = source?.infoHash;
   useEffect(() => {
     if (!playedTorrent) return;
+    void backend.holdOnline(playedTorrent);
     const stopOnExit = beforeAppClose(() => backend.releaseOnline(playedTorrent));
     return () => {
       stopOnExit();
-      setTimeout(() => {
-        const next = useUi.getState().player;
-        const stillPlayed = next !== null && (useLibrary.getState().sources[next.unitKey] ?? []).some((item) => item.infoHash === playedTorrent);
-        if (!stillPlayed) void backend.releaseOnline(playedTorrent).then(() => useTorrents.getState().refresh());
-      }, releaseDelayMs);
+      setTimeout(() => void backend.releaseOnline(playedTorrent).then(() => useTorrents.getState().refresh()), releaseDelayMs);
     };
   }, [playedTorrent]);
 
@@ -586,9 +589,28 @@ function PlayerView({ session }: { session: PlayerSession }) {
     setMenu(null);
   };
 
+  const creditsStart = useMemo(
+    () => chapters.find((chapter) => skipKind(chapter) === "credits" && duration > 0 && chapter.start > duration / 2)?.start ?? null,
+    [chapters, duration],
+  );
+  const upNextFrom = nextEpisode && duration >= upNextMinDurationSeconds ? (creditsStart ?? duration - upNextTailSeconds) : null;
+
   const playNext = useCallback(() => {
     if (!nextEpisode) return;
-    saveProgress();
+    const length = filmLength();
+    if (upNextFrom !== null && filmTime() >= upNextFrom && Number.isFinite(length) && length > 0) {
+      useLibrary.getState().setProgress(session.unitKey, {
+        position: length,
+        duration: length,
+        updatedAt: Date.now(),
+        title: session.title,
+        season: session.season,
+        episode: session.episode,
+        episodeName: session.episodeName,
+      });
+    } else {
+      saveProgress();
+    }
     play({
       title: session.title,
       unitKey: unitKey("tv", session.title.id, nextEpisode.season, nextEpisode.episode),
@@ -596,7 +618,57 @@ function PlayerView({ session }: { session: PlayerSession }) {
       episode: nextEpisode.episode,
       episodeName: nextEpisode.name,
     });
-  }, [nextEpisode, play, saveProgress, session.title]);
+  }, [nextEpisode, play, saveProgress, session, upNextFrom, filmTime, filmLength]);
+
+  const [upNextDismissed, setUpNextDismissed] = useState(false);
+  const [upNextLeft, setUpNextLeft] = useState<number | null>(null);
+  useEffect(() => setUpNextDismissed(false), [session.unitKey]);
+  const upNextVisible = upNextFrom !== null && current >= upNextFrom && !upNextDismissed && !ended && countdown === null && !failed;
+
+  useEffect(() => {
+    if (!upNextVisible || !settings.autoNextEpisode) {
+      setUpNextLeft(null);
+      return;
+    }
+    setUpNextLeft((value) => value ?? upNextCountdownSeconds);
+  }, [upNextVisible, settings.autoNextEpisode]);
+
+  useEffect(() => {
+    if (upNextLeft === null || !playing) return;
+    if (upNextLeft <= 0) {
+      playNext();
+      return;
+    }
+    const timer = setTimeout(() => setUpNextLeft((value) => (value === null ? null : value - 1)), 1000);
+    return () => clearTimeout(timer);
+  }, [upNextLeft, playing, playNext]);
+
+  const nextSource = useMemo(() => {
+    if (!nextEpisode) return undefined;
+    const list = allSources[unitKey("tv", session.title.id, nextEpisode.season, nextEpisode.episode)] ?? [];
+    return pickInitialSource(sortSources(list), undefined, settings.preferredQuality);
+  }, [nextEpisode, allSources, session.title.id, settings.preferredQuality]);
+
+  useEffect(() => {
+    if (!upNextVisible || !nextSource) return;
+    const abort = new AbortController();
+    void (async () => {
+      try {
+        const response = await fetch(await streamUrl(nextSource.infoHash, nextSource.fileIndex), {
+          headers: { Range: `bytes=0-${upNextPreloadBytes - 1}` },
+          signal: abort.signal,
+        });
+        const reader = response.body?.getReader();
+        if (!reader) return;
+        while (!(await reader.read()).done) {
+          if (abort.signal.aborted) return;
+        }
+      } catch {
+        return;
+      }
+    })();
+    return () => abort.abort();
+  }, [upNextVisible, nextSource?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const toggleFullscreen = useCallback(() => {
     setFullscreen((value) => {
@@ -628,7 +700,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
     }
     const timer = setTimeout(() => useSettings.getState().patch({ volume, muted }), settingsSaveDelayMs);
     return () => clearTimeout(timer);
-  }, [volume, muted, url, heardConverted]);
+  }, [volume, muted, url, heardConverted, usingMpv]);
 
   const changeVolume = useCallback(
     (delta: number) => {
@@ -816,9 +888,8 @@ function PlayerView({ session }: { session: PlayerSession }) {
   const loadSubtitleFromDisk = async () => {
     if (!isDesktop) return;
     try {
-      const { open } = await import("@tauri-apps/plugin-dialog");
-      const picked = await open({ title: t("player.subtitles.fileDialog"), filters: [{ name: t("common.subtitles"), extensions: ["srt", "ass", "ssa", "vtt"] }] });
-      if (typeof picked !== "string") return;
+      const picked = await backend.pickFile({ title: t("player.subtitles.fileDialog"), filterName: t("common.subtitles"), extensions: ["srt", "ass", "ssa", "vtt"] });
+      if (!picked) return;
       if (usingMpv) {
         await mpv.command("sub-add", picked, "select", baseName(picked));
         setEmbeddedSubtitle(null);
@@ -945,9 +1016,18 @@ function PlayerView({ session }: { session: PlayerSession }) {
     [media.tracks, usingMpv, mpvPlayer.video],
   );
 
+  const [probeWaitOver, setProbeWaitOver] = useState(false);
+  useEffect(() => {
+    setProbeWaitOver(false);
+    if (!metadataReady) return;
+    const timer = setTimeout(() => setProbeWaitOver(true), probeWaitMs);
+    return () => clearTimeout(timer);
+  }, [metadataReady, source?.id]);
+  const probeSettled = !usingMpv || probed !== null || htmlMedia.ffmpegInstalled === false || probeWaitOver;
+
   useEffect(() => {
     const tracks = media.tracks?.audio;
-    if (!tracks || tracks.length === 0 || !metadataReady || pickedAudio.current) return;
+    if (!tracks || tracks.length === 0 || !metadataReady || pickedAudio.current || !probeSettled) return;
     const asked = preferences?.audioLanguage || settings.audioLanguage;
     if (!asked && !originalSettled) return;
     const wanted = asked || originalLanguage;
@@ -964,8 +1044,9 @@ function PlayerView({ session }: { session: PlayerSession }) {
       (asked ? undefined : tracks.find(isOriginalTrack)) ??
       tracks.find((track) => track.isDefault) ??
       tracks[0];
+    pickedAudio.current = true;
     if (choice.index !== audioTrack) applyAudioTrack(choice.index);
-  }, [media.tracks, metadataReady, originalLanguage, originalSettled, applyAudioTrack]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [media.tracks, metadataReady, originalLanguage, originalSettled, probeSettled, applyAudioTrack]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const chooseAudioTrack = (track: AudioTrackInfo) => {
     pickedAudio.current = true;
@@ -1339,7 +1420,28 @@ function PlayerView({ session }: { session: PlayerSession }) {
         </div>
       )}
 
-      {skippable && !failed && (
+      {upNextVisible && nextEpisode && (
+        <div className="player__up-next">
+          {nextEpisode.still && <img src={imageUrl(nextEpisode.still, "w300") ?? undefined} alt="" draggable={false} />}
+          <div className="player__up-next-body">
+            <span>{t("player.upNext.title")}</span>
+            <strong>
+              {t("common.seasonEpisode", { season: nextEpisode.season, episode: nextEpisode.episode })} · {nextEpisode.name}
+            </strong>
+            <div className="player__up-next-actions">
+              <button className="button button--primary" onClick={playNext}>
+                <SkipForward size={16} />
+                {upNextLeft !== null ? t("player.upNext.in", { seconds: upNextLeft }) : t("player.next.watchNow")}
+              </button>
+              <button className="button" onClick={() => setUpNextDismissed(true)}>
+                {t("player.upNext.stay")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {skippable && !failed && !(upNextVisible && skipKind(skippable) === "credits") && (
         <button className="player__skip" onClick={() => seekTo(skippable.end)}>
           <SkipForward size={16} />
           {t(`player.skip.${skipKind(skippable) ?? "intro"}`)}

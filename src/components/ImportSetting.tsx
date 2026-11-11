@@ -87,9 +87,8 @@ export function ImportSetting() {
       return;
     }
     try {
-      const { open } = await import("@tauri-apps/plugin-dialog");
-      const picked = await open({ title: t("import.dialog"), filters: [{ name: t("import.dialog.filter"), extensions: importExtensions }] });
-      if (typeof picked !== "string") return;
+      const picked = await backend.pickFile({ title: t("import.dialog"), filterName: t("import.dialog.filter"), extensions: importExtensions });
+      if (!picked) return;
       void start(new Uint8Array(await backend.readFileBytes(picked)), baseName(picked));
     } catch (error) {
       toast(describeError(error), "error");

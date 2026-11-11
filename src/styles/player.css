@@ -727,3 +727,60 @@ html.is-mpv .content {
   position: absolute;
   inset: 0;
 }
+
+.player__up-next {
+  position: absolute;
+  right: 28px;
+  bottom: 118px;
+  z-index: 3;
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  max-width: 460px;
+  padding: 12px;
+  border-radius: 18px;
+  background: rgba(18, 18, 23, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(14px);
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.5);
+  animation: rise 0.25s var(--ease);
+}
+
+.player__up-next img {
+  width: 150px;
+  aspect-ratio: 16 / 9;
+  flex: none;
+  border-radius: 10px;
+  object-fit: cover;
+}
+
+.player__up-next-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.player__up-next-body span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.player__up-next-body strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.player__up-next-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.player.is-mini .player__up-next {
+  display: none;
+}

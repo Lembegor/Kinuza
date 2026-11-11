@@ -40,6 +40,7 @@ export interface AppInfo {
   streamBaseUrl: string;
   defaultDownloadDir: string;
   externalPlayer: string | null;
+  sessionReset: boolean;
 }
 
 export interface LaunchRequest {
@@ -55,6 +56,17 @@ export interface AssociationStatus {
 export interface ImdbRating {
   rating: number;
   votes: number;
+}
+
+export interface FileDialog {
+  title: string;
+  filterName: string;
+  extensions: string[];
+}
+
+export interface StoredDocument {
+  text: string;
+  recovered: boolean;
 }
 
 const launchEvent = "launch-request";
@@ -192,11 +204,14 @@ export const backend = {
     call<void>("torrent_delete", { infoHash, deleteFiles }),
   selectFiles: (infoHash: string, files: number[], downloadDir: string | null) =>
     call<void>("torrent_select_files", { infoHash, files, downloadDir }),
+  holdOnline: (infoHash: string) => call<void>("torrent_hold", { infoHash }),
   releaseOnline: (infoHash: string) => call<void>("torrent_release", { infoHash }),
   fileLocation: (infoHash: string, fileIndex: number) =>
     call<string>("file_location", { infoHash, fileIndex }),
   openExternal: (infoHash: string, fileIndex: number) =>
     call<string>("open_external", { infoHash, fileIndex }),
+  pickFile: (dialog: FileDialog) => call<string | null>("file_pick", { dialog }),
+  pickSaveTarget: (dialog: FileDialog & { defaultName: string }) => call<string | null>("file_save_target", { dialog }),
   readFileBytes: (path: string) => call<ArrayBuffer>("read_file_bytes", { path }),
   findOnlineSubtitles: (apiKey: string, query: OnlineSubtitleQuery) =>
     call<OnlineSubtitle[]>("online_subtitles_search", { apiKey, query }),
@@ -215,7 +230,7 @@ export const backend = {
   setAssociations: (enabled: boolean) => call<AssociationStatus>("associations_set", { enabled }),
   openDefaultAppsSettings: () => call<void>("open_default_apps_settings"),
   imdbRating: (imdbId: string) => call<ImdbRating | null>("imdb_rating", { imdbId }),
-  storeGet: (name: string) => call<string | null>("store_get", { name }),
+  storeGet: (name: string) => call<StoredDocument | null>("store_get", { name }),
   storeSet: (name: string, value: string) => call<void>("store_set", { name, value }),
 };
 
@@ -235,6 +250,8 @@ const errorMessages: Record<string, MessageKey> = {
   no_external_player: "errors.noExternalPlayer",
   file_too_large: "errors.fileTooLarge",
   file_unreadable: "errors.fileUnreadable",
+  file_not_chosen: "errors.fileUnreadable",
+  store_unwritable: "library.saveFailed",
   bad_info_hash: "errors.badInfoHash",
   bad_link: "errors.badLink",
   auth_required: "errors.trackerAuth",

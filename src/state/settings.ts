@@ -103,19 +103,38 @@ interface SettingsState extends Settings {
   patch: (change: Partial<Settings>) => void;
 }
 
+let earlyChanges: Partial<Settings> = {};
+let savingBlocked = false;
+
+function persist(settings: Settings): void {
+  if (savingBlocked) return;
+  backend
+    .storeSet(storeName, JSON.stringify(settings))
+    .catch((error) => report("settings", "journal.settings.save", error));
+}
+
+function currentSettings(state: SettingsState): Settings {
+  const { loaded: _loaded, load: _load, patch: _patch, ...settings } = state;
+  return settings;
+}
+
 export const useSettings = create<SettingsState>((set, get) => ({
   ...defaults,
   loaded: false,
 
   async load() {
     try {
-      const text = await backend.storeGet(storeName);
-      const stored: Partial<Settings> = upgrade(text ? JSON.parse(text) : {});
-      set({ ...defaults, ...stored, loaded: true });
+      const document = await backend.storeGet(storeName);
+      const parsed: unknown = document ? JSON.parse(document.text) : {};
+      const stored: Partial<Settings> = upgrade(typeof parsed === "object" && parsed !== null ? (parsed as Partial<Settings>) : {});
+      set({ ...defaults, ...stored, ...earlyChanges, loaded: true });
+      if (Object.keys(earlyChanges).length > 0) persist(currentSettings(get()));
     } catch (error) {
+      savingBlocked = true;
       report("settings", "journal.settings.load", error);
-      set({ loaded: true });
+      set({ ...earlyChanges, loaded: true });
     }
+    earlyChanges = {};
     setApiKeyOverride(get().tmdbKey);
     setCatalogLanguage(get().language || fallbackCatalogLanguage);
     applyDownloadPolicy(get());
@@ -125,10 +144,11 @@ export const useSettings = create<SettingsState>((set, get) => ({
     set(change);
     if ("tmdbKey" in change) setApiKeyOverride(get().tmdbKey);
     if ("language" in change) setCatalogLanguage(get().language || fallbackCatalogLanguage);
+    if (!get().loaded) {
+      earlyChanges = { ...earlyChanges, ...change };
+      return;
+    }
     if (policyKeys.some((key) => key in change)) applyDownloadPolicy(get());
-    const { loaded: _loaded, load: _load, patch: _patch, ...settings } = get();
-    backend
-      .storeSet(storeName, JSON.stringify(settings))
-      .catch((error) => report("settings", "journal.settings.save", error));
+    persist(currentSettings(get()));
   },
 }));

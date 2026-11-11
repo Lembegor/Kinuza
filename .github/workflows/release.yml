@@ -68,6 +68,45 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: "Kinuza __VERSION__"
           releaseBody: ${{ steps.meta.outputs.notes }}
-          releaseDraft: false
+          releaseDraft: true
           prerelease: false
           includeUpdaterJson: true
+
+      - name: Check the draft and publish it
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          folder=$(mktemp -d)
+          gh release download "$tag" --pattern latest.json --dir "$folder"
+          installer=$(node scripts/check-update-manifest.cjs "$folder/latest.json" "${tag#v}")
+          assets=$(gh release view "$tag" --json assets --jq '.assets[].name')
+          for wanted in "$installer" "$installer.sig"; do
+            if ! grep -qxF "$wanted" <<< "$assets"; then
+              echo "::error::The draft has no $wanted, so the update would not install. The draft stays unpublished."
+              exit 1
+            fi
+          done
+          gh release edit "$tag" --draft=false --latest
+          echo "Published $tag: latest.json points to $installer"
+
+      - name: Mirror the update
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MIRROR_TOKEN: ${{ secrets.UPDATES_MIRROR_TOKEN }}
+          MIRROR_REPO: ${{ github.repository_owner }}/kinuza-updates
+        run: |
+          set -euo pipefail
+          if [ -z "$MIRROR_TOKEN" ]; then
+            echo "::notice::Secret UPDATES_MIRROR_TOKEN is not set, the update mirror is skipped."
+            exit 0
+          fi
+          tag="$GITHUB_REF_NAME"
+          folder=$(mktemp -d)
+          gh release download "$tag" --dir "$folder" --pattern latest.json --pattern '*-setup.exe' --pattern '*-setup.exe.sig'
+          node scripts/check-update-manifest.cjs "$folder/latest.json" "${tag#v}" "https://github.com/$GITHUB_REPOSITORY/releases/download/" "https://github.com/$MIRROR_REPO/releases/download/" > /dev/null
+          GH_TOKEN="$MIRROR_TOKEN" gh release create "$tag" --repo "$MIRROR_REPO" --title "Kinuza ${tag#v}" --notes "Kinuza ${tag#v}" --latest "$folder"/*
