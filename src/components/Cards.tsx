@@ -34,7 +34,7 @@ function changeStatus(item: CardItem, status: WatchStatus | null): void {
   else if (leavingCompleted && state.progress[movieKey]) state.setWatched(movieKey, false, { title });
 }
 
-function QuickActions({ item }: { item: CardItem }) {
+export function QuickActions({ item }: { item: CardItem }) {
   const { t } = useT();
   const entry = useLibrary((state) => state.tracked[titleKey(item.type, item.id)]);
   const [rating, setRating] = useState(false);

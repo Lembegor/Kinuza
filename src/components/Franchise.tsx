@@ -5,7 +5,7 @@ import { useT } from "../lib/i18n";
 import { imageUrl, tmdb, type CollectionPart } from "../lib/tmdb";
 import { useAsync } from "../lib/useAsync";
 import { isWatched, titleKey, unitKey, useLibrary } from "../state/library";
-import { Row } from "./Cards";
+import { QuickActions, Row } from "./Cards";
 
 const minParts = 2;
 const skeletonCount = 5;
@@ -18,7 +18,7 @@ function isReleased(part: CollectionPart): boolean {
 function FranchiseCard({ part, current }: { part: CollectionPart; current: boolean }) {
   const { t } = useT();
   const navigate = useNavigate();
-  const cardRef = useRef<HTMLButtonElement>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
   const watched = useLibrary(
     (state) => isWatched(state.progress[unitKey("movie", part.id)]) || state.tracked[titleKey("movie", part.id)]?.status === "completed",
   );
@@ -32,13 +32,13 @@ function FranchiseCard({ part, current }: { part: CollectionPart; current: boole
   }, [current]);
 
   return (
-    <button
-      ref={cardRef}
-      className={`poster-card franchise-card ${current ? "is-current" : ""} ${released ? "" : "is-upcoming"}`}
-      aria-current={current ? "page" : undefined}
-      disabled={current}
-      onClick={() => navigate(`/title/movie/${part.id}`)}
-    >
+    <div ref={cardRef} className={`poster-card franchise-card ${current ? "is-current" : ""} ${released ? "" : "is-upcoming"}`}>
+      <button
+        className="poster-card__open"
+        aria-current={current ? "page" : undefined}
+        disabled={current}
+        onClick={() => navigate(`/title/movie/${part.id}`)}
+      >
       <div className="poster-card__art">
         {poster ? <img src={poster} alt="" loading="lazy" draggable={false} /> : <div className="poster-card__blank">{part.title}</div>}
         {released && part.rating > 0 && (
@@ -60,7 +60,9 @@ function FranchiseCard({ part, current }: { part: CollectionPart; current: boole
         {!released && <span>{t("collection.soon")}</span>}
         {released && watched && <span>{t("collection.watched")}</span>}
       </div>
-    </button>
+      </button>
+      {!current && <QuickActions item={part} />}
+    </div>
   );
 }
 

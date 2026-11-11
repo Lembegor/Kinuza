@@ -1907,7 +1907,7 @@
 }
 
 
-.franchise-card:disabled {
+.franchise-card .poster-card__open:disabled {
   cursor: default;
 }
 
