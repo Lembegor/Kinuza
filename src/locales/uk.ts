@@ -207,6 +207,7 @@ export const uk: Messages = {
   "anime.format.ona": "ONA",
   "anime.format.special": "Спешл",
   "tracker.names.hint": "На трекері може називатися:",
+  "notifications.update": "Доступна нова версія Kinuza",
   "language.choose.title": "Оберіть мову",
   "language.choose.note": "Її можна змінити в налаштуваннях.",
   "language.available": "{language}: є",

@@ -207,6 +207,7 @@ export const en: Messages = {
   "anime.format.ona": "ONA",
   "anime.format.special": "Special",
   "tracker.names.hint": "On the tracker it may be called:",
+  "notifications.update": "A new version of Kinuza is available",
   "language.choose.title": "Choose your language",
   "language.choose.note": "You can change it later in Settings.",
   "language.available": "{language}: available",

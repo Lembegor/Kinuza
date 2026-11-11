@@ -208,6 +208,7 @@ export const ru = {
   "anime.format.ona": "ONA",
   "anime.format.special": "Спешл",
   "tracker.names.hint": "На трекере может называться:",
+  "notifications.update": "Доступна новая версия Kinuza",
   "language.choose.title": "Выберите язык",
   "language.choose.note": "Его можно сменить в настройках.",
   "language.available": "{language}: есть",

@@ -94,7 +94,7 @@ export function startEpisodeNotifications(): void {
   });
 }
 
-async function notify(title: string, body: string): Promise<void> {
+export async function notify(title: string, body: string): Promise<void> {
   const { isPermissionGranted, requestPermission, sendNotification } = await import("@tauri-apps/plugin-notification");
   const allowed = (await isPermissionGranted()) || (await requestPermission()) === "granted";
   if (allowed) sendNotification({ title, body });

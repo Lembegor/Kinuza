@@ -24,9 +24,12 @@ import { useLibrary } from "./state/library";
 import { useSettings } from "./state/settings";
 import { startTorrentPolling } from "./state/torrents";
 import { useUi } from "./state/ui";
+import { notify } from "./state/notifications";
 import { useUpdater } from "./state/updater";
 
 const updateCheckDelayMs = 4000;
+/** The app lives in the tray for days; a new version is looked for again this often. */
+const updateCheckIntervalMs = 4 * 60 * 60 * 1000;
 
 function isTextField(target: EventTarget | null): boolean {
   return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement;
@@ -186,7 +189,25 @@ export default function App() {
   useEffect(() => {
     if (!settingsLoaded || !autoUpdate) return;
     const timer = setTimeout(() => void useUpdater.getState().check(), updateCheckDelayMs);
-    return () => clearTimeout(timer);
+    const repeat = setInterval(() => {
+      // A version already found (offered, postponed or being installed) is not asked about again.
+      const { status } = useUpdater.getState();
+      if (status !== "idle" && status !== "upToDate" && status !== "error") return;
+      void useUpdater
+        .getState()
+        .check()
+        .then(() => {
+          // Found while the app has been open for hours, likely in the tray: the card inside the
+          // window would go unseen, so the system says it too.
+          const found = useUpdater.getState();
+          if (found.status === "available") return notify(t("notifications.update"), `Kinuza ${found.version}`);
+        })
+        .catch((error) => report("updates", "journal.notifications.failed", error));
+    }, updateCheckIntervalMs);
+    return () => {
+      clearTimeout(timer);
+      clearInterval(repeat);
+    };
   }, [settingsLoaded, autoUpdate]);
 
   useMagnetPaste();

@@ -1,10 +1,22 @@
-# Builds the signed installer and the update feed when a version tag (v1.2.3) is pushed.
-# Repository secrets required: TAURI_SIGNING_PRIVATE_KEY (contents of kinuza.key), VITE_TMDB_API_KEY.
+# Builds the signed installer and the update feed (latest.json) and publishes them as a GitHub
+# release when a version tag (v1.2.3) is pushed. scripts/publish.ps1 creates and pushes that tag.
+#
+# Repository secrets (Settings -> Secrets and variables -> Actions):
+#   TAURI_SIGNING_PRIVATE_KEY    contents of %USERPROFILE%\.tauri\kinuza.key; installed apps accept
+#                                only updates signed with it
+#   VITE_TMDB_API_KEY            catalog key, as in .env
+#   VITE_OPENSUBTITLES_API_KEY   subtitles key, as in .env (optional: without it the app has no
+#                                online subtitle search)
 name: Release
 
 on:
   push:
     tags: ["v*"]
+
+# Two builds of one tag would fight over the same release.
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
   windows:
@@ -13,6 +25,35 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check the tag, the secrets, and read the release notes
+        id: meta
+        shell: bash
+        env:
+          SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TMDB_KEY: ${{ secrets.VITE_TMDB_API_KEY }}
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match version $version in package.json. Release with scripts/publish.ps1, it keeps them in step."
+            exit 1
+          fi
+          if [ -z "$SIGNING_KEY" ]; then
+            echo "::error::Secret TAURI_SIGNING_PRIVATE_KEY is not set: the update would be unsigned and installed apps would reject it."
+            exit 1
+          fi
+          if [ -z "$TMDB_KEY" ]; then
+            echo "::error::Secret VITE_TMDB_API_KEY is not set: the catalog would be empty in this build."
+            exit 1
+          fi
+          # The checkout keeps only the commit of the tag; its message (the release notes) is fetched here.
+          git fetch --force --no-tags origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          notes=$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME")
+          {
+            echo "notes<<KINUZA_NOTES_END"
+            echo "${notes:-Новая версия Kinuza.}"
+            echo "KINUZA_NOTES_END"
+          } >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-node@v4
         with:
@@ -33,10 +74,12 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
           VITE_TMDB_API_KEY: ${{ secrets.VITE_TMDB_API_KEY }}
+          VITE_OPENSUBTITLES_API_KEY: ${{ secrets.VITE_OPENSUBTITLES_API_KEY }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "Kinuza __VERSION__"
-          releaseBody: "Новая версия Kinuza."
+          # Shown on the release page and in the app's "update available" card.
+          releaseBody: ${{ steps.meta.outputs.notes }}
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
