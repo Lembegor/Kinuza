@@ -119,7 +119,7 @@ async fn build_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
         .unwrap_or_else(|_| data_dir.clone())
         .join(DOWNLOAD_FOLDER_NAME);
 
-    logging::start(&data_dir);
+    logging::start(&data_dir, &app.package_info().version.to_string());
 
     let engine = Engine::start(
         default_download_dir.clone(),

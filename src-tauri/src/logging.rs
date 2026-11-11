@@ -78,7 +78,7 @@ fn redact(line: &[u8]) -> std::borrow::Cow<'_, [u8]> {
 
 /// Starts the log for this run. `KINUZA_LOG` (an `EnvFilter` such as
 /// `info,librqbit::torrent_state::live=debug`) asks for more detail.
-pub fn start(data_dir: &Path) {
+pub fn start(data_dir: &Path, version: &str) {
     let folder = folder(data_dir);
     if std::fs::create_dir_all(&folder).is_err() {
         return;
@@ -112,7 +112,7 @@ pub fn start(data_dir: &Path) {
         tracing::error!("crash: {info}");
         previous(info);
     }));
-    tracing::info!("Kinuza {} started", env!("CARGO_PKG_VERSION"));
+    tracing::info!("Kinuza {version} started");
 }
 
 /// A line from the window: problems the interface reports (see the journal there).
