@@ -37,7 +37,7 @@ import {
   type TorrentFile,
 } from "../lib/backend";
 import { t, useT, type MessageKey } from "../lib/i18n";
-import { languageCode, languageName } from "../lib/languages";
+import { languageCode, languageName, threeLetterCodes } from "../lib/languages";
 import { beforeAppClose } from "../lib/lifecycle";
 import { setMiniWindow } from "../lib/miniWindow";
 import { formatBytes, formatClock, formatSpeed } from "../lib/format";
@@ -113,6 +113,9 @@ function playsUnconverted(track: AudioTrackInfo): boolean {
   return builtInAudioCodecs.has(track.codec) || track.codec.startsWith("pcm_");
 }
 const minResumeSeconds = 15;
+const originalLanguageWaitMs = 2500;
+const originalTrackTitle = /оригинал|original|\borig\b/i;
+const commentaryTrackTitle = /коммент|comment/i;
 const nextEpisodeCountdownSeconds = 8;
 const silentAudioCheckDelayMs = 5000;
 const settingsSaveDelayMs = 400;
@@ -330,11 +333,24 @@ function PlayerView({ session }: { session: PlayerSession }) {
   const usingMpv = mpvChoice.mode === "ready";
   const mpvPlayer = useMpvVideo(usingMpv);
   if (usingMpv) (videoRef as { current: VideoWithExtras | null }).current = mpvPlayer.video as unknown as VideoWithExtras;
-  const htmlMedia = useMediaTracks(mpvChoice.mode === "unavailable" ? (source ?? null) : null);
+  const htmlMedia = useMediaTracks(mpvChoice.mode === "unavailable" || usingMpv ? (source ?? null) : null);
+  const probed = htmlMedia.tracks;
+  const mpvTracks = useMemo(() => {
+    const own = mpvPlayer.tracks;
+    if (!own || !probed || probed.audio.length !== own.audio.length) return own;
+    return { ...own, audio: own.audio.map((track, index) => ({ ...track, isOriginal: probed.audio[index].isOriginal })) };
+  }, [mpvPlayer.tracks, probed]);
   const media: MediaTracksState = usingMpv
-    ? { tracks: mpvPlayer.tracks, ffmpegInstalled: true, installing: false, installProgress: 0, installBytes: 0, installFailed: false, install: () => undefined }
+    ? { tracks: mpvTracks, ffmpegInstalled: true, installing: false, installProgress: 0, installBytes: 0, installFailed: false, install: () => undefined }
     : htmlMedia;
-  const originalLanguage = useAsync(() => tmdb.details(session.title.type, session.title.id), [session.title.type, session.title.id]).data?.language ?? "";
+  const titleDetails = useAsync(() => tmdb.details(session.title.type, session.title.id), [session.title.type, session.title.id]);
+  const originalLanguage = languageCode(titleDetails.data?.language);
+  const [originalWaitOver, setOriginalWaitOver] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setOriginalWaitOver(true), originalLanguageWaitMs);
+    return () => clearTimeout(timer);
+  }, []);
+  const originalSettled = !titleDetails.loading || originalWaitOver;
   const [audioTrack, setAudioTrack] = useState<number | null>(null);
   const [convertedTrack, setConvertedTrack] = useState<number | null>(null);
   const [embeddedSubtitle, setEmbeddedSubtitle] = useState<number | null>(null);
@@ -438,14 +454,20 @@ function PlayerView({ session }: { session: PlayerSession }) {
     if (!usingMpv && conversionStart === null && media.tracks && (unplayablePicture || failed)) startConversion();
   }, [media.tracks, unplayablePicture, failed]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const loadedUrl = useRef<string | null>(null);
   useEffect(() => {
-    if (!usingMpv || !url) return;
+    if (!usingMpv || !url || loadedUrl.current === url) return;
+    const asked = preferences?.audioLanguage || settings.audioLanguage;
+    if (!asked && !originalSettled) return;
+    loadedUrl.current = url;
+    const wanted = asked || originalLanguage;
+    void mpv.set("alang", wanted ? [wanted, ...threeLetterCodes(wanted)].join(",") : "");
     void mpvPlayer.video.load(url, resumeAt.current).catch((error) => {
       report("player", "journal.mpv.play", error);
       setFailed(true);
       setBuffering(false);
     });
-  }, [usingMpv, url]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [usingMpv, url, originalSettled]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (usingMpv) void mpv.set("audio-delay", audioDelay);
@@ -926,17 +948,24 @@ function PlayerView({ session }: { session: PlayerSession }) {
   useEffect(() => {
     const tracks = media.tracks?.audio;
     if (!tracks || tracks.length === 0 || !metadataReady || pickedAudio.current) return;
-    const wanted = preferences?.audioLanguage || settings.audioLanguage || originalLanguage;
-    const inLanguage = tracks.filter((track) => languageCode(track.language) === wanted);
+    const asked = preferences?.audioLanguage || settings.audioLanguage;
+    if (!asked && !originalSettled) return;
+    const wanted = asked || originalLanguage;
+    const isOriginalTrack = (track: AudioTrackInfo) => track.isOriginal || originalTrackTitle.test(track.title);
+    const pickFrom = (list: AudioTrackInfo[]) =>
+      list.find((track) => preferences?.audioTitle && track.title === preferences.audioTitle) ??
+      (asked ? undefined : list.find(isOriginalTrack)) ??
+      list.find((track) => (usingMpv ? track.isDefault : playsUnconverted(track))) ??
+      list[0];
+    const inLanguage = wanted ? tracks.filter((track) => languageCode(track.language) === wanted) : [];
     const choice =
-      inLanguage.find((track) => preferences?.audioTitle && track.title === preferences.audioTitle) ??
-      inLanguage.find((track) => (usingMpv ? track.isDefault : playsUnconverted(track))) ??
-      inLanguage[0] ??
-      (preferences?.audioLanguage || settings.audioLanguage ? undefined : tracks.find((track) => track.isOriginal)) ??
+      pickFrom(inLanguage.filter((track) => !commentaryTrackTitle.test(track.title))) ??
+      pickFrom(inLanguage) ??
+      (asked ? undefined : tracks.find(isOriginalTrack)) ??
       tracks.find((track) => track.isDefault) ??
       tracks[0];
     if (choice.index !== audioTrack) applyAudioTrack(choice.index);
-  }, [media.tracks, metadataReady, originalLanguage, applyAudioTrack]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [media.tracks, metadataReady, originalLanguage, originalSettled, applyAudioTrack]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const chooseAudioTrack = (track: AudioTrackInfo) => {
     pickedAudio.current = true;
