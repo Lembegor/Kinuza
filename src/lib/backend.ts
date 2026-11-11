@@ -263,6 +263,8 @@ const errorMessages: Record<string, MessageKey> = {
 
 export function describeError(error: unknown): string {
   const code = typeof error === "string" ? error : error instanceof Error ? error.message : "";
+  if (code.startsWith("mpv_failed:")) return t("errors.mpvFailed", { detail: code.slice("mpv_failed:".length) });
+  if (code === "mpv_timeout" || code === "mpv_gone" || code === "mpv_start_failed") return t("errors.mpvUnavailable");
   const known = errorMessages[code];
   if (known) return t(known);
   return code ? t("errors.code", { code }) : t("errors.unknown");

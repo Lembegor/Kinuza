@@ -111,6 +111,7 @@ pub fn run() {
             mpv::mpv_command,
             mpv::mpv_set,
             mpv::mpv_warm,
+            mpv::mpv_quit,
             mpv::mpv_add_subtitle_text,
             rutracker::rutracker_login_window,
             rutracker::rutracker_search,

@@ -1,6 +1,8 @@
 import { create } from "zustand";
 import { isDesktop } from "../lib/backend";
 import { report } from "../lib/journal";
+import { runBeforeClose } from "../lib/lifecycle";
+import { mpv } from "../lib/mpv";
 import { flushLibrary } from "./library";
 
 export type UpdateStatus = "idle" | "checking" | "upToDate" | "available" | "downloading" | "installing" | "error";
@@ -58,7 +60,9 @@ export const useUpdater = create<UpdaterState>((set, get) => ({
         }
         if (event.event === "Finished") set({ status: "installing", progress: 1 });
       });
+      await runBeforeClose();
       await flushLibrary().catch((error) => report("updates", "journal.close.failed", error));
+      if (mpv.supported) await mpv.quit().catch((error) => report("updates", "journal.close.failed", error));
       await pending.install();
       const { relaunch } = await import("@tauri-apps/plugin-process");
       await relaunch();

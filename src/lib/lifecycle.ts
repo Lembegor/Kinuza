@@ -13,6 +13,10 @@ export function beforeAppClose(task: Task): () => void {
   };
 }
 
+export async function runBeforeClose(): Promise<void> {
+  await runTasks(() => undefined);
+}
+
 async function runTasks(finish: Task): Promise<void> {
   for (const task of [...tasks, finish]) {
     try {

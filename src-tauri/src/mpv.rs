@@ -9,16 +9,24 @@ use anyhow::{anyhow, bail, Context};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::{collections::HashMap, sync::Arc, time::Instant};
+
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{Child, Command},
-    sync::{mpsc, Mutex},
+    sync::{mpsc, oneshot, Mutex},
 };
 
 use crate::{files::FileGrants, AppState};
 
-const RELEASE_API: &str = "https://api.github.com/repos/shinchiro/mpv-winbuild-cmake/releases/latest";
+const DOWNLOAD_BASE: &str = "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download";
+const PINNED_BUILD: &str = include_str!("../mpv.lock.json");
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
+const INSTALL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const REPLY_WAIT: Duration = Duration::from_secs(5);
+const TIME_EVENT_EVERY: Duration = Duration::from_millis(200);
 const FOLDER_NAME: &str = "mpv";
 const EXECUTABLE_NAME: &str = "mpv.exe";
 const APPROXIMATE_ARCHIVE_BYTES: u64 = 33 * 1024 * 1024;
@@ -69,9 +77,14 @@ pub struct MpvState {
     player: Mutex<Option<Player>>,
 }
 
+type Replies = Arc<std::sync::Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>;
+
+static NEXT_REQUEST: AtomicU64 = AtomicU64::new(1);
+
 struct Player {
     child: Child,
     commands: mpsc::UnboundedSender<String>,
+    replies: Replies,
 }
 
 #[derive(Serialize)]
@@ -83,16 +96,25 @@ pub struct MpvStatus {
     total_bytes: u64,
 }
 
-pub fn executable(data_dir: &Path) -> Option<PathBuf> {
+fn bundled(app: &AppHandle) -> Option<PathBuf> {
+    let path = app.path().resource_dir().ok()?.join(FOLDER_NAME).join(EXECUTABLE_NAME);
+    path.is_file().then_some(path)
+}
+
+fn downloaded(data_dir: &Path) -> Option<PathBuf> {
     let installed = data_dir.join(FOLDER_NAME).join(EXECUTABLE_NAME);
     installed.is_file().then_some(installed)
 }
 
+pub fn executable(app: &AppHandle, data_dir: &Path) -> Option<PathBuf> {
+    bundled(app).or_else(|| downloaded(data_dir))
+}
+
 #[tauri::command]
-pub fn mpv_status(app: State<'_, AppState>, mpv: State<'_, MpvState>) -> MpvStatus {
+pub fn mpv_status(handle: AppHandle, app: State<'_, AppState>, mpv: State<'_, MpvState>) -> MpvStatus {
     let total = mpv.total_bytes.load(Ordering::Relaxed);
     MpvStatus {
-        installed: executable(&app.data_dir).is_some(),
+        installed: executable(&handle, &app.data_dir).is_some(),
         installing: mpv.installing.load(Ordering::Relaxed),
         downloaded_bytes: mpv.downloaded_bytes.load(Ordering::Relaxed),
         total_bytes: if total > 0 { total } else { APPROXIMATE_ARCHIVE_BYTES },
@@ -100,9 +122,9 @@ pub fn mpv_status(app: State<'_, AppState>, mpv: State<'_, MpvState>) -> MpvStat
 }
 
 #[tauri::command]
-pub async fn mpv_install(app: State<'_, AppState>, mpv: State<'_, MpvState>) -> Result<(), String> {
+pub async fn mpv_install(handle: AppHandle, app: State<'_, AppState>, mpv: State<'_, MpvState>) -> Result<(), String> {
     let _installing = mpv.install.lock().await;
-    if executable(&app.data_dir).is_some() {
+    if executable(&handle, &app.data_dir).is_some() {
         return Ok(());
     }
     mpv.downloaded_bytes.store(0, Ordering::Relaxed);
@@ -117,55 +139,57 @@ pub async fn mpv_install(app: State<'_, AppState>, mpv: State<'_, MpvState>) -> 
 }
 
 #[derive(Deserialize)]
-struct Release {
-    assets: Vec<Asset>,
+struct PinnedBuild {
+    tag: String,
+    asset: String,
+    sha256: String,
 }
 
-#[derive(Deserialize)]
-struct Asset {
-    name: String,
-    browser_download_url: String,
-    #[serde(default)]
-    digest: Option<String>,
-}
-
-fn wanted_asset(name: &str) -> bool {
-    name.starts_with("mpv-x86_64-") && name.ends_with(".7z") && !name.contains("-v3-") && !name.contains("dev") && !name.contains("debug")
+fn pinned_build() -> anyhow::Result<PinnedBuild> {
+    serde_json::from_str(PINNED_BUILD).context("src-tauri/mpv.lock.json is not valid")
 }
 
 async fn install(folder: &Path, progress: &MpvState) -> anyhow::Result<()> {
+    tokio::time::timeout(INSTALL_TIMEOUT, download_and_unpack(folder, progress))
+        .await
+        .map_err(|_| anyhow!("the mpv download took longer than {} minutes", INSTALL_TIMEOUT.as_secs() / 60))?
+}
+
+async fn download_and_unpack(folder: &Path, progress: &MpvState) -> anyhow::Result<()> {
     tokio::fs::create_dir_all(folder.parent().unwrap_or(folder)).await?;
-    let client = reqwest::Client::builder().user_agent(concat!("Kinuza/", env!("CARGO_PKG_VERSION"))).build()?;
-    let release: Release = client.get(RELEASE_API).send().await?.error_for_status()?.json().await?;
-    let asset = release
-        .assets
-        .into_iter()
-        .find(|asset| wanted_asset(&asset.name))
-        .ok_or_else(|| anyhow!("the release has no mpv build for x86_64"))?;
-    let expected = asset
-        .digest
-        .as_deref()
-        .and_then(|digest| digest.strip_prefix("sha256:"))
-        .map(str::to_ascii_lowercase)
-        .ok_or_else(|| anyhow!("the release publishes no checksum for {}", asset.name))?;
+    let build = pinned_build()?;
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("Kinuza/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(CONNECT_TIMEOUT)
+        .read_timeout(READ_TIMEOUT)
+        .build()?;
+    let url = format!("{DOWNLOAD_BASE}/{}/{}", build.tag, build.asset);
 
     let archive = folder.with_extension("download.tmp");
-    let mut response = client.get(&asset.browser_download_url).send().await?.error_for_status()?;
+    let mut response = client.get(&url).send().await?.error_for_status()?;
     progress.total_bytes.store(response.content_length().unwrap_or(0), Ordering::Relaxed);
     let mut file = tokio::fs::File::create(&archive).await?;
     let mut hasher = Sha256::new();
-    while let Some(chunk) = response.chunk().await? {
-        hasher.update(&chunk);
-        file.write_all(&chunk).await?;
-        progress.downloaded_bytes.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+    let downloaded = async {
+        while let Some(chunk) = response.chunk().await? {
+            hasher.update(&chunk);
+            file.write_all(&chunk).await?;
+            progress.downloaded_bytes.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+        }
+        file.flush().await?;
+        anyhow::Ok(())
     }
-    file.flush().await?;
+    .await;
     drop(file);
+    if let Err(error) = downloaded {
+        let _ = tokio::fs::remove_file(&archive).await;
+        return Err(error);
+    }
 
     let actual = hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect::<String>();
-    if actual != expected {
+    if actual != build.sha256.to_ascii_lowercase() {
         let _ = tokio::fs::remove_file(&archive).await;
-        bail!("the downloaded archive does not match its published checksum");
+        bail!("the downloaded mpv does not match the pinned checksum");
     }
 
     let unpacked = {
@@ -177,7 +201,7 @@ async fn install(folder: &Path, progress: &MpvState) -> anyhow::Result<()> {
 
     let version = background(Command::new(folder.join(EXECUTABLE_NAME)).arg("--version")).output().await?;
     anyhow::ensure!(version.status.success(), "the unpacked mpv does not run");
-    tracing::info!("mpv: installed {}", asset.name);
+    tracing::info!("mpv: installed {}", build.asset);
     Ok(())
 }
 
@@ -275,7 +299,7 @@ async fn open_pipe(name: &str) -> anyhow::Result<tokio::net::windows::named_pipe
 }
 
 async fn spawn(app: &AppHandle, data_dir: &Path) -> anyhow::Result<Player> {
-    let executable = executable(data_dir).ok_or_else(|| anyhow!("mpv_missing"))?;
+    let executable = executable(app, data_dir).ok_or_else(|| anyhow!("mpv_missing"))?;
     let window = main_window_handle(app)?;
     let pipe = pipe_name();
     let mut command = Command::new(&executable);
@@ -296,10 +320,30 @@ async fn spawn(app: &AppHandle, data_dir: &Path) -> anyhow::Result<Player> {
     });
 
     let events = app.clone();
+    let replies: Replies = Arc::default();
+    let waiting = replies.clone();
     tokio::spawn(async move {
         let mut lines = BufReader::new(reader).lines();
+        let mut last_time = Instant::now() - TIME_EVENT_EVERY;
         while let Ok(Some(line)) = lines.next_line().await {
             let Ok(message) = serde_json::from_str::<Value>(&line) else { continue };
+            if message.get("event").is_none() {
+                let id = message.get("request_id").and_then(Value::as_u64).unwrap_or(0);
+                if let Some(reply) = waiting.lock().ok().and_then(|mut waiting| waiting.remove(&id)) {
+                    let outcome = match message.get("error").and_then(Value::as_str) {
+                        None | Some("success") => Ok(message.get("data").cloned().unwrap_or(Value::Null)),
+                        Some(error) => Err(error.to_owned()),
+                    };
+                    let _ = reply.send(outcome);
+                }
+                continue;
+            }
+            if message.get("name").and_then(Value::as_str) == Some("time-pos") {
+                if last_time.elapsed() < TIME_EVENT_EVERY {
+                    continue;
+                }
+                last_time = Instant::now();
+            }
             match message.get("event").and_then(Value::as_str) {
                 Some("end-file") if message.get("reason").and_then(Value::as_str) == Some("error") => {
                     tracing::warn!("mpv: playback failed: {}", message.get("file_error").and_then(|error| error.as_str()).unwrap_or("unknown error"));
@@ -309,6 +353,11 @@ async fn spawn(app: &AppHandle, data_dir: &Path) -> anyhow::Result<Player> {
             }
             let _ = events.emit(EVENT_NAME, message);
         }
+        if let Ok(mut waiting) = waiting.lock() {
+            for (_, reply) in waiting.drain() {
+                let _ = reply.send(Err("mpv_gone".to_owned()));
+            }
+        }
         let _ = events.emit(EVENT_NAME, json!({ "event": "shutdown" }));
     });
 
@@ -316,7 +365,7 @@ async fn spawn(app: &AppHandle, data_dir: &Path) -> anyhow::Result<Player> {
         let _ = commands.send(json!({ "command": ["observe_property", id + 1, name] }).to_string());
     }
     tracing::info!("mpv: started");
-    Ok(Player { child, commands })
+    Ok(Player { child, commands, replies })
 }
 
 #[cfg(windows)]
@@ -335,20 +384,48 @@ fn place_below_interface(app: &AppHandle) {
 #[cfg(not(windows))]
 fn place_below_interface(_app: &AppHandle) {}
 
-async fn send(app: &AppHandle, state: &MpvState, data_dir: &Path, message: Value) -> Result<(), String> {
-    let mut player = state.player.lock().await;
-    let alive = match player.as_mut() {
-        Some(running) => matches!(running.child.try_wait(), Ok(None)) && !running.commands.is_closed(),
-        None => false,
+async fn send(app: &AppHandle, state: &MpvState, data_dir: &Path, command: Value) -> Result<Value, String> {
+    let (commands, replies) = {
+        let mut player = state.player.lock().await;
+        let alive = match player.as_mut() {
+            Some(running) => matches!(running.child.try_wait(), Ok(None)) && !running.commands.is_closed(),
+            None => false,
+        };
+        if !alive {
+            *player = Some(spawn(app, data_dir).await.map_err(|error| {
+                tracing::warn!("mpv: could not start: {error:#}");
+                "mpv_start_failed".to_owned()
+            })?);
+        }
+        let running = player.as_ref().ok_or_else(|| "mpv_start_failed".to_owned())?;
+        (running.commands.clone(), running.replies.clone())
     };
-    if !alive {
-        *player = Some(spawn(app, data_dir).await.map_err(|error| {
-            tracing::warn!("mpv: could not start: {error:#}");
-            "mpv_start_failed".to_owned()
-        })?);
+    let id = NEXT_REQUEST.fetch_add(1, Ordering::Relaxed);
+    let (reply, answer) = oneshot::channel();
+    if let Ok(mut waiting) = replies.lock() {
+        waiting.insert(id, reply);
     }
-    let running = player.as_ref().ok_or_else(|| "mpv_start_failed".to_owned())?;
-    running.commands.send(message.to_string()).map_err(|_| "mpv_gone".to_owned())
+    let name = command.get(0).and_then(Value::as_str).unwrap_or("").to_owned();
+    if commands.send(json!({ "command": command, "request_id": id }).to_string()).is_err() {
+        if let Ok(mut waiting) = replies.lock() {
+            waiting.remove(&id);
+        }
+        return Err("mpv_gone".to_owned());
+    }
+    match tokio::time::timeout(REPLY_WAIT, answer).await {
+        Ok(Ok(Ok(data))) => Ok(data),
+        Ok(Ok(Err(error))) => {
+            tracing::warn!("mpv: {name} failed: {error}");
+            Err(format!("mpv_failed:{error}"))
+        }
+        Ok(Err(_)) => Err("mpv_gone".to_owned()),
+        Err(_) => {
+            if let Ok(mut waiting) = replies.lock() {
+                waiting.remove(&id);
+            }
+            Err("mpv_timeout".to_owned())
+        }
+    }
 }
 
 fn is_plain(value: &Value) -> bool {
@@ -385,15 +462,15 @@ pub async fn mpv_command(
         tracing::warn!("mpv: refused command {:?}", command.first());
         return Err("mpv_command_refused".to_owned());
     }
-    send(&app, &mpv, &state.data_dir, json!({ "command": command })).await
+    send(&app, &mpv, &state.data_dir, Value::Array(command)).await.map(|_| ())
 }
 
 #[tauri::command]
 pub async fn mpv_warm(app: AppHandle, state: State<'_, AppState>, mpv: State<'_, MpvState>) -> Result<(), String> {
-    if executable(&state.data_dir).is_none() {
+    if executable(&app, &state.data_dir).is_none() {
         return Ok(());
     }
-    send(&app, &mpv, &state.data_dir, json!({ "command": ["get_property", "idle-active"] })).await
+    send(&app, &mpv, &state.data_dir, json!(["get_property", "idle-active"])).await.map(|_| ())
 }
 
 #[tauri::command]
@@ -402,7 +479,7 @@ pub async fn mpv_set(app: AppHandle, state: State<'_, AppState>, mpv: State<'_, 
         tracing::warn!("mpv: refused to set {name}");
         return Err("mpv_property_refused".to_owned());
     }
-    send(&app, &mpv, &state.data_dir, json!({ "command": ["set_property", name, value] })).await
+    send(&app, &mpv, &state.data_dir, json!(["set_property", name, value])).await.map(|_| ())
 }
 
 #[tauri::command]
@@ -425,7 +502,13 @@ pub async fn mpv_add_subtitle_text(
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|time| time.as_millis()).unwrap_or(0);
     let path = folder.join(format!("{stamp}.{extension}"));
     tokio::fs::write(&path, text).await.map_err(|error| error.to_string())?;
-    send(&app, &mpv, &state.data_dir, json!({ "command": ["sub-add", path.to_string_lossy(), "select", title] })).await
+    send(&app, &mpv, &state.data_dir, json!(["sub-add", path.to_string_lossy(), "select", title])).await.map(|_| ())
+}
+
+#[tauri::command]
+pub async fn mpv_quit(mpv: State<'_, MpvState>) -> Result<(), String> {
+    shutdown(&mpv).await;
+    Ok(())
 }
 
 pub async fn shutdown(mpv: &MpvState) {
@@ -467,6 +550,14 @@ mod tests {
         assert!(!allowed(json!(["load-script", "evil.lua"])));
         assert!(allowed(json!(["seek", 12.5, "absolute+exact"])));
         assert!(allowed(json!(["stop"])));
+    }
+
+    #[test]
+    fn pinned_build_is_valid() {
+        let build = pinned_build().unwrap();
+        assert!(build.asset.starts_with("mpv-x86_64-") && build.asset.ends_with(".7z"));
+        assert_eq!(build.sha256.len(), 64);
+        assert!(!build.tag.is_empty());
     }
 
     #[test]

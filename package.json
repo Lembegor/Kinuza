@@ -1,13 +1,14 @@
 {
   "name": "kinuza",
   "private": true,
-  "version": "0.2.6",
+  "version": "0.2.7",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "prepare:mpv": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/fetch-mpv.ps1",
     "tauri": "tauri",
     "app:dev": "tauri dev",
     "app:build": "tauri build"

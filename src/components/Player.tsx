@@ -114,15 +114,15 @@ function playsUnconverted(track: AudioTrackInfo): boolean {
   return builtInAudioCodecs.has(track.codec) || track.codec.startsWith("pcm_");
 }
 const minResumeSeconds = 15;
-const originalLanguageWaitMs = 4000;
-const probeWaitMs = 3000;
+const originalLanguageWaitMs = 2500;
+const probeWaitMs = 1500;
+const heldStartLimitMs = 4000;
 const originalTrackTitle = /оригинал|original|\borig\b/i;
 const commentaryTrackTitle = /коммент|comment/i;
 const nextEpisodeCountdownSeconds = 8;
 const interpolationLimitSeconds = 1.5;
 const clockStepSeconds = 0.25;
 const naturalStepSeconds = 2;
-const loadWaitMs = 700;
 const upNextTailSeconds = 40;
 const upNextCountdownSeconds = 10;
 const upNextMinDurationSeconds = 5 * 60;
@@ -377,7 +377,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
   const usingMpv = mpvChoice.mode === "ready";
   const mpvPlayer = useMpvVideo(usingMpv);
   if (usingMpv) (videoRef as { current: VideoWithExtras | null }).current = mpvPlayer.video as unknown as VideoWithExtras;
-  const htmlMedia = useMediaTracks(mpvChoice.mode === "unavailable" || (usingMpv && metadataReady) ? (source ?? null) : null);
+  const htmlMedia = useMediaTracks(mpvChoice.mode === "unavailable" || usingMpv ? (source ?? null) : null);
   const probed = htmlMedia.tracks;
   const mpvTracks = useMemo(() => {
     const own = mpvPlayer.tracks;
@@ -390,17 +390,13 @@ function PlayerView({ session }: { session: PlayerSession }) {
   const titleDetails = useAsync(() => tmdb.details(session.title.type, session.title.id), [session.title.type, session.title.id]);
   const originalLanguage = languageCode(titleDetails.data?.language);
   const [originalWaitOver, setOriginalWaitOver] = useState(false);
-  const [loadWaitOver, setLoadWaitOver] = useState(false);
   useEffect(() => {
     const timer = setTimeout(() => setOriginalWaitOver(true), originalLanguageWaitMs);
-    const quick = setTimeout(() => setLoadWaitOver(true), loadWaitMs);
-    return () => {
-      clearTimeout(timer);
-      clearTimeout(quick);
-    };
+    return () => clearTimeout(timer);
   }, []);
   const originalSettled = !titleDetails.loading || originalWaitOver;
-  const loadSettled = !titleDetails.loading || loadWaitOver;
+  const [startHeld, setStartHeld] = useState(false);
+  const externalSubtitle = useRef<{ path?: string; text?: string; title: string } | null>(null);
   const [audioTrack, setAudioTrack] = useState<number | null>(null);
   const [convertedTrack, setConvertedTrack] = useState<number | null>(null);
   const [embeddedSubtitle, setEmbeddedSubtitle] = useState<number | null>(null);
@@ -481,7 +477,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
     setConvertedTrack(null);
     setEmbeddedSubtitle(null);
     pickedAudio.current = false;
-    subtitlesDecided.current = false;
+    subtitlesDecided.current = externalSubtitle.current !== null;
     void streamUrl(source.infoHash, source.fileIndex).then((value) => {
       if (!cancelled) setUrl(value);
     });
@@ -512,33 +508,59 @@ function PlayerView({ session }: { session: PlayerSession }) {
     if (!usingMpv && conversionStart === null && media.tracks && (unplayablePicture || failed)) startConversion();
   }, [media.tracks, unplayablePicture, failed]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const switchToBuiltIn = useCallback(() => {
+    const position = filmTime();
+    if (position > 1) resumeAt.current = position;
+    mpvChoice.fallBack();
+    setFailed(false);
+    toast(t("player.mpv.fallback"), "info");
+  }, [mpvChoice, filmTime, toast, t]);
+
   const loadedUrl = useRef<string | null>(null);
   useEffect(() => {
     if (!usingMpv || !url || loadedUrl.current === url) return;
-    const asked = preferences?.audioLanguage || settings.audioLanguage;
-    if (!asked && !loadSettled) return;
     loadedUrl.current = url;
-    const wanted = asked || originalLanguage;
-    void mpv.set("alang", wanted ? [wanted, ...threeLetterCodes(wanted)].join(",") : "");
+    const wanted = preferences?.audioLanguage || settings.audioLanguage || originalLanguage;
+    void mpv.set("alang", wanted ? [wanted, ...threeLetterCodes(wanted)].join(",") : "").catch(() => undefined);
     mpvPlayer.video.prime(volume, muted, rate);
-    void mpvPlayer.video.load(url, resumeAt.current).catch((error) => {
+    setStartHeld(true);
+    void mpvPlayer.video.load(url, resumeAt.current, true).catch((error) => {
       report("player", "journal.mpv.play", error);
+      setStartHeld(false);
+      if (String(error).includes("mpv_start_failed") || String(error).includes("mpv_gone")) {
+        switchToBuiltIn();
+        return;
+      }
       setFailed(true);
       setBuffering(false);
     });
-  }, [usingMpv, url, loadSettled]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [usingMpv, url]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const releaseStart = useCallback(() => {
+    setStartHeld((held) => {
+      if (held) void mpvPlayer.video.play();
+      return false;
+    });
+  }, [mpvPlayer.video]);
 
   useEffect(() => {
-    if (usingMpv) void mpv.set("interpolation", settings.smoothMotion);
-  }, [usingMpv, settings.smoothMotion]);
+    if (!startHeld || !metadataReady) return;
+    const timer = setTimeout(releaseStart, heldStartLimitMs);
+    return () => clearTimeout(timer);
+  }, [startHeld, metadataReady, releaseStart]);
+
+  const generation = mpvPlayer.generation;
+  useEffect(() => {
+    if (usingMpv) void mpv.set("interpolation", settings.smoothMotion).catch(() => undefined);
+  }, [usingMpv, settings.smoothMotion, generation]);
 
   useEffect(() => {
-    if (usingMpv) void mpv.set("audio-delay", audioDelay);
-  }, [usingMpv, audioDelay]);
+    if (usingMpv) void mpv.set("audio-delay", audioDelay).catch(() => undefined);
+  }, [usingMpv, audioDelay, generation]);
 
   useEffect(() => {
-    if (usingMpv) void mpv.set("sub-scale", settings.subtitleScale);
-  }, [usingMpv, settings.subtitleScale]);
+    if (usingMpv) void mpv.set("sub-scale", settings.subtitleScale).catch(() => undefined);
+  }, [usingMpv, settings.subtitleScale, generation]);
 
   const saveProgress = useCallback(() => {
     const video = videoRef.current;
@@ -874,8 +896,37 @@ function PlayerView({ session }: { session: PlayerSession }) {
   const embeddedCues = useEmbeddedSubtitles(() => ({ time: filmTime(), duration: filmLength() }), source ?? null, usingMpv ? null : embeddedSubtitle);
 
   useEffect(() => {
-    if (usingMpv) void mpv.set("sub-delay", subtitleDelay);
-  }, [usingMpv, subtitleDelay]);
+    if (usingMpv) void mpv.set("sub-delay", subtitleDelay).catch(() => undefined);
+  }, [usingMpv, subtitleDelay, generation]);
+
+  useEffect(() => {
+    if (!usingMpv || generation === 0) return;
+    if (pickedAudio.current && audioTrack !== null) {
+      const id = mpvPlayer.video.audioId(audioTrack);
+      if (id !== null) void mpv.set("aid", id).catch(() => undefined);
+    }
+    const external = externalSubtitle.current;
+    if (external) {
+      const added = external.path ? mpv.command("sub-add", external.path, "select", external.title) : mpv.addSubtitleText(external.text ?? "", external.title);
+      void added.catch((error) => toast(describeError(error), "error"));
+    } else if (embeddedSubtitle !== null) {
+      void mpv.set("sid", mpvPlayer.video.subtitleId(embeddedSubtitle) ?? "no").catch(() => undefined);
+    }
+  }, [generation]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!usingMpv || !subtitlesDecided.current || externalSubtitle.current) return;
+    const selected = mpvPlayer.video.selectedSubtitle();
+    if (selected.kind === "internal" && subtitleKey !== `embedded:${selected.index}`) {
+      const track = mpvPlayer.tracks?.subtitles[selected.index];
+      setEmbeddedSubtitle(selected.index);
+      setSubtitleKey(`embedded:${selected.index}`);
+      if (track) setSubtitleLabel(embeddedSubtitleLabel(track, locale));
+    } else if (selected.kind === "none" && subtitleKey?.startsWith("embedded:")) {
+      setEmbeddedSubtitle(null);
+      setSubtitleKey(null);
+    }
+  }, [mpvPlayer.tracks]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (embeddedSubtitle !== null) setCues(embeddedCues);
   }, [embeddedCues, embeddedSubtitle]);
@@ -904,7 +955,8 @@ function PlayerView({ session }: { session: PlayerSession }) {
 
   const selectEmbeddedSubtitle = (track: SubtitleTrackInfo, byUser: boolean) => {
     setCues([]);
-    if (usingMpv) void mpv.set("sid", mpvPlayer.video.subtitleId(track.index) ?? "no");
+    externalSubtitle.current = null;
+    if (usingMpv) void mpv.set("sid", mpvPlayer.video.subtitleId(track.index) ?? "no").catch((error) => toast(describeError(error), "error"));
     setEmbeddedSubtitle(track.index);
     setSubtitleKey(`embedded:${track.index}`);
     setSubtitleLabel(embeddedSubtitleLabel(track, locale));
@@ -925,7 +977,12 @@ function PlayerView({ session }: { session: PlayerSession }) {
       setSubtitleKey(key);
       setSubtitleLabel(label);
       setMenu(null);
-      void mpv.addSubtitleText(text, label).catch((error) => toast(describeError(error), "error"));
+      externalSubtitle.current = { text, title: label };
+      void mpv.addSubtitleText(text, label).catch((error) => {
+        externalSubtitle.current = null;
+        setSubtitleKey(null);
+        toast(describeError(error), "error");
+      });
       return;
     }
     setEmbeddedSubtitle(null);
@@ -954,6 +1011,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
       if (!picked) return;
       if (usingMpv) {
         await mpv.command("sub-add", picked, "select", baseName(picked));
+        externalSubtitle.current = { path: picked, title: baseName(picked) };
         setEmbeddedSubtitle(null);
         setCues([]);
         setSubtitleKey(`disk:${picked}`);
@@ -1023,7 +1081,8 @@ function PlayerView({ session }: { session: PlayerSession }) {
   };
 
   const disableSubtitles = () => {
-    if (usingMpv) void mpv.set("sid", "no");
+    externalSubtitle.current = null;
+    if (usingMpv) void mpv.set("sid", "no").catch((error) => toast(describeError(error), "error"));
     setEmbeddedSubtitle(null);
     setCues([]);
     setSubtitleKey(null);
@@ -1050,7 +1109,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
       if (!tracks || !video || !track) return;
       if (usingMpv) {
         const id = mpvPlayer.video.audioId(index);
-        if (id !== null) void mpv.set("aid", id);
+        if (id !== null) void mpv.set("aid", id).catch((error) => useUi.getState().toast(describeError(error), "error"));
         setAudioTrack(index);
         return;
       }
@@ -1108,6 +1167,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
       tracks[0];
     pickedAudio.current = true;
     if (choice.index !== audioTrack) applyAudioTrack(choice.index);
+    releaseStart();
   }, [media.tracks, metadataReady, originalLanguage, originalSettled, probeSettled, applyAudioTrack]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const chooseAudioTrack = (track: AudioTrackInfo) => {
@@ -1356,6 +1416,11 @@ function PlayerView({ session }: { session: PlayerSession }) {
                   {t("player.otherQuality")}
                 </button>
               )}
+              {usingMpv && (
+                <button className="button" onClick={switchToBuiltIn}>
+                  {t("player.mpv.useBuiltIn")}
+                </button>
+              )}
             </div>
           </div>
         ) : countdown !== null && nextEpisode ? (
@@ -1388,11 +1453,16 @@ function PlayerView({ session }: { session: PlayerSession }) {
             </div>
           </div>
         ) : mpvChoice.mode === "installing" ? (
-          <div className="player__buffering">
-            <LoaderCircle size={46} className="spin" />
-            <span>{t("player.mpv.installing", { percent: Math.round(mpvChoice.progress * 100) })}</span>
+          <div className="player__message">
+            <LoaderCircle size={36} className="spin" />
+            <strong>{t("player.mpv.installing", { percent: Math.round(mpvChoice.progress * 100) })}</strong>
+            <div className="player__message-actions">
+              <button className="button" onClick={switchToBuiltIn}>
+                {t("player.mpv.skip")}
+              </button>
+            </div>
           </div>
-        ) : buffering ? (
+        ) : buffering || startHeld ? (
           <div className="player__buffering">
             <LoaderCircle size={46} className="spin" />
             {torrent && downloaded < 1 && (

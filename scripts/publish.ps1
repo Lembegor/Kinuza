@@ -47,6 +47,12 @@ if (git tag -l $tag) {
         $changed | ForEach-Object { Write-Host "   $_" }
     }
 
+    $mpvLock = Get-Content (Join-Path $root "src-tauri\mpv.lock.json") -Raw | ConvertFrom-Json
+    $mpvAge = ((Get-Date) - [datetime]::ParseExact($mpvLock.pinnedAt, "yyyy-MM-dd", $null)).Days
+    if ($mpvAge -gt 60) {
+        Write-Warning "The bundled mpv ($($mpvLock.tag)) is $mpvAge days old. Update it with scripts/update-mpv.ps1, check a film, then release."
+    }
+
     Write-Host "== Checking that the app builds"
     Invoke-Checked "Type check (npm run typecheck)" { npm run typecheck }
 
