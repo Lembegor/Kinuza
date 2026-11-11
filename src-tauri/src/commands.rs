@@ -165,6 +165,10 @@ pub async fn stream_cache_clear(state: State<'_, AppState>) -> CommandResult<u64
     Ok(state.engine.clear_cache().await)
 }
 
+pub(crate) fn free_space(folder: &std::path::Path) -> Option<u64> {
+    disk_space(folder).map(|info| info.free_bytes)
+}
+
 #[cfg(windows)]
 fn disk_space(folder: &std::path::Path) -> Option<StorageInfo> {
     use std::os::windows::ffi::OsStrExt;

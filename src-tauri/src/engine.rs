@@ -108,6 +108,7 @@ struct Watch {
 }
 
 const ANNOUNCE_SELECTION: Duration = Duration::from_secs(10);
+const FREE_SPACE_RESERVE: u64 = 2 * 1024 * 1024 * 1024;
 
 const EXTRA_TRACKERS: &[&str] = &[
     "udp://tracker.opentrackr.org:1337/announce",
@@ -866,6 +867,9 @@ impl Engine {
             (true, Some(file)) => self.select_for_announce(&handle, file).await,
             _ => false,
         };
+        if let (true, false, Some(file)) = (online, announcing, file) {
+            self.follow_watched(&handle, file).await;
+        }
         self.resume_handle(&handle).await?;
         if announcing {
             self.announced.lock().unwrap().insert(info_hash.to_owned());
@@ -873,12 +877,56 @@ impl Engine {
             let announced = handle.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(ANNOUNCE_SELECTION).await;
-                if engine.is_online_only(&announced) {
-                    engine.deselect(&announced).await;
+                if !engine.is_online_only(&announced) {
+                    return;
+                }
+                let info_hash = announced.info_hash().as_string();
+                let watched = match announced.only_files().as_deref() {
+                    Some(&[file]) if engine.played.lock().unwrap().contains(&info_hash) => Some(file),
+                    _ => None,
+                };
+                match watched {
+                    Some(file) if engine.has_room_for(&announced, file) => {
+                        tracing::info!("engine: {} keeps downloading file {file} ahead of the player", &info_hash[..8]);
+                    }
+                    _ => {
+                        if watched.is_some() {
+                            tracing::info!("engine: {} streams only, the disk has too little free space for the whole file", &info_hash[..8]);
+                        }
+                        engine.deselect(&announced).await;
+                    }
                 }
             });
         }
         Ok(handle)
+    }
+
+    fn has_room_for(&self, handle: &TorrentHandle, file: usize) -> bool {
+        let Ok(Some(length)) = handle.with_metadata(|metadata| metadata.file_infos.get(file).map(|info| info.len)) else {
+            return false;
+        };
+        let have = handle.stats().file_progress.get(file).copied().unwrap_or(0);
+        let missing = length.saturating_sub(have);
+        crate::commands::free_space(&self.cache_dir).is_some_and(|free| free >= missing.saturating_add(FREE_SPACE_RESERVE))
+    }
+
+    async fn follow_watched(&self, handle: &TorrentHandle, file: usize) {
+        let current: HashSet<usize> = handle.only_files().unwrap_or_default().into_iter().collect();
+        if current.len() == 1 && current.contains(&file) {
+            return;
+        }
+        let info_hash = handle.info_hash().as_string();
+        let wanted = if self.has_room_for(handle, file) { HashSet::from([file]) } else { HashSet::new() };
+        if wanted == current {
+            return;
+        }
+        match self.session.update_only_files(handle, &wanted).await {
+            Ok(()) if wanted.is_empty() => {
+                tracing::info!("engine: {} streams only, the disk has too little free space for file {file}", &info_hash[..8]);
+            }
+            Ok(()) => tracing::info!("engine: {} downloads file {file} ahead of the player", &info_hash[..8]),
+            Err(error) => tracing::warn!("engine: could not select file {file} of {info_hash}: {error}"),
+        }
     }
 
     async fn select_for_announce(&self, handle: &TorrentHandle, file: usize) -> bool {
