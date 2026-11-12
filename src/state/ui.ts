@@ -37,6 +37,8 @@ export interface ConfirmRequest {
   confirmLabel: string;
   optionLabel?: string;
   danger?: boolean;
+  secondaryLabel?: string;
+  onSecondary?: () => void;
   onConfirm: (optionChecked: boolean) => void;
 }
 

@@ -18,6 +18,36 @@ const PARKING_REQUEST_ID: u64 = 0;
 const PARKING_PROBE_INTERVAL: Duration = Duration::from_millis(50);
 const PARKING_TIMEOUT: Duration = Duration::from_secs(2);
 const HIDDEN_PAGE_TIMEOUT: Duration = Duration::from_secs(30);
+const SHOWN_PAGE_TIMEOUT: Duration = Duration::from_secs(4 * 60);
+const QUEUE_WAIT: Duration = Duration::from_secs(5 * 60);
+const ERROR_BUSY: &str = "tracker_busy";
+
+static WINDOW_SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+struct ShownWindow;
+
+impl ShownWindow {
+    fn mark() -> Self {
+        WINDOW_SHOWN.store(true, std::sync::atomic::Ordering::Relaxed);
+        Self
+    }
+}
+
+impl Drop for ShownWindow {
+    fn drop(&mut self) {
+        WINDOW_SHOWN.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+async fn take_turn<'a>(state: &'a Mutex<RutrackerState>, quiet: bool) -> Result<tokio::sync::MutexGuard<'a, RutrackerState>, String> {
+    if let Ok(guard) = state.try_lock() {
+        return Ok(guard);
+    }
+    if quiet && WINDOW_SHOWN.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(ERROR_BUSY.to_owned());
+    }
+    tokio::time::timeout(QUEUE_WAIT, state.lock()).await.map_err(|_| ERROR_BUSY.to_owned())
+}
 const PROBE_INTERVAL: Duration = Duration::from_millis(400);
 const CHALLENGE_GRACE: Duration = Duration::from_secs(6);
 const MARK_STALE_SCRIPT: &str = "window.__kinuzaStale = true;";
@@ -319,6 +349,8 @@ impl Worker {
         mut on_page: impl FnMut(PageReport) -> Option<Result<T, String>>,
     ) -> Result<T, String> {
         let hidden_deadline = Instant::now() + HIDDEN_PAGE_TIMEOUT;
+        let mut shown_deadline = Instant::now() + SHOWN_PAGE_TIMEOUT;
+        let mut shown = visible.then(ShownWindow::mark);
         let mut challenge_since: Option<Instant> = None;
         let mut probe_timer = tokio::time::interval(PROBE_INTERVAL);
         probe_timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -326,9 +358,11 @@ impl Worker {
         loop {
             tokio::select! {
                 _ = probe_timer.tick() => {
-                    if !visible && Instant::now() >= hidden_deadline {
+                    let now = Instant::now();
+                    if (!visible && now >= hidden_deadline) || (visible && now >= shown_deadline) {
                         let _ = self.window.destroy();
                         self.closed = true;
+                        drop(shown.take());
                         return Err(ERROR_TIMEOUT.to_owned());
                     }
                     let sender = self.sender.clone();
@@ -360,6 +394,8 @@ impl Worker {
                         if !visible && may_reveal && since.elapsed() >= CHALLENGE_GRACE {
                             self.reveal();
                             visible = true;
+                            shown_deadline = Instant::now() + SHOWN_PAGE_TIMEOUT;
+                            shown = Some(ShownWindow::mark());
                         }
                         continue;
                     }
@@ -474,9 +510,8 @@ pub async fn rutracker_login_window(
     app: AppHandle,
     state: tauri::State<'_, Mutex<RutrackerState>>,
 ) -> Result<(), String> {
-    state
-        .lock()
-        .await
+    take_turn(&state, false)
+        .await?
         .request(&app, forum_url("login.php"), NO_EXTRACTOR, true, true, |page| (!page.guest).then_some(Ok(())))
         .await
 }
@@ -494,9 +529,8 @@ pub async fn rutracker_search(
         percent_encode(&encoded_query, NON_ALPHANUMERIC)
     ));
 
-    state
-        .lock()
-        .await
+    take_turn(&state, quiet.unwrap_or(false))
+        .await?
         .request(&app, url, SEARCH_EXTRACTOR, false, !quiet.unwrap_or(false), |page| {
             Some(if page.guest {
                 Err(ERROR_AUTH_REQUIRED.to_owned())
@@ -519,9 +553,8 @@ pub async fn rutracker_magnet(
     }
     let url = forum_url(&format!("viewtopic.php?t={id}"));
 
-    state
-        .lock()
-        .await
+    take_turn(&state, quiet.unwrap_or(false))
+        .await?
         .request(&app, url, MAGNET_EXTRACTOR, false, !quiet.unwrap_or(false), |page| {
             Some(match page.data.as_str() {
                 Some(link) if is_magnet_link(link) => Ok(link.to_owned()),
@@ -562,9 +595,8 @@ pub async fn rutracker_torrent_inspect(
     let extractor = TORRENT_FILE_EXTRACTOR
         .replace("__ID__", &id)
         .replace("__FETCH_TIMEOUT_MS__", &TOPIC_FETCH_TIMEOUT.as_millis().to_string());
-    let bytes = state
-        .lock()
-        .await
+    let bytes = take_turn(&state, quiet.unwrap_or(false))
+        .await?
         .request(&app, url, &extractor, false, !quiet.unwrap_or(false), |page| {
             if page.guest {
                 return Some(Err(ERROR_AUTH_REQUIRED.to_owned()));
@@ -599,9 +631,8 @@ pub async fn rutracker_video_sizes(
         .replace("__PARALLEL__", &PARALLEL_TOPIC_FETCHES.to_string())
         .replace("__FETCH_TIMEOUT_MS__", &TOPIC_FETCH_TIMEOUT.as_millis().to_string());
 
-    state
-        .lock()
-        .await
+    take_turn(&state, true)
+        .await?
         .request(&app, url, &extractor, false, true, |page| {
             match serde_json::from_value::<VideoSizeLookup>(page.data) {
                 Ok(lookup) if lookup.pending => None,

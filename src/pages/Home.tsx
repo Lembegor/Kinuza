@@ -8,6 +8,7 @@ import { useAsync } from "../lib/useAsync";
 import { isNewEpisode, useEpisodeCalendar, type CalendarEpisode } from "../state/calendar";
 import { usePersonalFeed } from "../state/feed";
 import { entryToRef, isWatched, titleKey, useLibrary, type Progress, type TitleRef } from "../state/library";
+import { useSettings } from "../state/settings";
 import { useUi } from "../state/ui";
 import { useUpNext, type UpNextEpisode } from "../state/upNext";
 
@@ -215,7 +216,8 @@ function UpNextCard({ item }: { item: UpNextEpisode }) {
   const play = useUi((state) => state.play);
   const navigate = useNavigate();
   const hasSource = useLibrary((state) => (state.sources[item.unitKey]?.length ?? 0) > 0);
-  const art = imageUrl(item.still, "w500") ?? imageUrl(item.title.backdrop, "w780") ?? imageUrl(item.title.poster, "w342");
+  const hideStill = useSettings((state) => state.spoilerStills);
+  const art = (hideStill ? null : imageUrl(item.still, "w500")) ?? imageUrl(item.title.backdrop, "w780") ?? imageUrl(item.title.poster, "w342");
   const openTitle = () => navigate(`/title/tv/${item.title.id}?s=${item.season}`);
   const start = () => {
     if (!hasSource) {

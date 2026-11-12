@@ -37,9 +37,10 @@ percent-encoding = "2.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 sevenz-rust2 = { version = "0.25.0", default-features = false, features = ["util"] }
+souvlaki = { version = "0.9.3", default-features = false, features = ["use_zbus"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security"] }
 winreg = "0.55"
 
 [target.'cfg(unix)'.dependencies]
@@ -55,3 +56,6 @@ lto = "thin"
 codegen-units = 4
 strip = true
 panic = "abort"
+
+[patch.crates-io]
+librqbit = { path = "vendor/librqbit" }

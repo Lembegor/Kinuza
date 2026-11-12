@@ -8,6 +8,7 @@ const specialsSeason = 0;
 const upNextLimit = 12;
 const minStartedSeconds = 30;
 const skippedStatuses = new Set(["dropped", "completed", "onHold"]);
+const seasonsAhead = 3;
 
 export interface UpNextEpisode {
   title: TitleRef;
@@ -67,13 +68,15 @@ async function nextEpisodeAfter(place: SeriesPlace, today: string): Promise<UpNe
   const progress = useLibrary.getState().progress;
   const unwatched = (episode: Episode) =>
     episode.airDate !== "" && episode.airDate <= today && !isWatched(progress[unitKey("tv", place.title.id, episode.season, episode.episode)]);
-  const current = await seasonOrEmpty(place.title.id, place.season);
-  let next = current.filter((episode) => episode.episode > place.episode).sort((a, b) => a.episode - b.episode)[0];
-  if (!next) {
-    const following = await seasonOrEmpty(place.title.id, place.season + 1);
-    next = following.sort((a, b) => a.episode - b.episode)[0];
+  let next: Episode | undefined;
+  for (let season = place.season; season <= place.season + seasonsAhead && !next; season++) {
+    const episodes = (await seasonOrEmpty(place.title.id, season)).sort((a, b) => a.episode - b.episode);
+    if (episodes.length === 0 && season > place.season) break;
+    const later = episodes.filter((episode) => season > place.season || episode.episode > place.episode);
+    if (later.some((episode) => episode.airDate === "" || episode.airDate > today) && !later.some(unwatched)) return null;
+    next = later.find(unwatched);
   }
-  if (!next || !unwatched(next)) return null;
+  if (!next) return null;
   return {
     title: place.title,
     unitKey: unitKey("tv", place.title.id, next.season, next.episode),

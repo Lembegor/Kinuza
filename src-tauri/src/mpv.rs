@@ -50,7 +50,58 @@ const ALLOWED_PROPERTIES: &[&str] = &[
     "sid",
     "aid",
     "interpolation",
+    "volume-max",
+    "sub-font",
+    "sub-color",
+    "sub-back-color",
+    "sub-border-color",
+    "sub-border-style",
+    "sub-border-size",
+    "sub-shadow-offset",
+    "sub-pos",
+    "sub-visibility",
+    "secondary-sid",
+    "secondary-sub-visibility",
+    "video-zoom",
+    "video-pan-x",
+    "video-pan-y",
+    "video-aspect-override",
+    "scale",
+    "cscale",
+    "dscale",
+    "deband",
 ];
+
+const AUDIO_FILTERS: &[(&str, &str)] = &[
+    ("off", ""),
+    ("night", "lavfi=[acompressor=threshold=0.05:ratio=6:attack=15:release=300:knee=4:makeup=3,alimiter=limit=0.95:level=false]"),
+    ("level", "lavfi=[dynaudnorm=f=250:g=15:p=0.9:m=8:s=0]"),
+    ("dialogue", "lavfi=[highpass=f=100,equalizer=f=2600:t=q:w=1.1:g=6,equalizer=f=250:t=q:w=1:g=-3,acompressor=threshold=0.1:ratio=3:attack=10:release=200:makeup=2,alimiter=limit=0.95:level=false]"),
+];
+
+const STATS_PROPERTIES: &[&str] = &[
+    "video-codec",
+    "video-format",
+    "width",
+    "height",
+    "container-fps",
+    "estimated-vf-fps",
+    "display-fps",
+    "video-bitrate",
+    "audio-codec-name",
+    "audio-bitrate",
+    "audio-params/channel-count",
+    "audio-params/samplerate",
+    "hwdec-current",
+    "frame-drop-count",
+    "decoder-frame-drop-count",
+    "demuxer-cache-duration",
+    "video-params/gamma",
+    "video-params/primaries",
+    "current-vo",
+];
+
+const SCREENSHOT_FOLDER_NAME: &str = "Kinuza";
 const LOADFILE_FLAGS: &[&str] = &["replace", "append"];
 
 const OBSERVED: &[&str] = &[
@@ -161,9 +212,14 @@ fn pinned_build() -> anyhow::Result<PinnedBuild> {
 }
 
 async fn install(folder: &Path, progress: &MpvState) -> anyhow::Result<()> {
-    tokio::time::timeout(INSTALL_TIMEOUT, download_and_unpack(folder, progress))
+    let outcome = tokio::time::timeout(INSTALL_TIMEOUT, download_and_unpack(folder, progress))
         .await
-        .map_err(|_| anyhow!("the mpv download took longer than {} minutes", INSTALL_TIMEOUT.as_secs() / 60))?
+        .unwrap_or_else(|_| Err(anyhow!("the mpv download took longer than {} minutes", INSTALL_TIMEOUT.as_secs() / 60)));
+    if outcome.is_err() {
+        let _ = tokio::fs::remove_file(folder.with_extension("download.tmp")).await;
+        let _ = tokio::fs::remove_dir_all(folder.with_extension("new")).await;
+    }
+    outcome
 }
 
 async fn download_and_unpack(folder: &Path, progress: &MpvState) -> anyhow::Result<()> {
@@ -262,6 +318,7 @@ fn mpv_arguments(window: isize, pipe: &str) -> Vec<String> {
         "--osc=no".into(),
         "--osd-level=0".into(),
         "--input-default-bindings=no".into(),
+        "--media-controls=no".into(),
         "--input-vo-keyboard=no".into(),
         "--input-cursor=no".into(),
         "--cursor-autohide=no".into(),
@@ -277,6 +334,9 @@ fn mpv_arguments(window: isize, pipe: &str) -> Vec<String> {
         "--sub-auto=no".into(),
         "--audio-file-auto=no".into(),
         "--hr-seek=yes".into(),
+        "--volume-max=150".into(),
+        "--screenshot-format=png".into(),
+        "--screenshot-png-compression=4".into(),
         "--cache=yes".into(),
         "--cache-secs=300".into(),
         "--demuxer-max-bytes=1500MiB".into(),
@@ -323,7 +383,7 @@ async fn spawn(app: &AppHandle, data_dir: &Path) -> anyhow::Result<Player> {
     let mut command = Command::new(&executable);
     command.args(mpv_arguments(window, &pipe));
     background(&mut command);
-    let child = command.spawn().context("could not start mpv")?;
+    let child = crate::children::spawn(&mut command).context("could not start mpv")?;
 
     let pipe = open_pipe(&pipe).await?;
     let (reader, mut writer) = tokio::io::split(pipe);
@@ -433,7 +493,9 @@ async fn send(app: &AppHandle, state: &MpvState, data_dir: &Path, command: Value
     match tokio::time::timeout(REPLY_WAIT, answer).await {
         Ok(Ok(Ok(data))) => Ok(data),
         Ok(Ok(Err(error))) => {
-            tracing::warn!("mpv: {name} failed: {error}");
+            if name != "get_property" {
+                tracing::warn!("mpv: {name} failed: {error}");
+            }
             Err(format!("mpv_failed:{error}"))
         }
         Ok(Err(_)) => Err("mpv_gone".to_owned()),
@@ -521,6 +583,54 @@ pub async fn mpv_add_subtitle_text(
     let path = folder.join(format!("{stamp}.{extension}"));
     tokio::fs::write(&path, text).await.map_err(|error| error.to_string())?;
     send(&app, &mpv, &state.data_dir, json!(["sub-add", path.to_string_lossy(), "select", title])).await.map(|_| ())
+}
+
+#[tauri::command]
+pub async fn mpv_audio_filter(app: AppHandle, state: State<'_, AppState>, mpv: State<'_, MpvState>, mode: String) -> Result<(), String> {
+    let filter = AUDIO_FILTERS
+        .iter()
+        .find(|(name, _)| *name == mode)
+        .map(|(_, filter)| *filter)
+        .ok_or_else(|| "mpv_property_refused".to_owned())?;
+    send(&app, &mpv, &state.data_dir, json!(["set_property", "af", filter])).await.map(|_| ())
+}
+
+#[tauri::command]
+pub async fn mpv_stats(app: AppHandle, state: State<'_, AppState>, mpv: State<'_, MpvState>) -> Result<HashMap<String, Value>, String> {
+    let mut stats = HashMap::new();
+    for name in STATS_PROPERTIES {
+        if let Ok(value) = send(&app, &mpv, &state.data_dir, json!(["get_property", name])).await {
+            stats.insert((*name).to_owned(), value);
+        }
+    }
+    Ok(stats)
+}
+
+pub fn screenshot_path(app: &AppHandle, label: &str, extension: &str) -> Result<PathBuf, String> {
+    let folder = app
+        .path()
+        .picture_dir()
+        .or_else(|_| app.path().download_dir())
+        .map_err(|error| error.to_string())?
+        .join(SCREENSHOT_FOLDER_NAME);
+    std::fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
+    let safe: String = label
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' { c } else { '_' })
+        .take(80)
+        .collect::<String>()
+        .trim()
+        .to_owned();
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|time| time.as_millis()).unwrap_or(0);
+    let name = if safe.is_empty() { format!("Kinuza {stamp}.{extension}") } else { format!("{safe} {stamp}.{extension}") };
+    Ok(folder.join(name))
+}
+
+#[tauri::command]
+pub async fn mpv_screenshot(app: AppHandle, state: State<'_, AppState>, mpv: State<'_, MpvState>, label: String) -> Result<String, String> {
+    let path = screenshot_path(&app, &label, "png")?;
+    send(&app, &mpv, &state.data_dir, json!(["screenshot-to-file", path.to_string_lossy(), "video"])).await?;
+    Ok(path.to_string_lossy().into_owned())
 }
 
 #[tauri::command]

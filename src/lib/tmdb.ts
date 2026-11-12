@@ -213,6 +213,22 @@ export async function catalogHealth(): Promise<CatalogHealth> {
 const cache = new Map<string, Promise<unknown>>();
 const cachedAt = new Map<string, number>();
 const airingMaxAgeMs = 3 * 60 * 60 * 1000;
+const seasonMaxAgeMs = 24 * 60 * 60 * 1000;
+const defaultMaxAgeMs = 7 * 24 * 60 * 60 * 1000;
+const cacheLimit = 600;
+const galleryLimit = 24;
+
+function remember(url: string, pending: Promise<unknown>): void {
+  cache.delete(url);
+  cache.set(url, pending);
+  cachedAt.set(url, Date.now());
+  while (cache.size > cacheLimit) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+    cachedAt.delete(oldest);
+  }
+}
 
 type Raw = Record<string, any>;
 
@@ -231,7 +247,7 @@ async function fetchWithRetry(url: string): Promise<unknown> {
   }
 }
 
-function request<T>(path: string, params: Record<string, string | number> = {}, maxAgeMs = Infinity): Promise<T> {
+function request<T>(path: string, params: Record<string, string | number> = {}, maxAgeMs = defaultMaxAgeMs): Promise<T> {
   const query = new URLSearchParams({
     api_key: apiKeyOverride ?? import.meta.env.VITE_TMDB_API_KEY ?? "",
     language: catalog.language,
@@ -241,15 +257,18 @@ function request<T>(path: string, params: Record<string, string | number> = {}, 
   const url = `${apiBase}${path}?${query}`;
 
   const cached = cache.get(url);
-  if (cached && Date.now() - (cachedAt.get(url) ?? 0) <= maxAgeMs) return cached as Promise<T>;
+  if (cached && Date.now() - (cachedAt.get(url) ?? 0) <= maxAgeMs) {
+    cache.delete(url);
+    cache.set(url, cached);
+    return cached as Promise<T>;
+  }
 
   const pending = fetchWithRetry(url);
   pending.catch(() => cache.delete(url));
   pending.catch((error) => {
     if (!(error instanceof Error && error.message === "tmdb_404")) report("catalog", "journal.catalog.failed", error);
   });
-  cache.set(url, pending);
-  cachedAt.set(url, Date.now());
+  remember(url, pending);
   return pending as Promise<T>;
 }
 
@@ -552,6 +571,17 @@ export const tmdb = {
       .sort((a, b) => collator.compare(a.name, b.name));
   },
 
+  async images(type: MediaType, id: number): Promise<string[]> {
+    const language = catalog.language.slice(0, 2);
+    const raw = await request<Raw>(`/${type}/${id}/images`, { include_image_language: [...new Set(["null", language, "en"])].join(",") });
+    const backdrops: Raw[] = Array.isArray(raw.backdrops) ? raw.backdrops : [];
+    return backdrops
+      .filter((image) => typeof image.file_path === "string" && (image.width ?? 0) >= 1280)
+      .sort((a, b) => Number(a.iso_639_1 !== null) - Number(b.iso_639_1 !== null) || (b.vote_average ?? 0) - (a.vote_average ?? 0))
+      .slice(0, galleryLimit)
+      .map((image) => image.file_path as string);
+  },
+
   async collection(id: number): Promise<Collection> {
     const raw = await request<Raw>(`/collection/${id}`);
     const parts: CollectionPart[] = (raw.parts ?? []).flatMap((part: Raw) => {
@@ -616,7 +646,7 @@ export const tmdb = {
   },
 
   async season(seriesId: number, seasonNumber: number): Promise<Episode[]> {
-    const raw = await request<Raw>(`/tv/${seriesId}/season/${seasonNumber}`);
+    const raw = await request<Raw>(`/tv/${seriesId}/season/${seasonNumber}`, {}, seasonMaxAgeMs);
     return (raw.episodes ?? []).map((episode: Raw) => ({
       season: seasonNumber,
       episode: episode.episode_number,

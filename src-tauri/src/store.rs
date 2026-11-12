@@ -14,7 +14,7 @@ const STORE_FOLDER_NAME: &str = "store";
 const BACKUP_FOLDER_NAME: &str = "backups";
 const MAX_STORE_NAME_LENGTH: usize = 40;
 const DAILY_BACKUPS_KEPT: usize = 7;
-const BACKED_UP_STORES: &[&str] = &["library", "settings"];
+const BACKED_UP_STORES: &[&str] = &["library", "progress", "settings"];
 const SECONDS_PER_DAY: u64 = 86_400;
 
 #[derive(Serialize)]
@@ -116,7 +116,7 @@ fn keep_daily_backup(folder: &Path, name: &str, path: &Path) -> std::io::Result<
         return Ok(());
     }
     fs::create_dir_all(&backups)?;
-    fs::write(&target, text)?;
+    write_atomic(&target, text.as_bytes())?;
     let existing = daily_backups(folder, name);
     for old in existing.iter().take(existing.len().saturating_sub(DAILY_BACKUPS_KEPT)) {
         let _ = fs::remove_file(old);
@@ -173,6 +173,33 @@ fn document_path(folder: &Path, name: &str) -> Result<PathBuf, String> {
         return Err("bad_store_name".to_owned());
     }
     Ok(folder.join(format!("{name}.json")))
+}
+
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut name = path.file_name().map(|name| name.to_os_string()).unwrap_or_default();
+    name.push(".tmp");
+    let temporary = path.with_file_name(name);
+    {
+        let mut file = fs::File::create(&temporary)?;
+        file.write_all(bytes)?;
+        file.sync_all()?;
+    }
+    fs::rename(&temporary, path).inspect_err(|_| {
+        let _ = fs::remove_file(&temporary);
+    })
+}
+
+pub fn random_u64() -> u64 {
+    use std::{
+        collections::hash_map::RandomState,
+        hash::{BuildHasher, Hasher},
+    };
+    let mut hasher = RandomState::new().build_hasher();
+    hasher.write_u128(SystemTime::now().duration_since(UNIX_EPOCH).map(|elapsed| elapsed.as_nanos()).unwrap_or_default());
+    hasher.finish()
 }
 
 pub fn random_token() -> String {

@@ -78,6 +78,18 @@ struct ParkedFile {
 
 const PARKED_INDEX_NAME: &str = "parked.json";
 const CACHE_INDEX_NAME: &str = "cache.json";
+const QUEUE_INDEX_NAME: &str = "queue.json";
+const ORDER_INDEX_NAME: &str = "order.json";
+const POLICY_FILE_NAME: &str = "policy.json";
+const PROMOTED_INDEX_NAME: &str = "promoted.json";
+const NETWORK_FILE_NAME: &str = "network.json";
+const LISTEN_PORT_FIRST: u16 = 20000;
+const LISTEN_PORT_SPAN: u16 = 40000;
+const LISTEN_PORT_ATTEMPTS: usize = 8;
+const PEER_LIMIT: usize = 200;
+const PEER_CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
+const PEER_REQUEST_WINDOW: usize = 32;
+const STOP_TIMEOUT: Duration = Duration::from_secs(5);
 const ONLINE_LINGER: Duration = Duration::from_secs(5 * 60);
 const CACHE_MAX_AGE: Duration = Duration::from_secs(14 * 24 * 60 * 60);
 const CACHE_CHECK_EVERY: u32 = 6;
@@ -88,7 +100,20 @@ const STATE_PARKED: &str = "parked";
 const STATE_QUEUED: &str = "queued";
 const STARTUP_CLEANUP_DELAY: Duration = Duration::from_secs(8);
 
-#[derive(Deserialize, Clone, Copy, Default)]
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct Promotion {
+    files: Vec<usize>,
+    download_dir: PathBuf,
+}
+
+#[derive(Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct NetworkSettings {
+    listen_port: u16,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct DownloadPolicy {
     pub download_limit: u32,
@@ -114,6 +139,7 @@ const TOUCH_EVERY_MILLIS: u64 = 60_000;
 #[derive(Default)]
 struct Usage {
     holders: usize,
+    streams: usize,
     active: Option<Instant>,
     released: Option<Instant>,
 }
@@ -121,6 +147,7 @@ struct Usage {
 impl Usage {
     fn playing(&self) -> bool {
         self.holders > 0
+            || self.streams > 0
             || self.active.is_some_and(|active| {
                 active.elapsed() < ONLINE_LINGER && self.released.map_or(true, |released| released < active)
             })
@@ -168,7 +195,66 @@ pub struct Engine {
     policy_known: std::sync::atomic::AtomicBool,
     watching: Mutex<HashMap<String, Watch>>,
     announced: Mutex<HashSet<String>>,
+    order: Mutex<HashMap<String, u64>>,
+    promoted: Mutex<HashMap<String, Promotion>>,
+    migrating: tokio::sync::Mutex<()>,
     session_reset: bool,
+    listen_port: u16,
+}
+
+fn read_json<T: serde::de::DeserializeOwned + Default>(path: &Path) -> T {
+    std::fs::read_to_string(path).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
+}
+
+fn write_json<T: Serialize>(path: &Path, value: &T) {
+    match serde_json::to_vec(value) {
+        Ok(bytes) => {
+            if let Err(error) = crate::store::write_atomic(path, &bytes) {
+                tracing::warn!("engine: could not save {}: {error}", path.display());
+            }
+        }
+        Err(error) => tracing::warn!("engine: could not encode {}: {error}", path.display()),
+    }
+}
+
+fn port_is_free(port: u16) -> bool {
+    let tcp = std::net::TcpListener::bind(("0.0.0.0", port)).is_ok();
+    let udp = std::net::UdpSocket::bind(("0.0.0.0", port)).is_ok();
+    tcp && udp
+}
+
+fn random_port() -> u16 {
+    LISTEN_PORT_FIRST + (crate::store::random_u64() % u64::from(LISTEN_PORT_SPAN)) as u16
+}
+
+fn choose_listen_port(cache_dir: &Path) -> u16 {
+    let path = cache_dir.join(NETWORK_FILE_NAME);
+    let saved: NetworkSettings = read_json(&path);
+    if saved.listen_port != 0 && port_is_free(saved.listen_port) {
+        return saved.listen_port;
+    }
+    let chosen = (0..LISTEN_PORT_ATTEMPTS).map(|_| random_port()).find(|port| port_is_free(*port)).unwrap_or(0);
+    if chosen != 0 {
+        if saved.listen_port != 0 {
+            tracing::warn!("session: port {} is taken, moving to {chosen}", saved.listen_port);
+        }
+        write_json(&path, &NetworkSettings { listen_port: chosen });
+    }
+    chosen
+}
+
+fn classify_torrent_error(message: &str) -> String {
+    let lower = message.to_ascii_lowercase();
+    let disk_full = lower.contains("no space left")
+        || lower.contains("os error 112")
+        || lower.contains("os error 28")
+        || lower.contains("not enough space")
+        || lower.contains("disk full");
+    if disk_full {
+        "disk_full".to_owned()
+    } else {
+        message.to_owned()
+    }
 }
 
 fn set_aside(folder: &Path) -> Result<PathBuf> {
@@ -186,12 +272,13 @@ impl Engine {
         std::fs::create_dir_all(&persistence_dir).ok();
         std::fs::create_dir_all(&cache_dir).ok();
 
-        let (session, session_reset) = match Self::open_session(&default_output, &persistence_dir).await {
+        let listen_port = choose_listen_port(&cache_dir);
+        let (session, session_reset) = match Self::open_session(&default_output, &persistence_dir, listen_port).await {
             Ok(session) => (session, false),
             Err(error) => {
                 tracing::error!("session: could not start with the saved torrents: {error:#}");
                 let aside = set_aside(&persistence_dir)?;
-                match Self::open_session(&default_output, &persistence_dir).await {
+                match Self::open_session(&default_output, &persistence_dir, listen_port).await {
                     Ok(session) => {
                         tracing::warn!("session: started fresh, the saved torrents were moved to {}", aside.display());
                         (session, true)
@@ -206,10 +293,11 @@ impl Engine {
             }
         };
         tracing::info!("session listening on {:?}, announcing port {:?}", session.listen_addr(), session.announce_port());
-        Self::assemble(session, session_reset, cache_dir)
+        let listen_port = session.announce_port().unwrap_or(listen_port);
+        Self::assemble(session, session_reset, cache_dir, listen_port)
     }
 
-    async fn open_session(default_output: &Path, persistence_dir: &Path) -> Result<Arc<Session>> {
+    async fn open_session(default_output: &Path, persistence_dir: &Path, listen_port: u16) -> Result<Arc<Session>> {
         let options = SessionOptions {
             fastresume: true,
             trackers: EXTRA_TRACKERS.iter().filter_map(|tracker| reqwest::Url::parse(tracker).ok()).collect(),
@@ -218,17 +306,21 @@ impl Engine {
             }),
             listen: Some(ListenerOptions {
                 mode: librqbit::ListenerMode::TcpAndUtp,
+                listen_addr: (std::net::Ipv6Addr::UNSPECIFIED, listen_port).into(),
                 enable_upnp_port_forwarding: true,
                 ..Default::default()
             }),
             connect: Some(librqbit::ConnectionOptions {
                 peer_opts: Some(librqbit::PeerConnectionOptions {
+                    connect_timeout: Some(PEER_CONNECT_TIMEOUT),
                     read_write_timeout: Some(PEER_SILENCE_TIMEOUT),
                     keep_alive_interval: Some(PEER_KEEP_ALIVE),
+                    max_request_window: Some(PEER_REQUEST_WINDOW),
                     ..Default::default()
                 }),
                 ..Default::default()
             }),
+            peer_limit: Some(PEER_LIMIT),
             ..Default::default()
         };
         Session::new_with_opts(default_output.to_path_buf(), options)
@@ -236,15 +328,15 @@ impl Engine {
             .context("failed to start the torrent session")
     }
 
-    fn assemble(session: Arc<Session>, session_reset: bool, cache_dir: PathBuf) -> Result<Arc<Self>> {
-        let parked = std::fs::read_to_string(cache_dir.join(PARKED_INDEX_NAME))
+    fn assemble(session: Arc<Session>, session_reset: bool, cache_dir: PathBuf, listen_port: u16) -> Result<Arc<Self>> {
+        let parked = read_json(&cache_dir.join(PARKED_INDEX_NAME));
+        let last_played = read_json(&cache_dir.join(CACHE_INDEX_NAME));
+        let queued: Vec<String> = read_json(&cache_dir.join(QUEUE_INDEX_NAME));
+        let order = read_json(&cache_dir.join(ORDER_INDEX_NAME));
+        let promoted = read_json(&cache_dir.join(PROMOTED_INDEX_NAME));
+        let saved_policy: Option<DownloadPolicy> = std::fs::read_to_string(cache_dir.join(POLICY_FILE_NAME))
             .ok()
-            .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or_default();
-        let last_played = std::fs::read_to_string(cache_dir.join(CACHE_INDEX_NAME))
-            .ok()
-            .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or_default();
+            .and_then(|text| serde_json::from_str(&text).ok());
         let engine = Arc::new(Self {
             session,
             pending: Mutex::new(HashMap::new()),
@@ -253,14 +345,21 @@ impl Engine {
             usage: Mutex::new(HashMap::new()),
             parking: tokio::sync::Mutex::new(()),
             policy: Mutex::new(DownloadPolicy::default()),
-            queued: Mutex::new(HashSet::new()),
+            queued: Mutex::new(queued.into_iter().collect()),
             seeding_stopped: Mutex::new(HashSet::new()),
             last_played: Mutex::new(last_played),
             policy_known: std::sync::atomic::AtomicBool::new(false),
             watching: Mutex::new(HashMap::new()),
             announced: Mutex::new(HashSet::new()),
+            order: Mutex::new(order),
+            promoted: Mutex::new(promoted),
+            migrating: tokio::sync::Mutex::new(()),
             session_reset,
+            listen_port,
         });
+        if let Some(policy) = saved_policy {
+            engine.apply_policy(policy);
+        }
 
         let keeper = engine.clone();
         tokio::spawn(async move {
@@ -269,6 +368,7 @@ impl Engine {
                 tokio::time::sleep(POLICY_CHECK_INTERVAL).await;
                 keeper.enforce_policy().await;
                 keeper.rest_released().await;
+                keeper.migrate_promoted().await;
                 tick = tick.wrapping_add(1);
                 if tick % SWARM_LOG_EVERY == 0 {
                     keeper.log_swarms();
@@ -291,7 +391,19 @@ impl Engine {
         self.session_reset
     }
 
-    pub fn set_policy(&self, policy: DownloadPolicy) {
+    pub fn listen_port(&self) -> u16 {
+        self.listen_port
+    }
+
+    pub async fn stop(&self) {
+        self.save_queue();
+        self.save_last_played();
+        if tokio::time::timeout(STOP_TIMEOUT, self.session.stop()).await.is_err() {
+            tracing::warn!("session: did not stop in {} s", STOP_TIMEOUT.as_secs());
+        }
+    }
+
+    fn apply_policy(&self, policy: DownloadPolicy) {
         let limit = |bytes_per_second: u32| std::num::NonZeroU32::new(bytes_per_second);
         self.session.ratelimits.set_download_bps(limit(policy.download_limit));
         self.session.ratelimits.set_upload_bps(limit(policy.upload_limit));
@@ -299,11 +411,60 @@ impl Engine {
         self.policy_known.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
+    pub fn set_policy(&self, policy: DownloadPolicy) {
+        self.apply_policy(policy);
+        write_json(&self.cache_dir.join(POLICY_FILE_NAME), &policy);
+    }
+
+    fn save_queue(&self) {
+        let mut queued: Vec<String> = self.queued.lock().unwrap().iter().cloned().collect();
+        queued.sort();
+        write_json(&self.cache_dir.join(QUEUE_INDEX_NAME), &queued);
+    }
+
+    fn save_order(&self) {
+        let order = self.order.lock().unwrap().clone();
+        write_json(&self.cache_dir.join(ORDER_INDEX_NAME), &order);
+    }
+
+    fn save_promoted(&self) {
+        let promoted = self.promoted.lock().unwrap().clone();
+        write_json(&self.cache_dir.join(PROMOTED_INDEX_NAME), &promoted);
+    }
+
+    fn remember_order(&self, info_hash: &str) {
+        let added = {
+            let mut order = self.order.lock().unwrap();
+            if order.contains_key(info_hash) {
+                false
+            } else {
+                order.insert(info_hash.to_owned(), unix_millis(SystemTime::now()));
+                true
+            }
+        };
+        if added {
+            self.save_order();
+        }
+    }
+
+    fn is_promoted(&self, info_hash: &str) -> bool {
+        self.promoted.lock().unwrap().contains_key(info_hash)
+    }
+
+    fn is_streaming_cache(&self, handle: &TorrentHandle) -> bool {
+        self.is_online_only(handle) && !self.is_promoted(&handle.info_hash().as_string())
+    }
+
     async fn enforce_policy(&self) {
         let policy = *self.policy.lock().unwrap();
-        let torrents: Vec<TorrentHandle> = self.session.with_torrents(|torrents| {
+        let mut torrents: Vec<TorrentHandle> = self.session.with_torrents(|torrents| {
             torrents.map(|(_, handle)| handle.clone()).filter(|handle| !self.is_online_only(handle)).collect()
         });
+        {
+            let order = self.order.lock().unwrap();
+            torrents.sort_by_key(|handle| order.get(&handle.info_hash().as_string()).copied().unwrap_or(0));
+        }
+        let queued_before = self.queued.lock().unwrap().clone();
 
         if policy.seed_ratio > 0.0 {
             for handle in &torrents {
@@ -348,6 +509,9 @@ impl Engine {
                 active += 1;
             }
         }
+        if *self.queued.lock().unwrap() != queued_before {
+            self.save_queue();
+        }
     }
 
     fn cache_data_folder(&self, info_hash: &str) -> PathBuf {
@@ -363,50 +527,14 @@ impl Engine {
     }
 
     fn save_parked(&self) {
-        let parked = self.parked.lock().unwrap();
-        if let Ok(text) = serde_json::to_string(&*parked) {
-            let _ = std::fs::write(self.cache_dir.join(PARKED_INDEX_NAME), text);
-        }
+        let parked = self.parked.lock().unwrap().clone();
+        write_json(&self.cache_dir.join(PARKED_INDEX_NAME), &parked);
     }
 
     fn forget_parked(&self, info_hash: &str) {
         self.parked.lock().unwrap().remove(info_hash);
         let _ = std::fs::remove_file(self.torrent_file(info_hash));
         self.save_parked();
-    }
-
-    async fn park(&self, handle: &TorrentHandle) -> Result<()> {
-        let info_hash = handle.info_hash().as_string();
-        self.watching.lock().unwrap().remove(&info_hash);
-        self.announced.lock().unwrap().remove(&info_hash);
-        let torrent_bytes = handle.with_metadata(|metadata| metadata.torrent_bytes.clone())?;
-        std::fs::write(self.torrent_file(&info_hash), &torrent_bytes)?;
-        let files = file_views(handle, &[])
-            .into_iter()
-            .map(|file| ParkedFile { path: file.path, length: file.length })
-            .collect();
-        let peers = handle
-            .live()
-            .and_then(|live| {
-                let filter = serde_json::from_value(serde_json::json!({ "state": "live" })).ok()?;
-                Some(live.per_peer_stats_snapshot(filter).peers.into_keys().collect::<Vec<String>>())
-            })
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|address| address.parse().ok())
-            .take(MAX_REMEMBERED_PEERS)
-            .collect();
-        let trackers = handle.shared().trackers.iter().map(|tracker| tracker.to_string()).collect();
-        self.parked
-            .lock()
-            .unwrap()
-            .insert(info_hash.clone(), ParkedTorrent { name: display_name(handle), files, peers, trackers });
-        self.save_parked();
-
-        self.forget_cached(&info_hash);
-        self.session.delete(TorrentIdOrHash::Hash(handle.info_hash()), true).await?;
-        let _ = std::fs::remove_dir_all(self.cache_data_folder(&info_hash));
-        Ok(())
     }
 
     fn log_swarms(&self) {
@@ -461,10 +589,8 @@ impl Engine {
     }
 
     fn save_last_played(&self) {
-        let last_played = self.last_played.lock().unwrap();
-        if let Ok(text) = serde_json::to_string(&*last_played) {
-            let _ = std::fs::write(self.cache_dir.join(CACHE_INDEX_NAME), text);
-        }
+        let last_played = self.last_played.lock().unwrap().clone();
+        write_json(&self.cache_dir.join(CACHE_INDEX_NAME), &last_played);
     }
 
     fn touch(&self, info_hash: &str) {
@@ -499,7 +625,7 @@ impl Engine {
                 .filter(|handle| {
                     let info_hash = handle.info_hash().as_string();
                     let busy = if with_lingering { self.is_playing(&info_hash) } else { self.is_in_use(&info_hash) };
-                    self.is_online_only(handle) && !busy
+                    self.is_streaming_cache(handle) && !busy
                 })
                 .collect()
         })
@@ -536,7 +662,7 @@ impl Engine {
         };
         for info_hash in due {
             if let Ok(handle) = self.find(&info_hash) {
-                if self.is_online_only(&handle) {
+                if self.is_streaming_cache(&handle) {
                     self.rest(&handle).await;
                 }
             }
@@ -547,15 +673,21 @@ impl Engine {
         if !self.policy_known.load(std::sync::atomic::Ordering::Relaxed) {
             return 0;
         }
-        let limit = (f64::from(self.policy.lock().unwrap().cache_limit_gb.max(0.0)) * BYTES_PER_GIBIBYTE) as u64;
-        self.evict_cache(limit, false).await
+        let limit_gb = self.policy.lock().unwrap().cache_limit_gb;
+        let limit = if limit_gb > 0.0 { (f64::from(limit_gb) * BYTES_PER_GIBIBYTE) as u64 } else { u64::MAX };
+        let shortage = crate::commands::free_space(&self.cache_dir)
+            .map_or(0, |free| FREE_SPACE_RESERVE.saturating_sub(free));
+        if shortage > 0 {
+            tracing::warn!("engine: the disk is almost full, freeing {} MB of the stream cache", shortage >> 20);
+        }
+        self.evict_cache(limit, false, shortage).await
     }
 
     pub async fn clear_cache(&self) -> u64 {
-        self.evict_cache(0, true).await
+        self.evict_cache(0, true, 0).await
     }
 
-    async fn evict_cache(&self, limit: u64, with_lingering: bool) -> u64 {
+    async fn evict_cache(&self, limit: u64, with_lingering: bool, shortage: u64) -> u64 {
         let _parking = self.parking.lock().await;
         let now = unix_millis(SystemTime::now());
         let max_age = CACHE_MAX_AGE.as_millis() as u64;
@@ -577,7 +709,7 @@ impl Engine {
                     .filter(|handle| {
                         let info_hash = handle.info_hash().as_string();
                         let busy = if with_lingering { self.is_playing(&info_hash) } else { self.is_in_use(&info_hash) };
-                        self.is_online_only(handle) && busy
+                        self.is_streaming_cache(handle) && busy
                     })
                     .collect::<Vec<_>>()
             })
@@ -589,7 +721,7 @@ impl Engine {
         let mut freed = 0;
         for (handle, played, size) in resting {
             let too_old = now.saturating_sub(played) > max_age;
-            if !too_old && total <= limit {
+            if !too_old && total <= limit && freed >= shortage {
                 continue;
             }
             let info_hash = handle.info_hash().as_string();
@@ -629,6 +761,9 @@ impl Engine {
             download_dir.to_path_buf()
         };
         let paused = files.is_empty();
+        if !paused {
+            self.remember_order(info_hash);
+        }
         let options = AddTorrentOptions {
             paused,
             only_files: Some(files),
@@ -794,7 +929,7 @@ impl Engine {
             torrents
                 .map(|(_, handle)| {
                     let mut view = torrent_view(handle);
-                    if self.is_online_only(handle) {
+                    if self.is_streaming_cache(handle) {
                         if !self.is_playing(&view.info_hash) {
                             view.state = STATE_PARKED;
                         }
@@ -868,6 +1003,7 @@ impl Engine {
         let _parking = self.parking.lock().await;
         self.forget_parked(info_hash);
         self.forget_cached(info_hash);
+        self.forget_download(info_hash);
         let Ok(handle) = self.find(info_hash) else {
             return Ok(());
         };
@@ -886,7 +1022,10 @@ impl Engine {
                 self.include_files(&handle, files).await?;
                 return self.resume_handle(&handle).await;
             }
-            self.park(&handle).await?;
+            if self.is_playing(info_hash) {
+                return self.download_while_watching(&handle, files, download_dir).await;
+            }
+            return self.move_to_downloads(&handle, files, download_dir).await;
         }
         let (torrent_bytes, parked) = self.parked_torrent(info_hash).ok_or_else(|| anyhow!("torrent_not_found"))?;
         self.forget_parked(info_hash);
@@ -901,6 +1040,13 @@ impl Engine {
             parked.trackers,
         )
         .await
+    }
+
+    pub fn lease_stream(self: &Arc<Self>, info_hash: &str) -> StreamLease {
+        let mut usage = self.usage.lock().unwrap();
+        let entry = usage.entry(info_hash.to_owned()).or_default();
+        entry.streams += 1;
+        StreamLease { engine: self.clone(), info_hash: info_hash.to_owned() }
     }
 
     pub fn hold_online(&self, info_hash: &str) {
@@ -938,8 +1084,8 @@ impl Engine {
                 .await?;
             }
             let handle = self.find(info_hash)?;
-            let online = self.is_online_only(&handle);
-            let late = online && !self.note_stream_request(info_hash);
+            let online = self.is_streaming_cache(&handle);
+            let late = self.is_online_only(&handle) && !self.note_stream_request(info_hash);
             if online && !late {
                 self.touch(info_hash);
             }
@@ -947,7 +1093,8 @@ impl Engine {
         };
         tokio::time::timeout(STREAM_READY_TIMEOUT, handle.wait_until_initialized())
             .await
-            .map_err(|_| anyhow!("torrent_not_ready"))??;
+            .map_err(|_| anyhow!("torrent_not_ready"))?
+            .map_err(|error| anyhow!(classify_torrent_error(&format!("{error:#}"))))?;
         if late {
             return Ok(handle);
         }
@@ -973,6 +1120,9 @@ impl Engine {
                     return;
                 }
                 let info_hash = announced.info_hash().as_string();
+                if engine.is_promoted(&info_hash) {
+                    return;
+                }
                 let watched = match announced.only_files().as_deref() {
                     Some(&[file]) if engine.is_playing(&info_hash) => Some(file),
                     _ => None,
@@ -991,6 +1141,102 @@ impl Engine {
             });
         }
         Ok(handle)
+    }
+
+    async fn download_while_watching(&self, handle: &TorrentHandle, files: &[usize], download_dir: &Path) -> Result<()> {
+        let info_hash = handle.info_hash().as_string();
+        let promotion = {
+            let mut promoted = self.promoted.lock().unwrap();
+            let entry = promoted
+                .entry(info_hash.clone())
+                .or_insert_with(|| Promotion { files: Vec::new(), download_dir: download_dir.to_path_buf() });
+            entry.download_dir = download_dir.to_path_buf();
+            for file in files {
+                if !entry.files.contains(file) {
+                    entry.files.push(*file);
+                }
+            }
+            entry.clone()
+        };
+        self.save_promoted();
+        let mut wanted: HashSet<usize> = handle.only_files().unwrap_or_default().into_iter().collect();
+        wanted.extend(promotion.files.iter().copied());
+        self.session.update_only_files(handle, &wanted).await?;
+        self.remember_order(&info_hash);
+        tracing::info!("engine: {} keeps playing and downloads {:?} into the cache until the player closes", &info_hash[..8], promotion.files);
+        self.resume_handle(handle).await
+    }
+
+    async fn migrate_promoted(&self) {
+        let due: Vec<(String, Promotion)> = self
+            .promoted
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(hash, promotion)| (hash.clone(), promotion.clone()))
+            .collect();
+        for (info_hash, promotion) in due {
+            if self.is_in_use(&info_hash) {
+                continue;
+            }
+            let _parking = self.parking.lock().await;
+            if self.is_in_use(&info_hash) {
+                continue;
+            }
+            match self.find(&info_hash) {
+                Ok(handle) if self.is_online_only(&handle) => {
+                    if let Err(error) = self.move_to_downloads(&handle, &promotion.files, &promotion.download_dir).await {
+                        tracing::warn!("engine: could not move {} into the downloads: {error:#}", &info_hash[..8]);
+                        continue;
+                    }
+                }
+                _ => {}
+            }
+            self.forget_download(&info_hash);
+        }
+    }
+
+    fn forget_download(&self, info_hash: &str) {
+        if self.promoted.lock().unwrap().remove(info_hash).is_some() {
+            self.save_promoted();
+        }
+    }
+
+    async fn move_to_downloads(&self, handle: &TorrentHandle, files: &[usize], download_dir: &Path) -> Result<()> {
+        let _migrating = self.migrating.lock().await;
+        let info_hash = handle.info_hash().as_string();
+        let torrent_bytes = handle.with_metadata(|metadata| metadata.torrent_bytes.clone())?;
+        let relative: Vec<PathBuf> = handle.with_metadata(|metadata| {
+            metadata.file_infos.iter().map(|file| file.relative_filename.clone()).collect()
+        })?;
+        let file_count = relative.len();
+        let name = display_name(handle);
+        let peers = live_peers(handle);
+        let trackers = torrent_trackers(handle);
+        let source = self.cache_data_folder(&info_hash);
+        let target = if relative.len() > 1 { download_dir.join(sanitize_folder_name(&name)) } else { download_dir.to_path_buf() };
+
+        crate::store::write_atomic(&self.torrent_file(&info_hash), &torrent_bytes)?;
+        self.forget_cached(&info_hash);
+        self.session.delete(TorrentIdOrHash::Hash(handle.info_hash()), false).await?;
+
+        let moved = {
+            let (source, target) = (source.clone(), target.clone());
+            tauri::async_runtime::spawn_blocking(move || move_cached_files(&source, &target, &relative)).await?
+        };
+        match moved {
+            Ok(bytes) => tracing::info!("engine: {} moved {} MB from the stream cache into the downloads", &info_hash[..8], bytes >> 20),
+            Err(error) => tracing::warn!("engine: {} could not reuse the stream cache, it downloads again: {error:#}", &info_hash[..8]),
+        }
+        let _ = std::fs::remove_dir_all(&source);
+
+        let result = self
+            .add_from_bytes(&info_hash, torrent_bytes, &name, file_count, files.to_vec(), download_dir, peers, trackers)
+            .await;
+        if result.is_ok() {
+            let _ = std::fs::remove_file(self.torrent_file(&info_hash));
+        }
+        result
     }
 
     fn has_room_for(&self, handle: &TorrentHandle, file: usize) -> bool {
@@ -1064,7 +1310,7 @@ impl Engine {
             return Ok(());
         }
         if let Ok(handle) = self.find(info_hash) {
-            if self.is_online_only(&handle) {
+            if self.is_streaming_cache(&handle) {
                 self.touch(info_hash);
                 self.deselect(&handle).await;
             }
@@ -1093,6 +1339,25 @@ impl Engine {
             }
             Err(error) => tracing::warn!("engine: could not hold file {file} of {info_hash} open: {error}"),
         }
+    }
+
+    pub fn file_pieces(&self, info_hash: &str, file_index: usize) -> Result<FilePieces> {
+        let handle = self.find(info_hash)?;
+        let (offset, length, piece_length) = handle
+            .with_metadata(|metadata| {
+                metadata
+                    .file_infos
+                    .get(file_index)
+                    .map(|file| (file.offset_in_torrent, file.len, u64::from(metadata.info.lengths().default_piece_length())))
+            })?
+            .ok_or_else(|| anyhow!("file_not_found"))?;
+        let (have, _) = librqbit::Api::new(self.session.clone(), None)
+            .api_dump_haves(TorrentIdOrHash::Hash(handle.info_hash()))
+            .map_err(|error| anyhow!("{error}"))?;
+        let first = offset / piece_length;
+        let last = (offset + length.max(1) - 1) / piece_length;
+        let pieces = (first..=last).map(|index| have.get(index as usize).is_some_and(|bit| *bit)).collect();
+        Ok(FilePieces { offset, length, piece_length, first, pieces })
     }
 
     pub fn file_path(&self, info_hash: &str, file_index: usize) -> Result<PathBuf> {
@@ -1157,6 +1422,105 @@ impl Engine {
         }
         self.session.unpause(handle).await
     }
+}
+
+pub struct StreamLease {
+    engine: Arc<Engine>,
+    info_hash: String,
+}
+
+impl Drop for StreamLease {
+    fn drop(&mut self) {
+        if let Ok(mut usage) = self.engine.usage.lock() {
+            if let Some(entry) = usage.get_mut(&self.info_hash) {
+                entry.streams = entry.streams.saturating_sub(1);
+                if entry.holders == 0 && !entry.just_released() {
+                    entry.active = Some(Instant::now());
+                }
+            }
+        }
+    }
+}
+
+pub struct FilePieces {
+    offset: u64,
+    pub length: u64,
+    piece_length: u64,
+    first: u64,
+    pieces: Vec<bool>,
+}
+
+impl FilePieces {
+    fn piece_of(&self, position: u64) -> usize {
+        ((self.offset + position.min(self.length.saturating_sub(1))) / self.piece_length - self.first) as usize
+    }
+
+    pub fn available_until(&self, start: u64) -> u64 {
+        if start >= self.length {
+            return self.length;
+        }
+        let mut piece = self.piece_of(start);
+        while piece < self.pieces.len() && self.pieces[piece] {
+            piece += 1;
+        }
+        let end = (self.first + piece as u64) * self.piece_length;
+        end.saturating_sub(self.offset).clamp(start, self.length)
+    }
+
+    pub fn buckets(&self, count: usize) -> Vec<u8> {
+        let count = count.clamp(1, 1000);
+        (0..count)
+            .map(|bucket| {
+                let from = self.length * bucket as u64 / count as u64;
+                let to = (self.length * (bucket as u64 + 1) / count as u64).max(from + 1);
+                let (first, last) = (self.piece_of(from), self.piece_of(to - 1));
+                let span = &self.pieces[first..=last.min(self.pieces.len() - 1)];
+                let have = span.iter().filter(|have| **have).count();
+                ((have * 255) / span.len().max(1)) as u8
+            })
+            .collect()
+    }
+}
+
+fn live_peers(handle: &TorrentHandle) -> Vec<SocketAddr> {
+    handle
+        .live()
+        .and_then(|live| {
+            let filter = serde_json::from_value(serde_json::json!({ "state": "live" })).ok()?;
+            Some(live.per_peer_stats_snapshot(filter).peers.into_keys().collect::<Vec<String>>())
+        })
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|address| address.parse().ok())
+        .take(MAX_REMEMBERED_PEERS)
+        .collect()
+}
+
+fn torrent_trackers(handle: &TorrentHandle) -> Vec<String> {
+    handle.shared().trackers.iter().map(|tracker| tracker.to_string()).collect()
+}
+
+fn move_cached_files(source: &Path, target: &Path, relative: &[PathBuf]) -> Result<u64> {
+    let mut moved = 0u64;
+    for path in relative {
+        let from = source.join(path);
+        let Ok(metadata) = std::fs::metadata(&from) else { continue };
+        let to = target.join(path);
+        if to.exists() {
+            continue;
+        }
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        if std::fs::rename(&from, &to).is_err() {
+            let staging = to.with_extension("kinuza-moving");
+            std::fs::copy(&from, &staging).with_context(|| format!("could not copy {}", from.display()))?;
+            std::fs::rename(&staging, &to)?;
+            let _ = std::fs::remove_file(&from);
+        }
+        moved += metadata.len();
+    }
+    Ok(moved)
 }
 
 fn unix_millis(time: SystemTime) -> u64 {
@@ -1255,7 +1619,7 @@ fn torrent_view(handle: &TorrentHandle) -> TorrentView {
         name: display_name(handle),
         output_folder: handle.output_folder().to_string_lossy().into_owned(),
         state,
-        error: stats.error.clone(),
+        error: stats.error.as_deref().map(classify_torrent_error),
         progress_bytes: stats.progress_bytes,
         total_bytes: stats.total_bytes,
         uploaded_bytes: stats.uploaded_bytes,
@@ -1285,5 +1649,38 @@ fn sanitize_folder_name(name: &str) -> String {
         "torrent".to_owned()
     } else {
         trimmed.to_owned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pieces(offset: u64, length: u64, have: &[bool]) -> FilePieces {
+        let piece_length = 100;
+        FilePieces { offset, length, piece_length, first: offset / piece_length, pieces: have.to_vec() }
+    }
+
+    #[test]
+    fn available_stops_at_the_first_missing_piece() {
+        let map = pieces(50, 400, &[true, true, false, true, true]);
+        assert_eq!(map.available_until(0), 150);
+        assert_eq!(map.available_until(160), 160);
+        assert_eq!(map.available_until(260), 400);
+        assert_eq!(map.available_until(400), 400);
+    }
+
+    #[test]
+    fn buckets_show_the_share_downloaded() {
+        let map = pieces(0, 400, &[true, false, true, true]);
+        assert_eq!(map.buckets(4), vec![255, 0, 255, 255]);
+        assert_eq!(map.buckets(2), vec![127, 255]);
+    }
+
+    #[test]
+    fn disk_errors_are_named() {
+        assert_eq!(classify_torrent_error("write failed: No space left on device (os error 28)"), "disk_full");
+        assert_eq!(classify_torrent_error("Недостаточно места на диске. (os error 112)"), "disk_full");
+        assert_eq!(classify_torrent_error("tracker failed"), "tracker failed");
     }
 }

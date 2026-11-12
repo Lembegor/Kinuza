@@ -5,23 +5,13 @@ import { newEpisodes, type CalendarEpisode } from "./calendar";
 import { useLibrary } from "./library";
 import { checkReleaseUpdates } from "./releaseWatch";
 import { useSettings } from "./settings";
+import { useInbox } from "./inbox";
 import { useTorrents } from "./torrents";
 
-const announcedKey = "kinuza.announcedEpisodes";
 const episodeCheckIntervalMs = 3 * 60 * 60 * 1000;
 const separateNotifications = 3;
-const announcedLimit = 2000;
 
 const episodeId = (episode: CalendarEpisode) => `${episode.title.id}:${episode.season}:${episode.episode}`;
-
-function readAnnounced(): string[] | null {
-  try {
-    const stored: unknown = JSON.parse(localStorage.getItem(announcedKey) ?? "null");
-    return Array.isArray(stored) ? stored.filter((item): item is string => typeof item === "string") : null;
-  } catch {
-    return null;
-  }
-}
 
 export function episodeAnnouncements(fresh: CalendarEpisode[]): { title: string; body: string }[] {
   const bySeries = new Map<number, CalendarEpisode[]>();
@@ -48,13 +38,19 @@ export function episodeAnnouncements(fresh: CalendarEpisode[]): { title: string;
 
 async function announceNewEpisodes(): Promise<void> {
   const episodes = await newEpisodes();
-  const known = readAnnounced();
+  const known = useLibrary.getState().announcedEpisodes;
   const seen = new Set(known ?? []);
   const fresh = episodes.filter((episode) => !seen.has(episodeId(episode)));
   if (fresh.length === 0 && known !== null) return;
-  localStorage.setItem(announcedKey, JSON.stringify([...seen, ...fresh.map(episodeId)].slice(-announcedLimit)));
-  if (known === null || !useSettings.getState().notifyEpisodes) return;
-  for (const { title, body } of episodeAnnouncements(fresh)) await notify(title, body);
+  useLibrary.getState().rememberAnnounced(fresh.map(episodeId));
+  if (known === null) return;
+  const announcements = episodeAnnouncements(fresh);
+  const single = new Set(fresh.map((episode) => episode.title.id)).size === 1 ? fresh[0] : null;
+  for (const { title, body } of announcements) {
+    useInbox.getState().add({ kind: "episodes", title, body, link: single ? `/title/tv/${single.title.id}?s=${single.season}` : "/calendar" });
+  }
+  if (!useSettings.getState().notifyEpisodes) return;
+  for (const { title, body } of announcements) await notify(title, body);
 }
 
 export function startEpisodeNotifications(): void {
@@ -62,7 +58,13 @@ export function startEpisodeNotifications(): void {
   const check = async () => {
     await announceNewEpisodes().catch((error) => report("system", "journal.notifications.failed", error));
     for (const { title, count } of await checkReleaseUpdates()) {
-      if (!useSettings.getState().notifyEpisodes) break;
+      useInbox.getState().add({
+        kind: "episodes",
+        title: t("notifications.episodes.added"),
+        body: `${title.title} · ${tn("common.episodes", count)}`,
+        link: `/title/tv/${title.id}`,
+      });
+      if (!useSettings.getState().notifyEpisodes) continue;
       await notify(t("notifications.episodes.added"), `${title.title} · ${tn("common.episodes", count)}`).catch((error) =>
         report("system", "journal.notifications.failed", error),
       );
@@ -94,11 +96,14 @@ export function startDownloadNotifications(): void {
   const unfinished = new Set<string>();
   useTorrents.subscribe((state) => {
     for (const torrent of state.list) {
-      const downloading = !torrent.finished && torrent.totalBytes > 0;
+      const downloading = !torrent.finished && torrent.totalBytes > 0 && torrent.state !== "initializing" && torrent.progressBytes < torrent.totalBytes;
       if (downloading) {
         unfinished.add(torrent.infoHash);
-      } else if (torrent.finished && unfinished.delete(torrent.infoHash) && useSettings.getState().notifyDownloads) {
-        void notify(t("notifications.downloaded"), torrent.name).catch((error) => report("system", "journal.notifications.failed", error));
+      } else if (torrent.finished && unfinished.delete(torrent.infoHash)) {
+        useInbox.getState().add({ kind: "download", title: t("notifications.downloaded"), body: torrent.name, link: "/downloads" });
+        if (useSettings.getState().notifyDownloads) {
+          void notify(t("notifications.downloaded"), torrent.name).catch((error) => report("system", "journal.notifications.failed", error));
+        }
       }
     }
   });

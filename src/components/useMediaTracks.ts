@@ -89,7 +89,7 @@ const checkIntervalMs = 2000;
 const publishDelayMs = 250;
 
 export function useEmbeddedSubtitles(
-  clock: () => { time: number; duration: number },
+  clock: () => { time: number; duration: number; busy?: boolean },
   source: { infoHash: string; fileIndex: number } | null,
   track: number | null,
 ): Cue[] {
@@ -164,7 +164,7 @@ export function useEmbeddedSubtitles(
     };
 
     const check = () => {
-      const { time, duration } = clock();
+      const { time, duration, busy } = clock();
       for (const stretch of [...stretches]) {
         if (!stretch.done && (time < stretch.from - leadSeconds || time >= stretch.to)) {
           stretch.abort.abort();
@@ -174,7 +174,7 @@ export function useEmbeddedSubtitles(
       const current = covering(time);
       if (!current) {
         void load(Math.max(0, time - leadSeconds));
-      } else if (current.to - time < fetchAheadSeconds && current.to < duration && !covering(current.to)) {
+      } else if (!busy && current.to - time < fetchAheadSeconds && current.to < duration && !covering(current.to)) {
         void load(Math.max(0, current.to - overlapSeconds));
       }
     };

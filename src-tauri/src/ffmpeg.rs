@@ -32,6 +32,9 @@ const APPROXIMATE_ARCHIVE_BYTES: u64 = 82 * 1024 * 1024;
 #[cfg(not(windows))]
 const APPROXIMATE_ARCHIVE_BYTES: u64 = 134 * 1024 * 1024;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(40);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
+const INSTALL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -188,8 +191,23 @@ pub async fn ffmpeg_install(app: State<'_, AppState>, ffmpeg: State<'_, FfmpegSt
 }
 
 async fn install(folder: &Path, progress: &FfmpegState) -> anyhow::Result<()> {
+    let outcome = tokio::time::timeout(INSTALL_TIMEOUT, download_and_unpack(folder, progress))
+        .await
+        .unwrap_or_else(|_| Err(anyhow!("the FFmpeg download took longer than {} minutes", INSTALL_TIMEOUT.as_secs() / 60)));
+    if outcome.is_err() {
+        let _ = tokio::fs::remove_file(folder.join("download.tmp")).await;
+        let _ = tokio::fs::remove_dir_all(folder.join(BINARIES_FOLDER_NAME).with_extension("new")).await;
+    }
+    outcome
+}
+
+async fn download_and_unpack(folder: &Path, progress: &FfmpegState) -> anyhow::Result<()> {
     tokio::fs::create_dir_all(folder).await?;
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("Kinuza/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(CONNECT_TIMEOUT)
+        .read_timeout(READ_TIMEOUT)
+        .build()?;
 
     let checksums = client
         .get(format!("{RELEASE_URL}/{CHECKSUMS_NAME}"))

@@ -3,13 +3,14 @@ import { HashRouter, Route } from "react-router-dom";
 import { FileDown } from "lucide-react";
 import { AddSourceDialog } from "./components/AddSourceDialog";
 import { Onboarding } from "./components/Onboarding";
-import { ConfirmDialog, Toasts, UpdateNotice } from "./components/Overlays";
+import { AppHotkeys, ConfirmDialog, Toasts, UpdateNotice } from "./components/Overlays";
 import { PageStack } from "./components/PageStack";
 import { Player } from "./components/Player";
 import { Sidebar, Titlebar } from "./components/Shell";
 import { backend, describeError, getAppInfo, isDesktop, onLaunchRequest, type LaunchRequest } from "./lib/backend";
 import { t, useT } from "./lib/i18n";
 import { report } from "./lib/journal";
+import { applyAppearance } from "./lib/appearance";
 import { mpv } from "./lib/mpv";
 import { isMagnetLink } from "./lib/parse";
 import Browse from "./pages/Browse";
@@ -22,6 +23,7 @@ import PersonPage from "./pages/Person";
 import Search from "./pages/Search";
 import Settings from "./pages/Settings";
 import TitlePage from "./pages/Title";
+import { useInbox } from "./state/inbox";
 import { useLibrary } from "./state/library";
 import { useSettings } from "./state/settings";
 import { startTorrentPolling } from "./state/torrents";
@@ -170,12 +172,17 @@ export default function App() {
   const autoUpdate = useSettings((state) => state.autoUpdate);
   const libraryLoaded = useLibrary((state) => state.loaded);
   const language = useSettings((state) => state.language);
+  const accent = useSettings((state) => state.accent);
+  const density = useSettings((state) => state.gridDensity);
   const introducing = useLibrary((state) => state.firstRun) || !language;
   const { t } = useT();
+
+  useEffect(() => applyAppearance(accent, density), [accent, density]);
 
   useEffect(() => {
     void useSettings.getState().load();
     void useLibrary.getState().load();
+    void useInbox.getState().load();
     void getAppInfo().then((info) => {
       if (info.sessionReset) useUi.getState().toast(t("shell.sessionReset"), "info");
     });
@@ -200,7 +207,10 @@ export default function App() {
         .check()
         .then(() => {
           const found = useUpdater.getState();
-          if (found.status === "available") return notify(t("notifications.update"), `Kinuza ${found.version}`);
+          if (found.status === "available") {
+            useInbox.getState().add({ kind: "update", title: t("notifications.update"), body: `Kinuza ${found.version}`, link: "/settings" });
+            return notify(t("notifications.update"), `Kinuza ${found.version}`);
+          }
         })
         .catch((error) => report("updates", "journal.notifications.failed", error));
     }, updateCheckIntervalMs);
@@ -243,6 +253,7 @@ export default function App() {
         <Player />
         <AddSourceDialog />
         <ConfirmDialog />
+        <AppHotkeys />
         <UpdateNotice />
         <Toasts />
         {dragging && (

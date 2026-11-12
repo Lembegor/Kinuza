@@ -61,7 +61,7 @@
 
 .poster-card {
   position: relative;
-  width: 168px;
+  width: var(--card-width, 168px);
   text-align: left;
 }
 
@@ -250,8 +250,8 @@
 
 .poster-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-  gap: 26px 18px;
+  grid-template-columns: repeat(auto-fill, minmax(var(--grid-card-width, 160px), 1fr));
+  gap: var(--grid-gap, 26px 18px);
 }
 
 .poster-grid .poster-card {
@@ -1669,19 +1669,43 @@
 .episode__overview.is-veiled {
   filter: blur(5px);
   opacity: 0.55;
-  cursor: help;
+  cursor: pointer;
   user-select: none;
   transition:
     filter 0.25s var(--ease),
     opacity 0.25s;
 }
 
-.episode__overview.is-veiled:hover,
+.episode__overview.is-veiled:hover {
+  filter: blur(4px);
+  opacity: 0.7;
+}
+
 .episode__overview.is-veiled:focus-visible {
-  filter: none;
-  opacity: 1;
-  user-select: text;
-  outline: none;
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.episode__reveal {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--bg-hover);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.episode__reveal:hover {
+  color: var(--text);
+}
+
+.episode__still img.is-spoiler {
+  filter: blur(14px) saturate(0.7);
+  transform: scale(1.08);
 }
 
 .setting__actions:has(.input--number) {
@@ -2124,4 +2148,167 @@
   background: linear-gradient(90deg, #131318 0%, #1e1e26 50%, #131318 100%);
   background-size: 800px 100%;
   animation: shimmer 1.4s linear infinite;
+}
+
+.setting__actions--wrap {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.accent-picker {
+  gap: 8px;
+}
+
+.accent-picker__swatch {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--swatch);
+  border: 2px solid transparent;
+  box-shadow: 0 0 0 1px var(--line-strong);
+  transition: transform 0.15s var(--ease);
+}
+
+.accent-picker__swatch:hover {
+  transform: scale(1.1);
+}
+
+.accent-picker__swatch.is-active {
+  border-color: var(--bg);
+  box-shadow: 0 0 0 2px var(--swatch);
+}
+
+.torrent-groups {
+  display: grid;
+  gap: 18px;
+}
+
+.torrent-group > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 10px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.torrent-group > summary::-webkit-details-marker {
+  display: none;
+}
+
+.torrent-group > summary::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(-45deg) translateY(-2px);
+  transition: transform 0.15s var(--ease);
+}
+
+.torrent-group[open] > summary::before {
+  transform: rotate(45deg) translateY(-3px);
+}
+
+.torrent-group__title {
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.torrent-group__title:hover {
+  color: var(--accent);
+}
+
+.torrent-group__meta {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.torrent-group .torrent-list {
+  padding-left: 19px;
+}
+
+.torrent__badge {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--bg-hover);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.gallery-card {
+  width: calc(var(--card-width, 168px) * 1.9);
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border-radius: var(--radius-m);
+  background: var(--bg-raised);
+}
+
+.gallery-card img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 0.3s var(--ease);
+}
+
+.gallery-card:hover img {
+  transform: scale(1.04);
+}
+
+.gallery-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: grid;
+  place-items: center;
+  background: rgba(4, 4, 6, 0.94);
+  animation: fade 0.15s;
+}
+
+.gallery-viewer__image {
+  max-width: calc(100vw - 140px);
+  max-height: calc(100vh - 100px);
+  border-radius: var(--radius-m);
+  box-shadow: 0 20px 70px rgba(0, 0, 0, 0.6);
+  animation: fade 0.2s;
+}
+
+.gallery-viewer__close {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+}
+
+.gallery-viewer__nav {
+  position: absolute;
+  top: 50%;
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  margin-top: -26px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.gallery-viewer__nav:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.gallery-viewer__nav.is-previous {
+  left: 22px;
+}
+
+.gallery-viewer__nav.is-next {
+  right: 22px;
+}
+
+.gallery-viewer__count {
+  position: absolute;
+  bottom: 20px;
+  color: var(--muted);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
 }

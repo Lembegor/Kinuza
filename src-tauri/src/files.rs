@@ -98,5 +98,27 @@ pub fn write_text_file(grants: State<'_, FileGrants>, path: String, contents: St
         tracing::warn!("files: refused to write a file the person did not choose");
         return Err("file_not_chosen".to_owned());
     }
-    std::fs::write(&path, contents).map_err(|_| "file_unwritable".to_owned())
+    crate::store::write_atomic(&path, contents.as_bytes()).map_err(|_| "file_unwritable".to_owned())
+}
+
+const PNG_SIGNATURE: &[u8] = &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+const MAX_SCREENSHOT_BYTES: usize = 64 * 1024 * 1024;
+
+#[tauri::command]
+pub fn save_screenshot(app: tauri::AppHandle, request: tauri::ipc::Request<'_>) -> Result<String, String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("screenshot_invalid".to_owned());
+    };
+    if bytes.len() > MAX_SCREENSHOT_BYTES || !bytes.starts_with(PNG_SIGNATURE) {
+        return Err("screenshot_invalid".to_owned());
+    }
+    let label = request
+        .headers()
+        .get("x-kinuza-label")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| percent_encoding::percent_decode_str(value).decode_utf8_lossy().into_owned())
+        .unwrap_or_default();
+    let path = crate::mpv::screenshot_path(&app, &label, "png")?;
+    crate::store::write_atomic(&path, bytes).map_err(|error| error.to_string())?;
+    Ok(path.to_string_lossy().into_owned())
 }

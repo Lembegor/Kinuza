@@ -42,6 +42,7 @@ export interface AppInfo {
   defaultDownloadDir: string;
   externalPlayer: string | null;
   sessionReset: boolean;
+  listenPort: number;
 }
 
 export interface LaunchRequest {
@@ -96,6 +97,11 @@ export async function streamUrl(infoHash: string, fileIndex: number): Promise<st
   return `${info.streamBaseUrl}/stream/${infoHash}/${fileIndex}`;
 }
 
+export async function thumbnailUrl(infoHash: string, fileIndex: number, at: number, width: number): Promise<string> {
+  const info = await getAppInfo();
+  return `${info.streamBaseUrl}/thumbnail/${infoHash}/${fileIndex}?at=${Math.max(0, Math.round(at))}&width=${Math.round(width)}`;
+}
+
 export async function convertedStreamUrl(infoHash: string, fileIndex: number, audio: number, start: number): Promise<string> {
   const info = await getAppInfo();
   return `${info.streamBaseUrl}/video/${infoHash}/${fileIndex}?audio=${audio}&start=${start.toFixed(3)}`;
@@ -143,6 +149,7 @@ export interface OnlineSubtitle {
   downloads: number;
   hearingImpaired: boolean;
   machineTranslated: boolean;
+  hashMatch: boolean;
 }
 
 export interface OnlineSubtitleQuery {
@@ -150,6 +157,7 @@ export interface OnlineSubtitleQuery {
   season: number | null;
   episode: number | null;
   languages: string[];
+  moviehash?: string | null;
 }
 
 export interface Chapter {
@@ -216,6 +224,17 @@ export const backend = {
   readFileBytes: (path: string) => call<ArrayBuffer>("read_file_bytes", { path }),
   findOnlineSubtitles: (apiKey: string, query: OnlineSubtitleQuery) =>
     call<OnlineSubtitle[]>("online_subtitles_search", { apiKey, query }),
+  subtitleFileHash: (infoHash: string, fileIndex: number) => call<string>("subtitle_file_hash", { infoHash, fileIndex }),
+  torrentFileMap: (infoHash: string, fileIndex: number, buckets: number) =>
+    call<number[]>("torrent_file_map", { infoHash, fileIndex, buckets }),
+  async saveScreenshot(png: Uint8Array, label: string): Promise<string> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<string>("save_screenshot", png, { headers: { "x-kinuza-label": encodeURIComponent(label) } });
+  },
+  mediaSessionStart: (now: { title: string; subtitle: string; coverUrl: string | null; duration: number }) =>
+    call<void>("media_session_start", { now }),
+  mediaSessionState: (playing: boolean, position: number) => call<void>("media_session_state", { playing, position }),
+  mediaSessionStop: () => call<void>("media_session_stop"),
   downloadOnlineSubtitle: (apiKey: string, fileId: number) =>
     call<ArrayBuffer>("online_subtitles_download", { apiKey, fileId }),
   configureTray: (enabled: boolean, labels: { open: string; quit: string; tooltip: string }) =>
@@ -258,8 +277,11 @@ const errorMessages: Record<string, MessageKey> = {
   auth_required: "errors.trackerAuth",
   magnet_not_found: "errors.releaseUnavailable",
   torrent_file_unavailable: "errors.releaseUnavailable",
-  timeout: "errors.releaseUnavailable",
+  timeout: "errors.trackerTimeout",
   cancelled: "errors.trackerCancelled",
+  library_unreadable: "errors.libraryUnreadable",
+  disk_full: "errors.diskFull",
+  tracker_busy: "errors.trackerBusy",
 };
 
 export function describeError(error: unknown): string {

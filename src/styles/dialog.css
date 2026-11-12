@@ -76,6 +76,7 @@
   color: var(--muted);
   margin-bottom: 14px;
   word-break: break-word;
+  white-space: pre-line;
 }
 
 .dialog--small .dialog__text {
@@ -729,4 +730,25 @@ label.file-row {
   color: #17130a;
   font-size: 12px;
   font-weight: 800;
+}
+
+.dialog--hotkeys {
+  width: min(860px, calc(100vw - 48px));
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
+}
+
+.dialog--hotkeys__columns {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  gap: 28px;
+}
+
+.dialog--hotkeys__columns h3 {
+  margin: 4px 0 10px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }

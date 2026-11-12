@@ -466,3 +466,15 @@ input[type="radio"] {
     transition-duration: 0.01ms !important;
   }
 }
+
+html[data-density="compact"] {
+  --card-width: 138px;
+  --grid-card-width: 128px;
+  --grid-gap: 20px 14px;
+}
+
+html[data-density="large"] {
+  --card-width: 204px;
+  --grid-card-width: 196px;
+  --grid-gap: 30px 22px;
+}

@@ -2,9 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as
 import {
   ArrowLeft,
   AudioLines,
+  Camera,
   Captions,
   Check,
   ExternalLink,
+  Frame,
   Gauge,
   LoaderCircle,
   Maximize,
@@ -22,6 +24,8 @@ import {
   Volume2,
   VolumeX,
   X,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
 import {
   backend,
@@ -30,6 +34,7 @@ import {
   getAppInfo,
   isDesktop,
   streamUrl,
+  thumbnailUrl,
   type AudioTrackInfo,
   type Chapter,
   type OnlineSubtitle,
@@ -55,7 +60,7 @@ import { imageUrl, tmdb } from "../lib/tmdb";
 import { useAsync } from "../lib/useAsync";
 import { sortSources } from "../pages/Title";
 import { isWatched, titleKey, unitKey, useLibrary, type Source } from "../state/library";
-import { useSettings } from "../state/settings";
+import { useSettings, type SubtitleBackground, type SubtitleColor, type SubtitleFont, type VideoQuality } from "../state/settings";
 import { fileProgress, useTorrents } from "../state/torrents";
 import { useUi, type PlayerSession } from "../state/ui";
 import { report } from "../lib/journal";
@@ -65,12 +70,49 @@ import { WindowButtons } from "./Shell";
 import { useConvertedAudio } from "./useConvertedAudio";
 import { useEmbeddedSubtitles, useMediaTracks, type MediaTracksState } from "./useMediaTracks";
 import { useMpvMode, useMpvVideo, type MediaHandlers } from "./useMpvVideo";
+import { useAudioEffects } from "./player/audioEffects";
+import { useMediaSession } from "./player/mediaSession";
+import { StatsPanel } from "./player/StatsPanel";
+import { isLinux } from "../lib/platform";
 
 const controlsHideDelayMs = 3000;
 const progressSaveIntervalMs = 5000;
 const seekStepSeconds = 10;
 const longSeekStepSeconds = 60;
 const volumeStep = 0.05;
+const volumeMax = 1.5;
+const zoomStep = 0.1;
+const zoomMin = 1;
+const zoomMax = 3;
+const aspectChoices = ["auto", "16:9", "4:3", "21:9", "2.35:1", "1:1"] as const;
+type AspectChoice = (typeof aspectChoices)[number];
+const thumbnailWidth = 240;
+const thumbnailHoverDelayMs = 90;
+const thumbnailBuckets = 160;
+const thumbnailMinStepSeconds = 4;
+const pieceBuckets = 240;
+const pieceRefreshMs = 2000;
+const chapterRestartSeconds = 3;
+const hashWaitMs = 6000;
+const stallLongSeconds = 20;
+const stallWindowMs = 3 * 60 * 1000;
+const stallsToSuggest = 3;
+const healthCheckMs = 5000;
+const droppedFramesPerCheck = 25;
+const badChecksToSimplify = 2;
+const qualitySteps: VideoQuality[] = ["high", "balanced", "fast"];
+const qualityProperties: Record<VideoQuality, [string, unknown][]> = {
+  high: [["scale", "ewa_lanczossharp"], ["dscale", "mitchell"], ["cscale", "spline36"], ["deband", true]],
+  balanced: [["scale", "spline36"], ["dscale", "mitchell"], ["cscale", "spline36"], ["deband", false]],
+  fast: [["scale", "bilinear"], ["dscale", "bilinear"], ["cscale", "bilinear"], ["deband", false]],
+};
+const subtitleFonts: Record<SubtitleFont, { mpv: string; css: string }> = {
+  sans: { mpv: "Segoe UI Semibold", css: "system-ui, 'Segoe UI', 'Noto Sans', sans-serif" },
+  serif: { mpv: "Georgia", css: "Georgia, 'Noto Serif', 'DejaVu Serif', serif" },
+  rounded: { mpv: "Trebuchet MS", css: "'Trebuchet MS', 'Nunito', 'Ubuntu', sans-serif" },
+  condensed: { mpv: "Bahnschrift SemiCondensed", css: "'Bahnschrift SemiCondensed', 'Roboto Condensed', 'Arial Narrow', sans-serif" },
+};
+const subtitleColors: Record<SubtitleColor, string> = { white: "#FFFFFF", yellow: "#FFE45C", cyan: "#8FE6FF", green: "#A6FF8F" };
 const seekRunGapMs = 1000;
 const hintLifetimeMs = 900;
 const releaseDelayMs = 1500;
@@ -137,7 +179,25 @@ const subtitleScales: { label: MessageKey; value: number }[] = [
   { label: "player.subtitles.size.large", value: 1.3 },
 ];
 
-type Menu = "quality" | "audio" | "subtitles" | "speed" | null;
+type Menu = "quality" | "audio" | "subtitles" | "speed" | "picture" | null;
+
+function subtitleMpvProperties(font: SubtitleFont, color: SubtitleColor, background: SubtitleBackground, raise: number): [string, unknown][] {
+  const box = background === "box";
+  return [
+    ["sub-font", subtitleFonts[font].mpv],
+    ["sub-color", subtitleColors[color]],
+    ["sub-border-style", box ? "background-box" : "outline-and-shadow"],
+    ["sub-back-color", box ? "#B0000000" : "#00000000"],
+    ["sub-border-color", "#000000"],
+    ["sub-border-size", box ? 3 : background === "shadow" ? 0.6 : 2.5],
+    ["sub-shadow-offset", background === "shadow" ? 2.5 : box ? 0 : 1],
+    ["sub-pos", Math.round(100 - raise)],
+  ];
+}
+
+function aspectRatioValue(aspect: AspectChoice): string {
+  return aspect === "auto" ? "-1" : aspect;
+}
 
 interface AudioTrackLike {
   label: string;
@@ -222,27 +282,79 @@ async function setWindowFullscreen(fullscreen: boolean, fallback: HTMLElement | 
   else if (document.fullscreenElement) await document.exitFullscreen();
 }
 
+function PieceMap({ pieces }: { pieces: number[] }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const context = canvas?.getContext("2d");
+    if (!canvas || !context) return;
+    canvas.width = pieces.length;
+    canvas.height = 1;
+    context.clearRect(0, 0, canvas.width, 1);
+    pieces.forEach((value, index) => {
+      if (value === 0) return;
+      context.fillStyle = `rgba(255, 255, 255, ${(value / 255).toFixed(3)})`;
+      context.fillRect(index, 0, 1, 1);
+    });
+  }, [pieces]);
+  return <canvas ref={canvasRef} className="seek__pieces" aria-hidden="true" />;
+}
+
+function SeekPreview({ time, thumbnail }: { time: number; thumbnail: (seconds: number) => Promise<string> }) {
+  const [src, setSrc] = useState<string | null>(null);
+  const [shown, setShown] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      void thumbnail(time).then((url) => {
+        if (!cancelled) setSrc(url);
+      });
+    }, thumbnailHoverDelayMs);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [time, thumbnail]);
+  if (!src) return null;
+  return (
+    <img
+      className={`seek__preview ${shown ? "is-shown" : ""}`}
+      src={src}
+      alt=""
+      draggable={false}
+      onLoad={() => setShown(true)}
+      onError={() => setShown(false)}
+    />
+  );
+}
+
 function SeekBar({
   current,
   duration,
   buffered,
+  pieces,
   chapters,
   advancing,
   rate,
+  thumbnail,
   onSeek,
 }: {
   current: number;
   duration: number;
   buffered: { start: number; end: number }[];
+  pieces: number[] | null;
   chapters: Chapter[];
   advancing: boolean;
   rate: number;
+  thumbnail: ((seconds: number) => Promise<string>) | null;
   onSeek: (time: number) => void;
 }) {
   const trackRef = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<number | null>(null);
   const [drag, setDrag] = useState<number | null>(null);
   const anchor = useRef({ time: current, at: performance.now() });
+  const previewStep = Math.max(thumbnailMinStepSeconds, duration / thumbnailBuckets);
+  const previewAt = (ratio: number) => Math.min(Math.max(0, duration - 1), Math.round((ratio * duration) / previewStep) * previewStep);
 
   useEffect(() => {
     anchor.current = { time: current, at: performance.now() };
@@ -305,6 +417,7 @@ function SeekBar({
       onPointerLeave={() => setHover(null)}
     >
       <div className="seek__track">
+        {pieces && <PieceMap pieces={pieces} />}
         {buffered.map((range) => (
           <i
             key={range.start}
@@ -319,8 +432,9 @@ function SeekBar({
         <i className="seek__thumb" />
       </div>
       {hover !== null && duration > 0 && (
-        <span className="seek__tooltip" style={{ left: `${hover * 100}%` }}>
-          {formatClock(hover * duration)}
+        <span className={`seek__tooltip ${thumbnail ? "has-preview" : ""}`} style={{ left: `${hover * 100}%` }}>
+          {thumbnail && <SeekPreview time={previewAt(drag ?? hover)} thumbnail={thumbnail} />}
+          {formatClock((drag ?? hover) * duration)}
           {(() => {
             const chapter = chapters.find((item) => hover * duration >= item.start && hover * duration < item.end);
             return chapter?.title ? <small>{chapter.title}</small> : null;
@@ -425,6 +539,18 @@ function PlayerView({ session }: { session: PlayerSession }) {
   const [onlinePanel, setOnlinePanel] = useState(false);
   const [hotkeysShown, setHotkeysShown] = useState(false);
   const [onlineLanguage, setOnlineLanguage] = useState("");
+  const [statsShown, setStatsShown] = useState(false);
+  const [zoom, setZoom] = useState(1);
+  const [aspect, setAspect] = useState<AspectChoice>("auto");
+  const [secondary, setSecondary] = useState<{ key: string; label: string } | null>(null);
+  const [secondaryCues, setSecondaryCues] = useState<Cue[]>([]);
+  const [secondaryText, setSecondaryText] = useState("");
+  const [secondaryEmbedded, setSecondaryEmbedded] = useState<number | null>(null);
+  const [pieces, setPieces] = useState<number[] | null>(null);
+  const [sessionQuality, setSessionQuality] = useState<VideoQuality>(settings.videoQuality);
+  const [slowSource, setSlowSource] = useState(false);
+  const [slowDismissed, setSlowDismissed] = useState(false);
+  const lastSeekAt = useRef(0);
 
   const resumeAt = useRef<number>(
     (() => {
@@ -562,6 +688,59 @@ function PlayerView({ session }: { session: PlayerSession }) {
     if (usingMpv) void mpv.set("sub-scale", settings.subtitleScale).catch(() => undefined);
   }, [usingMpv, settings.subtitleScale, generation]);
 
+  useEffect(() => {
+    if (!usingMpv) return;
+    for (const [name, value] of subtitleMpvProperties(settings.subtitleFont, settings.subtitleColor, settings.subtitleBackground, settings.subtitlePosition)) {
+      void mpv.set(name, value).catch(() => undefined);
+    }
+  }, [usingMpv, settings.subtitleFont, settings.subtitleColor, settings.subtitleBackground, settings.subtitlePosition, generation]);
+
+  useEffect(() => setSessionQuality(settings.videoQuality), [settings.videoQuality]);
+
+  useEffect(() => {
+    if (!usingMpv) return;
+    for (const [name, value] of qualityProperties[sessionQuality]) void mpv.set(name, value).catch(() => undefined);
+  }, [usingMpv, sessionQuality, generation]);
+
+  useEffect(() => {
+    if (usingMpv) void mpv.audioFilter(settings.audioMode).catch(() => undefined);
+  }, [usingMpv, settings.audioMode, generation]);
+
+  useEffect(() => {
+    if (!usingMpv) return;
+    void mpv.set("video-zoom", Math.log2(zoom)).catch(() => undefined);
+    void mpv.set("video-aspect-override", aspectRatioValue(aspect)).catch(() => undefined);
+  }, [usingMpv, zoom, aspect, generation]);
+
+  useEffect(() => {
+    if (!isDesktop || !source) return;
+    let cancelled = false;
+    const load = async () => {
+      if (fileProgress(useTorrents.getState().byHash[source.infoHash], source.fileIndex) >= 1) {
+        if (!cancelled) setPieces(null);
+        return;
+      }
+      try {
+        const map = await backend.torrentFileMap(source.infoHash, source.fileIndex, pieceBuckets);
+        if (!cancelled) setPieces(map);
+      } catch {
+        if (!cancelled) setPieces(null);
+      }
+    };
+    void load();
+    const timer = setInterval(() => void load(), pieceRefreshMs);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [source?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const thumbnailSource = isDesktop && htmlMedia.ffmpegInstalled === true ? source : undefined;
+  const thumbnail = useMemo(
+    () => (thumbnailSource ? (seconds: number) => thumbnailUrl(thumbnailSource.infoHash, thumbnailSource.fileIndex, seconds, thumbnailWidth) : null),
+    [thumbnailSource?.infoHash, thumbnailSource?.fileIndex], // eslint-disable-line react-hooks/exhaustive-deps
+  );
+
   const saveProgress = useCallback(() => {
     const video = videoRef.current;
     const length = filmLength();
@@ -631,6 +810,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
     setCurrent(target);
     setEnded(false);
     setCountdown(null);
+    lastSeekAt.current = Date.now();
   }, []);
 
   const showHint = useCallback((text: string) => setHint({ text, id: Date.now() }), []);
@@ -731,7 +911,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
   }, [nextEpisode, allSources, session.title.id, settings.preferredQuality]);
 
   useEffect(() => {
-    if (!upNextVisible || !nextSource) return;
+    if (!upNextVisible || !nextSource || buffering) return;
     const abort = new AbortController();
     void (async () => {
       try {
@@ -749,7 +929,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
       }
     })();
     return () => abort.abort();
-  }, [upNextVisible, nextSource?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [upNextVisible, nextSource?.id, buffering]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const toggleFullscreen = useCallback(() => {
     setFullscreen((value) => {
@@ -775,19 +955,21 @@ function PlayerView({ session }: { session: PlayerSession }) {
 
   useEffect(() => {
     const video = videoRef.current;
-    if (video) {
+    if (video && usingMpv) {
       video.volume = volume;
-      video.muted = muted || heardConverted !== null;
+      video.muted = muted;
     }
     const timer = setTimeout(() => useSettings.getState().patch({ volume, muted }), settingsSaveDelayMs);
     return () => clearTimeout(timer);
   }, [volume, muted, url, heardConverted, usingMpv]);
 
+  useAudioEffects(videoRef, !usingMpv && mpvChoice.mode === "unavailable", url, settings.audioMode, volume, muted || heardConverted !== null);
+
   const changeVolume = useCallback(
     (delta: number) => {
       setMuted(false);
       setVolume((value) => {
-        const next = Math.min(1, Math.max(0, Math.round((value + delta) * 100) / 100));
+        const next = Math.min(volumeMax, Math.max(0, Math.round((value + delta) * 100) / 100));
         showHint(t("player.hint.volume", { percent: Math.round(next * 100) }));
         return next;
       });
@@ -809,6 +991,97 @@ function PlayerView({ session }: { session: PlayerSession }) {
   }, [wakeControls]);
 
   const controlsShown = controlsVisible || !playing || menu !== null || failed;
+
+  const changeZoom = (delta: number) =>
+    setZoom((value) => {
+      const next = Math.round(Math.min(zoomMax, Math.max(zoomMin, value + delta)) * 10) / 10;
+      showHint(t("player.picture.zoomHint", { percent: Math.round(next * 100) }));
+      return next;
+    });
+
+  const cycleAspect = () =>
+    setAspect((value) => {
+      const next = aspectChoices[(aspectChoices.indexOf(value) + 1) % aspectChoices.length];
+      showHint(next === "auto" ? t("player.picture.aspectAuto") : t("player.picture.aspectHint", { aspect: next }));
+      return next;
+    });
+
+  const resetPicture = () => {
+    setZoom(1);
+    setAspect("auto");
+    if (rate !== 1) {
+      if (videoRef.current) videoRef.current.playbackRate = 1;
+      setRate(1);
+      rememberForTitle(session.title, { rate: 1 });
+    }
+    showHint(t("player.picture.resetDone"));
+  };
+
+  const jumpChapter = (direction: 1 | -1) => {
+    if (chapters.length === 0) return;
+    const now = filmTime();
+    let target: Chapter | undefined;
+    if (direction > 0) {
+      target = chapters.find((chapter) => chapter.start > now + 0.5);
+    } else {
+      const index = chapters.findIndex((chapter) => now >= chapter.start && now < chapter.end);
+      const here = chapters[index];
+      target = here && now - here.start > chapterRestartSeconds ? here : chapters[Math.max(0, index - 1)];
+    }
+    if (!target) return;
+    seekTo(target.start);
+    showHint(target.title || t("player.chapter", { number: chapters.indexOf(target) + 1 }));
+  };
+
+  const shotLabel = () => {
+    const episode =
+      session.episode !== undefined
+        ? `S${String(session.season ?? 0).padStart(2, "0")}E${String(session.episode).padStart(2, "0")}`
+        : session.title.year;
+    return [session.title.title, episode, formatClock(filmTime()).replace(/:/g, "-")].filter(Boolean).join(" ");
+  };
+
+  const takeScreenshot = async () => {
+    if (!isDesktop) return;
+    try {
+      let path: string;
+      if (usingMpv) {
+        path = await mpv.screenshot(shotLabel());
+      } else {
+        const video = videoRef.current;
+        if (!video || !video.videoWidth) return;
+        const canvas = document.createElement("canvas");
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        canvas.getContext("2d")?.drawImage(video, 0, 0);
+        const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+        if (!blob) throw new Error("screenshot_invalid");
+        path = await backend.saveScreenshot(new Uint8Array(await blob.arrayBuffer()), shotLabel());
+      }
+      toast(t("player.screenshot.saved"), "success", {
+        label: t("player.screenshot.show"),
+        run: () => void import("@tauri-apps/plugin-opener").then(({ revealItemInDir }) => revealItemInDir(path)),
+      });
+    } catch (error) {
+      toast(describeError(error), "error");
+    }
+  };
+
+  const extraKeys = useRef<Record<string, () => void>>({});
+  extraKeys.current = {
+    "=": () => changeZoom(zoomStep),
+    "+": () => changeZoom(zoomStep),
+    "-": () => changeZoom(-zoomStep),
+    v: cycleAspect,
+    r: resetPicture,
+    p: () => void takeScreenshot(),
+    d: () => setStatsShown((value) => !value),
+    PageDown: () => jumpChapter(1),
+    PageUp: () => jumpChapter(-1),
+    MediaPlayPause: togglePlay,
+    MediaTrackNext: playNext,
+    MediaStop: () => videoRef.current?.pause(),
+  };
 
 
   useEffect(() => {
@@ -851,6 +1124,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
         "?": () => setHotkeysShown((value) => !value),
         Escape: () => {
           if (hotkeysShown) setHotkeysShown(false);
+          else if (statsShown) setStatsShown(false);
           else if (onlinePanel) setOnlinePanel(false);
           else if (menu) setMenu(null);
           else if (fullscreen) toggleFullscreen();
@@ -864,10 +1138,13 @@ function PlayerView({ session }: { session: PlayerSession }) {
         wakeControls();
         return;
       }
-      const sameKeys: Record<string, string> = { "а": "f", "ь": "m", "л": "k", "о": "j", "д": "l", "т": "n", "с": "c", "ф": "a", "х": "[", "ъ": "]", "п": "g", "р": "h", "ы": "s", "ш": "i" };
+      const sameKeys: Record<string, string> = { "а": "f", "ь": "m", "л": "k", "о": "j", "д": "l", "т": "n", "с": "c", "ф": "a", "х": "[", "ъ": "]", "п": "g", "р": "h", "ы": "s", "ш": "i", "м": "v", "к": "r", "з": "p", "в": "d" };
       const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
       const asksForHelp = event.shiftKey && event.code === "Slash";
-      const handler = asksForHelp ? handlers["?"] : (handlers[event.key] ?? handlers[key] ?? handlers[sameKeys[key] ?? ""]);
+      const extra = extraKeys.current;
+      const handler = asksForHelp
+        ? handlers["?"]
+        : (handlers[event.key] ?? handlers[key] ?? handlers[sameKeys[key] ?? ""] ?? extra[event.key] ?? extra[key] ?? extra[sameKeys[key] ?? ""]);
       if (!handler) return;
       event.preventDefault();
       handler();
@@ -875,7 +1152,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [togglePlay, seekBy, seekTo, changeVolume, toggleFullscreen, playNext, close, menu, fullscreen, wakeControls, rate, showHint, subtitleDelay, skippable, toggleMini, onlinePanel, hotkeysShown]);
+  }, [togglePlay, seekBy, seekTo, changeVolume, toggleFullscreen, playNext, close, menu, fullscreen, wakeControls, rate, showHint, subtitleDelay, skippable, toggleMini, onlinePanel, hotkeysShown, statsShown]);
 
 
   useEffect(() => {
@@ -893,7 +1170,81 @@ function PlayerView({ session }: { session: PlayerSession }) {
     return () => cancelAnimationFrame(frame);
   }, [cues, subtitleDelay]);
 
-  const embeddedCues = useEmbeddedSubtitles(() => ({ time: filmTime(), duration: filmLength() }), source ?? null, usingMpv ? null : embeddedSubtitle);
+  const bufferingNow = useRef(buffering);
+  bufferingNow.current = buffering;
+  const embeddedCues = useEmbeddedSubtitles(
+    () => ({ time: filmTime(), duration: filmLength(), busy: bufferingNow.current }),
+    source ?? null,
+    usingMpv ? null : embeddedSubtitle,
+  );
+  const secondaryEmbeddedCues = useEmbeddedSubtitles(
+    () => ({ time: filmTime(), duration: filmLength(), busy: bufferingNow.current }),
+    source ?? null,
+    usingMpv ? null : secondaryEmbedded,
+  );
+
+  useEffect(() => {
+    if (secondaryEmbedded !== null) setSecondaryCues(secondaryEmbeddedCues);
+  }, [secondaryEmbeddedCues, secondaryEmbedded]);
+
+  useEffect(() => {
+    if (secondaryCues.length === 0) {
+      setSecondaryText("");
+      return;
+    }
+    let frame = 0;
+    const update = () => {
+      const text = activeCueText(secondaryCues, filmTime() - subtitleDelay);
+      setSecondaryText((previous) => (previous === text ? previous : text));
+      frame = requestAnimationFrame(update);
+    };
+    frame = requestAnimationFrame(update);
+    return () => cancelAnimationFrame(frame);
+  }, [secondaryCues, subtitleDelay]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!usingMpv || generation === 0 || !secondary?.key.startsWith("embedded:")) return;
+    const index = Number(secondary.key.slice("embedded:".length));
+    void mpv.set("secondary-sid", mpvPlayer.video.subtitleId(index) ?? "no").catch(() => undefined);
+  }, [generation]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const chooseSecondaryEmbedded = (track: SubtitleTrackInfo) => {
+    setSecondary({ key: `embedded:${track.index}`, label: embeddedSubtitleLabel(track, locale) });
+    if (usingMpv) {
+      void mpv.set("secondary-sid", mpvPlayer.video.subtitleId(track.index) ?? "no").catch((error) => toast(describeError(error), "error"));
+    } else {
+      setSecondaryCues([]);
+      setSecondaryEmbedded(track.index);
+    }
+    setMenu(null);
+  };
+
+  const chooseSecondaryFile = async (option: SubtitleOption) => {
+    if (!source) return;
+    try {
+      const response = await fetch(await streamUrl(source.infoHash, option.file.index));
+      if (!response.ok) throw new Error("file_unreadable");
+      const parsed = parseSubtitles(decodeSubtitleBytes(await response.arrayBuffer()));
+      if (parsed.length === 0) {
+        toast(t("player.subtitles.noneInFile"), "error");
+        return;
+      }
+      setSecondaryEmbedded(null);
+      setSecondaryCues(parsed);
+      setSecondary({ key: option.key, label: option.label });
+      setMenu(null);
+    } catch (error) {
+      toast(describeError(error), "error");
+    }
+  };
+
+  const clearSecondary = () => {
+    setSecondary(null);
+    setSecondaryEmbedded(null);
+    setSecondaryCues([]);
+    if (usingMpv) void mpv.set("secondary-sid", "no").catch(() => undefined);
+    setMenu(null);
+  };
 
   useEffect(() => {
     if (usingMpv) void mpv.set("sub-delay", subtitleDelay).catch(() => undefined);
@@ -1045,17 +1396,25 @@ function PlayerView({ session }: { session: PlayerSession }) {
         (code): code is string => Boolean(code) && code !== subtitlesOff,
       );
       const languages = [...new Set(wanted)];
+      const moviehash = isDesktop
+        ? await Promise.race([
+            backend.subtitleFileHash(source.infoHash, source.fileIndex).catch(() => null),
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), hashWaitMs)),
+          ])
+        : null;
       const found = await backend.findOnlineSubtitles(onlineSubtitlesKey, {
         tmdbId: session.title.id,
         season: session.season ?? null,
         episode: session.episode ?? null,
         languages,
+        moviehash,
       });
       const playing = releaseWords(`${source.torrentName} ${source.fileName}`);
       const items = found
         .map((item) => ({ ...item, shared: sharedWords(releaseWords(item.release), playing) }))
         .sort(
           (a, b) =>
+            Number(b.hashMatch) - Number(a.hashMatch) ||
             Number(b.shared >= sameReleaseWords) - Number(a.shared >= sameReleaseWords) ||
             languages.indexOf(a.language) - languages.indexOf(b.language) ||
             b.shared - a.shared ||
@@ -1226,6 +1585,96 @@ function PlayerView({ session }: { session: PlayerSession }) {
     return () => clearTimeout(timer);
   }, [countdown, playNext]);
 
+  const dropCheck = useRef({ last: -1, bad: 0 });
+  useEffect(() => {
+    dropCheck.current = { last: -1, bad: 0 };
+  }, [source?.id, sessionQuality]);
+
+  useEffect(() => {
+    if (!usingMpv || !settings.autoSimplify || !playing || buffering || sessionQuality === "fast") return;
+    const timer = setInterval(() => {
+      void mpv
+        .stats()
+        .then((stats) => {
+          const dropped = Number(stats["frame-drop-count"] ?? 0) + Number(stats["decoder-frame-drop-count"] ?? 0);
+          const check = dropCheck.current;
+          check.bad = check.last >= 0 && dropped - check.last > droppedFramesPerCheck ? check.bad + 1 : 0;
+          check.last = dropped;
+          if (check.bad < badChecksToSimplify) return;
+          check.bad = 0;
+          const next = qualitySteps[Math.min(qualitySteps.length - 1, qualitySteps.indexOf(sessionQuality) + 1)];
+          setSessionQuality(next);
+          toast(t("player.quality.simplified"), "info", {
+            label: t("player.quality.restore"),
+            run: () => setSessionQuality(useSettings.getState().videoQuality),
+          });
+        })
+        .catch(() => undefined);
+    }, healthCheckMs);
+    return () => clearInterval(timer);
+  }, [usingMpv, settings.autoSimplify, playing, buffering, sessionQuality]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const stalls = useRef<number[]>([]);
+  useEffect(() => {
+    stalls.current = [];
+    setSlowSource(false);
+    setSlowDismissed(false);
+  }, [source?.id]);
+
+  useEffect(() => {
+    if (!buffering || !metadataReady || !source || playedSeconds.current < 5) return;
+    if (fileProgress(useTorrents.getState().byHash[source.infoHash], source.fileIndex) >= 1) return;
+    const afterSeek = Date.now() - lastSeekAt.current < 4000;
+    const note = () => {
+      const now = Date.now();
+      stalls.current = [...stalls.current.filter((at) => now - at < stallWindowMs), now];
+      if (stalls.current.length >= stallsToSuggest) setSlowSource(true);
+    };
+    const short = setTimeout(() => {
+      if (!afterSeek) note();
+    }, 2500);
+    const long = setTimeout(() => setSlowSource(true), stallLongSeconds * 1000);
+    return () => {
+      clearTimeout(short);
+      clearTimeout(long);
+    };
+  }, [buffering, metadataReady]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const findLighter = (filter: string) => {
+    const pageTarget = useUi.getState().pageTarget;
+    const target =
+      pageTarget && pageTarget.title.id === session.title.id && pageTarget.title.type === session.title.type
+        ? pageTarget
+        : { title: session.title, seasons: [], defaultSeason: session.season ?? 1 };
+    const prefs = useSettings.getState().trackerPrefs;
+    useSettings.getState().patch({ trackerPrefs: { ...prefs, resolutions: [filter] } });
+    saveProgress();
+    closePlayer();
+    useUi.getState().openAddSource({ target });
+  };
+
+  useMediaSession({
+    native: usingMpv || isLinux,
+    title: session.title.title,
+    subtitle:
+      session.episode !== undefined
+        ? `${t("common.seasonEpisode", { season: session.season ?? "", episode: session.episode })}${session.episodeName ? ` — ${session.episodeName}` : ""}`
+        : session.title.year,
+    cover: session.title.poster ? imageUrl(session.title.poster, "w500") : null,
+    duration,
+    playing,
+    position: filmTime,
+    controls: {
+      play: () => void videoRef.current?.play()?.catch(() => undefined),
+      pause: () => videoRef.current?.pause(),
+      toggle: togglePlay,
+      next: nextEpisode ? playNext : null,
+      seekBy,
+      seekTo,
+      stop: () => videoRef.current?.pause(),
+    },
+  });
+
   const onEnded = () => {
     saveProgress();
     setEnded(true);
@@ -1332,6 +1781,20 @@ function PlayerView({ session }: { session: PlayerSession }) {
       ? `${t("common.seasonEpisode", { season: session.season ?? "", episode: session.episode })}${session.episodeName ? ` — ${session.episodeName}` : ""}`
       : session.title.year;
   const VolumeIcon = muted || volume === 0 ? VolumeX : volume < 0.5 ? Volume1 : Volume2;
+  const subtitleStyle = {
+    fontSize: `${settings.subtitleScale}em`,
+    fontFamily: subtitleFonts[settings.subtitleFont].css,
+    color: subtitleColors[settings.subtitleColor],
+    bottom: `calc(var(--subtitle-bottom) + ${settings.subtitlePosition}%)`,
+  } as React.CSSProperties;
+  const pictureStyle: React.CSSProperties = {
+    transform: zoom !== 1 ? `scale(${zoom})` : undefined,
+    ...(aspect !== "auto" ? { objectFit: "fill", aspectRatio: aspect.replace(":", " / "), width: "auto", height: "100%", maxWidth: "100%", margin: "auto" } : {}),
+  };
+  const currentRank = qualityRank(source.quality);
+  const lighterSources = sources.filter((item) => item.id !== source.id && qualityRank(item.quality) > 0 && qualityRank(item.quality) < currentRank);
+  const lighterFilter = currentRank >= 2000 ? "1080" : currentRank >= 1000 ? "720" : null;
+  const slowShown = slowSource && !slowDismissed && downloaded < 1 && !failed;
 
   return (
     <div
@@ -1347,6 +1810,8 @@ function PlayerView({ session }: { session: PlayerSession }) {
           ref={videoRef}
           key={url}
           src={url}
+          crossOrigin="anonymous"
+          style={pictureStyle}
           autoPlay
           onClick={togglePlay}
           onDoubleClick={toggleFullscreen}
@@ -1366,8 +1831,16 @@ function PlayerView({ session }: { session: PlayerSession }) {
       )}
 
       {subtitleText && (
-        <div className="player__subtitle" style={{ fontSize: `${settings.subtitleScale}em` }}>
+        <div className={`player__subtitle player__subtitle--${settings.subtitleBackground}`} style={subtitleStyle}>
           <span>{subtitleText}</span>
+        </div>
+      )}
+      {secondaryText && (
+        <div
+          className={`player__subtitle player__subtitle--secondary player__subtitle--${settings.subtitleBackground}`}
+          style={{ fontSize: `${settings.subtitleScale * 0.85}em`, fontFamily: subtitleFonts[settings.subtitleFont].css }}
+        >
+          <span>{secondaryText}</span>
         </div>
       )}
 
@@ -1550,7 +2023,8 @@ function PlayerView({ session }: { session: PlayerSession }) {
                     >
                       <span className="player__panel-release">{item.release || t("player.subtitles.online.unnamed")}</span>
                       <span className="player__panel-badges">
-                        {item.sameRelease && <em className="is-match">{t("player.subtitles.online.sameRelease")}</em>}
+                        {item.hashMatch && <em className="is-match">{t("player.subtitles.online.hashMatch")}</em>}
+                        {!item.hashMatch && item.sameRelease && <em className="is-match">{t("player.subtitles.online.sameRelease")}</em>}
                         {item.hearingImpaired && <em>{t("player.subtitles.online.sdh")}</em>}
                         {item.machineTranslated && <em>{t("player.subtitles.online.machine")}</em>}
                         <small title={t("player.subtitles.online.downloads")}>↓ {item.downloads.toLocaleString(locale)}</small>
@@ -1560,6 +2034,38 @@ function PlayerView({ session }: { session: PlayerSession }) {
               </div>
             </>
           )}
+        </div>
+      )}
+
+      {statsShown && (
+        <StatsPanel
+          usingMpv={usingMpv}
+          videoRef={videoRef}
+          videoCodec={media.tracks?.videoCodec ?? ""}
+          torrent={torrent}
+          fileProgress={downloaded}
+          fileSize={source.size}
+          onClose={() => setStatsShown(false)}
+        />
+      )}
+
+      {slowShown && (
+        <div className="player__notice player__notice--slow">
+          <TriangleAlert size={16} />
+          <span>{t("player.slow.text")}</span>
+          {lighterSources.slice(0, 2).map((item) => (
+            <button key={item.id} className="button button--small button--primary" onClick={() => switchSource(item)}>
+              {t("player.slow.switch", { quality: item.quality })}
+            </button>
+          ))}
+          {lighterSources.length === 0 && lighterFilter && (
+            <button className="button button--small button--primary" onClick={() => findLighter(lighterFilter)}>
+              {t("player.slow.find", { quality: lighterFilter === "1080" ? "1080p" : "720p" })}
+            </button>
+          )}
+          <button className="button button--small" onClick={() => setSlowDismissed(true)}>
+            {t("player.hide")}
+          </button>
         </div>
       )}
 
@@ -1577,7 +2083,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
 
       {upNextVisible && nextEpisode && (
         <div className="player__up-next">
-          {nextEpisode.still && <img src={imageUrl(nextEpisode.still, "w300") ?? undefined} alt="" draggable={false} />}
+          {nextEpisode.still && !settings.spoilerStills && <img src={imageUrl(nextEpisode.still, "w300") ?? undefined} alt="" draggable={false} />}
           <div className="player__up-next-body">
             <span>{t("player.upNext.title")}</span>
             <strong>
@@ -1608,9 +2114,11 @@ function PlayerView({ session }: { session: PlayerSession }) {
           current={current}
           duration={duration}
           buffered={bufferedAhead}
+          pieces={pieces}
           chapters={chapters}
           advancing={playing && !buffering && !ended}
           rate={rate}
+          thumbnail={thumbnail}
           onSeek={seekTo}
         />
         <div className="player__controls">
@@ -1640,11 +2148,13 @@ function PlayerView({ session }: { session: PlayerSession }) {
             <input
               type="range"
               min={0}
-              max={1}
+              max={volumeMax}
               step={0.01}
               value={muted ? 0 : volume}
               aria-label={t("player.volume")}
-              style={{ "--fill": `${(muted ? 0 : volume) * 100}%` } as React.CSSProperties}
+              title={`${Math.round((muted ? 0 : volume) * 100)}%`}
+              className={volume > 1 && !muted ? "is-boosted" : ""}
+              style={{ "--fill": `${((muted ? 0 : volume) / volumeMax) * 100}%`, "--unity": `${(1 / volumeMax) * 100}%` } as React.CSSProperties}
               onChange={(event) => {
                 setMuted(false);
                 setVolume(Number(event.target.value));
@@ -1660,11 +2170,17 @@ function PlayerView({ session }: { session: PlayerSession }) {
           <button className={`player__button ${cues.length > 0 || (usingMpv && subtitleKey !== null) ? "is-on" : ""}`} aria-label={t("common.subtitles")} title={`${t("common.subtitles")} (C)`} onClick={() => setMenu(menu === "subtitles" ? null : "subtitles")}>
             <Captions size={20} />
           </button>
-          {(audio.options.length > 0 || (media.tracks?.audio.length ?? 0) > 1) && (
-            <button className="player__button" aria-label={t("player.audioTrack")} title={`${t("player.audioTrack")} (A)`} onClick={() => setMenu(menu === "audio" ? null : "audio")}>
-              <AudioLines size={19} />
-            </button>
-          )}
+          <button
+            className={`player__button ${settings.audioMode !== "off" ? "is-on" : ""}`}
+            aria-label={t("player.audioTrack")}
+            title={`${t("player.audioTrack")} (A)`}
+            onClick={() => setMenu(menu === "audio" ? null : "audio")}
+          >
+            <AudioLines size={19} />
+          </button>
+          <button className={`player__button ${zoom !== 1 || aspect !== "auto" ? "is-on" : ""}`} aria-label={t("player.picture")} title={t("player.picture")} onClick={() => setMenu(menu === "picture" ? null : "picture")}>
+            <Frame size={19} />
+          </button>
           <button className="player__button" aria-label={t("player.speed")} onClick={() => setMenu(menu === "speed" ? null : "speed")}>
             <Gauge size={19} />
             {rate !== 1 && <small>{rate}×</small>}
@@ -1724,6 +2240,19 @@ function PlayerView({ session }: { session: PlayerSession }) {
                     <span>{option.label}</span>
                   </button>
                 ))}
+            <h3>{t("player.audio.mode")}</h3>
+            <div className="player__menu-row player__menu-row--wrap">
+              {(["off", "night", "level", "dialogue"] as const).map((mode) => (
+                <button
+                  key={mode}
+                  className={`chip ${settings.audioMode === mode ? "is-active" : ""}`}
+                  title={t(`player.audio.mode.${mode}.note`)}
+                  onClick={() => settings.patch({ audioMode: mode })}
+                >
+                  {t(`player.audio.mode.${mode}`)}
+                </button>
+              ))}
+            </div>
             {media.tracks && audioTrack !== null && (
               <>
               <h3>{t("player.delay.audio")}</h3>
@@ -1743,6 +2272,55 @@ function PlayerView({ session }: { session: PlayerSession }) {
               </div>
               </>
             )}
+          </div>
+        )}
+        {menu === "picture" && (
+          <div className="player__menu">
+            <h3>{t("player.picture.zoom")}</h3>
+            <div className="player__menu-row player__delay">
+              <button className="chip" aria-label={t("player.picture.zoomOut")} title={`${t("player.picture.zoomOut")} (−)`} disabled={zoom <= zoomMin} onClick={() => changeZoom(-zoomStep)}>
+                <ZoomOut size={14} />
+              </button>
+              <span>{Math.round(zoom * 100)}%</span>
+              <button className="chip" aria-label={t("player.picture.zoomIn")} title={`${t("player.picture.zoomIn")} (+)`} disabled={zoom >= zoomMax} onClick={() => changeZoom(zoomStep)}>
+                <ZoomIn size={14} />
+              </button>
+            </div>
+            <h3>{t("player.picture.aspect")}</h3>
+            <div className="player__menu-row player__menu-row--wrap">
+              {aspectChoices.map((choice) => (
+                <button key={choice} className={`chip ${aspect === choice ? "is-active" : ""}`} onClick={() => setAspect(choice)}>
+                  {choice === "auto" ? t("player.picture.aspectOriginal") : choice}
+                </button>
+              ))}
+            </div>
+            {isDesktop && (
+              <button className="player__menu-item" onClick={() => void takeScreenshot()}>
+                <Camera size={15} />
+                <span>{t("player.screenshot")}</span>
+                <small>P</small>
+              </button>
+            )}
+            <button className="player__menu-item" onClick={() => setStatsShown((value) => !value)}>
+              {statsShown ? <Check size={15} /> : <i />}
+              <span>{t("player.stats.title")}</span>
+              <small>D</small>
+            </button>
+            {chapters.length > 1 && (
+              <div className="player__menu-row">
+                <button className="chip" onClick={() => jumpChapter(-1)}>
+                  {t("player.chapter.previous")}
+                </button>
+                <button className="chip" onClick={() => jumpChapter(1)}>
+                  {t("player.chapter.next")}
+                </button>
+              </div>
+            )}
+            <button className="player__menu-item player__menu-item--reset" disabled={zoom === 1 && aspect === "auto" && rate === 1} onClick={resetPicture}>
+              <RotateCcw size={15} />
+              <span>{t("player.picture.reset")}</span>
+              <small>R</small>
+            </button>
           </div>
         )}
         {menu === "speed" && (
@@ -1823,6 +2401,54 @@ function PlayerView({ session }: { session: PlayerSession }) {
               </div>
               </>
             )}
+            {((media.tracks?.subtitles ?? []).some((track) => track.isText) || (!usingMpv && subtitleOptions.length > 0)) && (
+              <>
+                <h3>{t("player.subtitles.secondary")}</h3>
+                <button className="player__menu-item" onClick={clearSecondary}>
+                  {secondary === null ? <Check size={15} /> : <i />}
+                  <span>{t("player.subtitles.off")}</span>
+                </button>
+                {(media.tracks?.subtitles ?? [])
+                  .filter((track) => track.isText)
+                  .map((track) => (
+                    <button key={`second:${track.index}`} className="player__menu-item" onClick={() => chooseSecondaryEmbedded(track)}>
+                      {secondary?.key === `embedded:${track.index}` ? <Check size={15} /> : <i />}
+                      <span>{embeddedSubtitleLabel(track, locale)}</span>
+                      <small>{track.title}</small>
+                    </button>
+                  ))}
+                {!usingMpv &&
+                  subtitleOptions.map((option) => (
+                    <button key={`second:${option.key}`} className="player__menu-item" onClick={() => void chooseSecondaryFile(option)}>
+                      {secondary?.key === option.key ? <Check size={15} /> : <i />}
+                      <span>{option.label}</span>
+                      <small>{option.detail}</small>
+                    </button>
+                  ))}
+              </>
+            )}
+            <h3>{t("player.subtitles.look")}</h3>
+            <div className="player__menu-row player__menu-row--wrap">
+              {(["outline", "shadow", "box"] as const).map((background) => (
+                <button
+                  key={background}
+                  className={`chip ${settings.subtitleBackground === background ? "is-active" : ""}`}
+                  onClick={() => settings.patch({ subtitleBackground: background })}
+                >
+                  {t(`player.subtitles.background.${background}`)}
+                </button>
+              ))}
+              {(Object.keys(subtitleColors) as SubtitleColor[]).map((color) => (
+                <button
+                  key={color}
+                  className={`chip chip--swatch ${settings.subtitleColor === color ? "is-active" : ""}`}
+                  aria-label={t(`player.subtitles.color.${color}`)}
+                  title={t(`player.subtitles.color.${color}`)}
+                  style={{ "--swatch": subtitleColors[color] } as React.CSSProperties}
+                  onClick={() => settings.patch({ subtitleColor: color })}
+                />
+              ))}
+            </div>
             <h3>{t("player.subtitles.size")}</h3>
             <div className="player__menu-row">
               {subtitleScales.map((scale) => (

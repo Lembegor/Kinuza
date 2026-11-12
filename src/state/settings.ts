@@ -1,9 +1,11 @@
 import { create } from "zustand";
 import { backend } from "../lib/backend";
 import { isLinux } from "../lib/platform";
+import { t } from "../lib/i18n";
 import { report } from "../lib/journal";
 import type { AppLanguage } from "../lib/languages";
 import { setApiKeyOverride, setCatalogLanguage } from "../lib/tmdb";
+import { useUi } from "./ui";
 
 const storeName = "settings";
 const currentVersion = 3;
@@ -17,6 +19,14 @@ export interface TrackerPrefs {
   videoOnly: boolean;
   sort: TrackerSort;
 }
+
+export type AudioMode = "off" | "night" | "level" | "dialogue";
+export type SubtitleFont = "sans" | "serif" | "rounded" | "condensed";
+export type SubtitleColor = "white" | "yellow" | "cyan" | "green";
+export type SubtitleBackground = "outline" | "shadow" | "box";
+export type VideoQuality = "high" | "balanced" | "fast";
+export type SpoilerMode = "show" | "blur" | "hide";
+export type GridDensity = "compact" | "normal" | "large";
 
 export interface Settings {
   downloadDir: string;
@@ -44,6 +54,17 @@ export interface Settings {
   notifyDownloads: boolean;
   notifyEpisodes: boolean;
   autoAddEpisodes: boolean;
+  audioMode: AudioMode;
+  subtitleFont: SubtitleFont;
+  subtitleColor: SubtitleColor;
+  subtitleBackground: SubtitleBackground;
+  subtitlePosition: number;
+  videoQuality: VideoQuality;
+  autoSimplify: boolean;
+  spoilerDescriptions: SpoilerMode;
+  spoilerStills: boolean;
+  gridDensity: GridDensity;
+  accent: string;
   version: number;
 }
 
@@ -73,6 +94,17 @@ const defaults: Settings = {
   notifyDownloads: true,
   notifyEpisodes: true,
   autoAddEpisodes: true,
+  audioMode: "off",
+  subtitleFont: "sans",
+  subtitleColor: "white",
+  subtitleBackground: "outline",
+  subtitlePosition: 0,
+  videoQuality: "high",
+  autoSimplify: true,
+  spoilerDescriptions: "blur",
+  spoilerStills: false,
+  gridDensity: "normal",
+  accent: "",
   version: currentVersion,
 };
 
@@ -108,12 +140,21 @@ interface SettingsState extends Settings {
 
 let earlyChanges: Partial<Settings> = {};
 let savingBlocked = false;
+let saveFailureShown = false;
 
 function persist(settings: Settings): void {
   if (savingBlocked) return;
-  backend
-    .storeSet(storeName, JSON.stringify(settings))
-    .catch((error) => report("settings", "journal.settings.save", error));
+  backend.storeSet(storeName, JSON.stringify(settings)).then(
+    () => {
+      saveFailureShown = false;
+    },
+    (error) => {
+      report("settings", "journal.settings.save", error);
+      if (saveFailureShown) return;
+      saveFailureShown = true;
+      useUi.getState().toast(t("settings.saveFailed"), "error");
+    },
+  );
 }
 
 function currentSettings(state: SettingsState): Settings {
@@ -136,6 +177,7 @@ export const useSettings = create<SettingsState>((set, get) => ({
       savingBlocked = true;
       report("settings", "journal.settings.load", error);
       set({ ...earlyChanges, loaded: true });
+      useUi.getState().toast(t("settings.loadFailed"), "error");
     }
     earlyChanges = {};
     setApiKeyOverride(get().tmdbKey);
@@ -152,6 +194,7 @@ export const useSettings = create<SettingsState>((set, get) => ({
       return;
     }
     if (policyKeys.some((key) => key in change)) applyDownloadPolicy(get());
+    savingBlocked = false;
     persist(currentSettings(get()));
   },
 }));

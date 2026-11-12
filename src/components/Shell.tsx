@@ -4,6 +4,8 @@ import { ArrowLeft, ArrowRight, CalendarDays, Copy, Download, House, LayoutGrid,
 import { isDesktop } from "../lib/backend";
 import { useT } from "../lib/i18n";
 import { useBrowse } from "../state/browse";
+import { useUi } from "../state/ui";
+import { InboxButton } from "./InboxButton";
 import { isActiveDownload, useTorrents } from "../state/torrents";
 
 const searchDebounceMs = 350;
@@ -77,10 +79,19 @@ function SearchBox() {
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+      const typing = event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement;
+      const withModifier = (event.ctrlKey || event.metaKey) && ["k", "f", "л", "а"].includes(event.key.toLowerCase());
+      const slash = !typing && !event.ctrlKey && !event.metaKey && !event.altKey && (event.key === "/" || event.key === ".") && event.code === "Slash";
+      if ((withModifier || slash) && !useUi.getState().player) {
         event.preventDefault();
         inputRef.current?.focus();
         inputRef.current?.select();
+        return;
+      }
+      if (event.altKey && !typing && (event.key === "ArrowLeft" || event.key === "ArrowRight") && !useUi.getState().player) {
+        event.preventDefault();
+        if (event.key === "ArrowLeft") window.history.back();
+        else window.history.forward();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -133,6 +144,7 @@ export function Titlebar() {
       </div>
       <SearchBox />
       <div className="titlebar__spacer" data-tauri-drag-region />
+      <InboxButton />
       <WindowButtons />
     </header>
   );

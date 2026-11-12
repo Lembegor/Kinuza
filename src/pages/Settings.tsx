@@ -6,14 +6,15 @@ import { ImportSetting } from "../components/ImportSetting";
 import { LanguageSelect } from "../components/LanguagePicker";
 import { backend, describeError, getAppInfo, isDesktop, isLinux } from "../lib/backend";
 import { mpv } from "../lib/mpv";
-import { accountDataVersion } from "../lib/account";
+import { accountDataVersion, describeAccountData, parseAccountData, type AccountData } from "../lib/account";
 import { formatBytes } from "../lib/format";
 import { useT, type MessageKey } from "../lib/i18n";
 import { report } from "../lib/journal";
 import { appLanguages, languageName } from "../lib/languages";
 import { useAsync } from "../lib/useAsync";
 import { useLibrary } from "../state/library";
-import { useSettings } from "../state/settings";
+import { useSettings, type AudioMode, type SpoilerMode, type SubtitleBackground, type SubtitleColor, type SubtitleFont, type VideoQuality } from "../state/settings";
+import { accentColors } from "../lib/appearance";
 import { isDownload, useTorrents } from "../state/torrents";
 import { useUi } from "../state/ui";
 import { useUpdater, type UpdateStatus } from "../state/updater";
@@ -52,12 +53,14 @@ function NumberSetting({
   label,
   value,
   step = 1,
+  max,
   unit,
   onChange,
 }: {
   label: string;
   value: number;
   step?: number;
+  max?: number;
   unit?: string;
   onChange: (value: number) => void;
 }) {
@@ -68,6 +71,7 @@ function NumberSetting({
         aria-label={label}
         type="number"
         min={0}
+        max={max}
         step={step}
         value={value}
         onChange={(event) => onChange(Math.max(0, Number(event.target.value) || 0))}
@@ -116,7 +120,13 @@ export default function Settings() {
         extensions: ["json"],
       });
       if (!path) return;
-      const backup = { app: backupMarker, account: useLibrary.getState().exportAccountData() };
+      const { loaded: _loaded, load: _load, patch: _patch, ...currentSettings } = useSettings.getState();
+      const backup = {
+        app: backupMarker,
+        createdAt: new Date().toISOString(),
+        account: useLibrary.getState().exportAccountData(),
+        settings: currentSettings,
+      };
       await backend.writeTextFile(path, JSON.stringify(backup, null, 2));
       toast(t("settings.backup.saved"), "success");
     } catch (error) {
@@ -130,24 +140,53 @@ export default function Settings() {
       const picked = await backend.pickFile({ title: t("settings.backup.restore"), filterName: "JSON", extensions: ["json"] });
       if (!picked) return;
       const backup = JSON.parse(new TextDecoder().decode(await backend.readFileBytes(picked)));
-      const account = backup?.app === backupMarker ? backup.account : null;
-      if (!account || typeof account.tracked !== "object" || typeof account.progress !== "object") {
+      const parsed = backup?.app === backupMarker ? parseAccountData(backup.account) : null;
+      if (!parsed) {
         toast(t("settings.backup.invalid"), "error");
         return;
       }
-      useLibrary.getState().mergeAccountData({
-        version: accountDataVersion,
-        tracked: account.tracked,
-        progress: account.progress,
-        removed: account.removed ?? {},
-        preferences: account.preferences ?? {},
-        dismissed: typeof account.dismissed === "object" && account.dismissed !== null ? account.dismissed : undefined,
-        onboardedAt: typeof account.onboardedAt === "number" ? account.onboardedAt : undefined,
-      });
-      toast(t("settings.backup.restored"), "success");
+      if (parsed.data.version > accountDataVersion) {
+        toast(t("settings.backup.newer"), "error");
+        return;
+      }
+      confirmRestore(parsed.data, parsed.dropped, typeof backup.createdAt === "string" ? backup.createdAt : null, backup.settings);
     } catch {
       toast(t("settings.backup.invalid"), "error");
     }
+  };
+
+  const confirmRestore = (data: AccountData, dropped: number, createdAt: string | null, savedSettings: unknown) => {
+    const incoming = describeAccountData(data);
+    const current = describeAccountData(useLibrary.getState().exportAccountData());
+    const date = createdAt ? new Date(createdAt).toLocaleDateString(locale, { day: "numeric", month: "long", year: "numeric" }) : null;
+    const restore = async (mode: "merge" | "replace") => {
+      try {
+        await useLibrary.getState().restoreAccountData(data, mode);
+        if (mode === "replace" && savedSettings && typeof savedSettings === "object") {
+          const { downloadDir: _downloadDir, handleLinks: _handleLinks, linksPrompted: _linksPrompted, ...portable } = savedSettings as Record<string, unknown>;
+          settings.patch(portable as Partial<typeof settings>);
+        }
+        toast(t(mode === "replace" ? "settings.backup.replaced" : "settings.backup.restored"), "success");
+      } catch (error) {
+        toast(describeError(error), "error");
+      }
+    };
+    useUi.getState().askConfirm({
+      title: date ? t("settings.backup.confirm.titleDated", { date }) : t("settings.backup.confirm.title"),
+      message: [
+        t("settings.backup.confirm.incoming", { titles: incoming.titles, rated: incoming.rated, episodes: incoming.episodes }),
+        t("settings.backup.confirm.current", { titles: current.titles, rated: current.rated, episodes: current.episodes }),
+        dropped > 0 ? t("settings.backup.confirm.dropped", { count: dropped }) : "",
+        t("settings.backup.confirm.modes"),
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
+      secondaryLabel: t("settings.backup.merge"),
+      onSecondary: () => void restore("merge"),
+      confirmLabel: t("settings.backup.replace"),
+      danger: true,
+      onConfirm: () => void restore("replace"),
+    });
   };
   const updater = useUpdater();
   const info = useAsync(getAppInfo, []);
@@ -173,6 +212,7 @@ export default function Settings() {
 
   const sections: { id: string; label: MessageKey }[] = [
     { id: "settings-viewing", label: "settings.viewing" },
+    { id: "settings-look", label: "settings.look" },
     { id: "settings-downloads", label: "settings.downloads" },
     { id: "settings-system", label: "settings.system" },
     { id: "settings-data", label: "settings.data" },
@@ -285,6 +325,109 @@ export default function Settings() {
             <Toggle label={t("settings.player.smooth")} checked={settings.smoothMotion} onChange={(value) => settings.patch({ smoothMotion: value })} />
           </div>
         )}
+        {mpv.supported && (
+          <div className="setting">
+            <div>
+              <strong>{t("settings.player.picture")}</strong>
+              <p>{t("settings.player.picture.note")}</p>
+            </div>
+            <select
+              className="select select--large"
+              aria-label={t("settings.player.picture")}
+              value={settings.videoQuality}
+              onChange={(event) => settings.patch({ videoQuality: event.target.value as VideoQuality })}
+            >
+              <option value="high">{t("settings.player.picture.high")}</option>
+              <option value="balanced">{t("settings.player.picture.balanced")}</option>
+              <option value="fast">{t("settings.player.picture.fast")}</option>
+            </select>
+          </div>
+        )}
+        {mpv.supported && (
+          <div className="setting">
+            <div>
+              <strong>{t("settings.player.autoSimplify")}</strong>
+              <p>{t("settings.player.autoSimplify.note")}</p>
+            </div>
+            <Toggle label={t("settings.player.autoSimplify")} checked={settings.autoSimplify} onChange={(value) => settings.patch({ autoSimplify: value })} />
+          </div>
+        )}
+        <div className="setting">
+          <div>
+            <strong>{t("player.audio.mode")}</strong>
+            <p>{t("settings.player.audioMode.note")}</p>
+          </div>
+          <select
+            className="select select--large"
+            aria-label={t("player.audio.mode")}
+            value={settings.audioMode}
+            onChange={(event) => settings.patch({ audioMode: event.target.value as AudioMode })}
+          >
+            {(["off", "night", "level", "dialogue"] as const).map((mode) => (
+              <option key={mode} value={mode}>
+                {t(`player.audio.mode.${mode}`)}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="setting">
+          <div>
+            <strong>{t("settings.subtitles.look")}</strong>
+            <p>{t("settings.subtitles.look.note")}</p>
+          </div>
+          <div className="setting__actions setting__actions--wrap">
+            <select
+              className="select"
+              aria-label={t("settings.subtitles.font")}
+              value={settings.subtitleFont}
+              onChange={(event) => settings.patch({ subtitleFont: event.target.value as SubtitleFont })}
+            >
+              {(["sans", "serif", "rounded", "condensed"] as const).map((font) => (
+                <option key={font} value={font}>
+                  {t(`settings.subtitles.font.${font}`)}
+                </option>
+              ))}
+            </select>
+            <select
+              className="select"
+              aria-label={t("settings.subtitles.background")}
+              value={settings.subtitleBackground}
+              onChange={(event) => settings.patch({ subtitleBackground: event.target.value as SubtitleBackground })}
+            >
+              {(["outline", "shadow", "box"] as const).map((background) => (
+                <option key={background} value={background}>
+                  {t(`player.subtitles.background.${background}`)}
+                </option>
+              ))}
+            </select>
+            <select
+              className="select"
+              aria-label={t("settings.subtitles.color")}
+              value={settings.subtitleColor}
+              onChange={(event) => settings.patch({ subtitleColor: event.target.value as SubtitleColor })}
+            >
+              {(["white", "yellow", "cyan", "green"] as const).map((color) => (
+                <option key={color} value={color}>
+                  {t(`player.subtitles.color.${color}`)}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <div className="setting">
+          <div>
+            <strong>{t("settings.subtitles.position")}</strong>
+            <p>{t("settings.subtitles.position.note")}</p>
+          </div>
+          <NumberSetting
+            label={t("settings.subtitles.position")}
+            value={settings.subtitlePosition}
+            step={2}
+            max={30}
+            unit="%"
+            onChange={(value) => settings.patch({ subtitlePosition: Math.min(30, Math.max(0, value)) })}
+          />
+        </div>
         <div className="setting">
           <div>
             <strong>{t("settings.player.external")}</strong>
@@ -302,6 +445,71 @@ export default function Settings() {
           </summary>
           <HotkeyList />
         </details>
+      </section>
+
+      <section className="settings-group" id="settings-look">
+        <h2>{t("settings.look")}</h2>
+        <div className="setting">
+          <div>
+            <strong>{t("settings.look.density")}</strong>
+            <p>{t("settings.look.density.note")}</p>
+          </div>
+          <div className="setting__actions">
+            {(["compact", "normal", "large"] as const).map((density) => (
+              <button
+                key={density}
+                className={`chip ${settings.gridDensity === density ? "is-active" : ""}`}
+                aria-pressed={settings.gridDensity === density}
+                onClick={() => settings.patch({ gridDensity: density })}
+              >
+                {t(`settings.look.density.${density}`)}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="setting">
+          <div>
+            <strong>{t("settings.look.accent")}</strong>
+            <p>{t("settings.look.accent.note")}</p>
+          </div>
+          <div className="setting__actions accent-picker" role="radiogroup" aria-label={t("settings.look.accent")}>
+            {accentColors.map((item) => (
+              <button
+                key={item.id || "default"}
+                role="radio"
+                aria-checked={settings.accent === item.id}
+                aria-label={t(`settings.look.accent.${item.id || "red"}` as MessageKey)}
+                title={t(`settings.look.accent.${item.id || "red"}` as MessageKey)}
+                className={`accent-picker__swatch ${settings.accent === item.id ? "is-active" : ""}`}
+                style={{ "--swatch": item.color } as React.CSSProperties}
+                onClick={() => settings.patch({ accent: item.id })}
+              />
+            ))}
+          </div>
+        </div>
+        <div className="setting">
+          <div>
+            <strong>{t("settings.spoilers")}</strong>
+            <p>{t("settings.spoilers.note")}</p>
+          </div>
+          <select
+            className="select select--large"
+            aria-label={t("settings.spoilers")}
+            value={settings.spoilerDescriptions}
+            onChange={(event) => settings.patch({ spoilerDescriptions: event.target.value as SpoilerMode })}
+          >
+            <option value="blur">{t("settings.spoilers.blur")}</option>
+            <option value="hide">{t("settings.spoilers.hide")}</option>
+            <option value="show">{t("settings.spoilers.show")}</option>
+          </select>
+        </div>
+        <div className="setting">
+          <div>
+            <strong>{t("settings.spoilers.stills")}</strong>
+            <p>{t("settings.spoilers.stills.note")}</p>
+          </div>
+          <Toggle label={t("settings.spoilers.stills")} checked={settings.spoilerStills} onChange={(value) => settings.patch({ spoilerStills: value })} />
+        </div>
       </section>
 
       <section className="settings-group" id="settings-downloads">
@@ -355,6 +563,14 @@ export default function Settings() {
             <NumberSetting label={t("settings.cache")} value={settings.cacheLimitGb} step={5} unit={t("settings.cache.unit")} onChange={(value) => settings.patch({ cacheLimitGb: value })} />
           </div>
         </div>
+        {isDesktop && info.data && info.data.listenPort > 0 && (
+          <div className="setting">
+            <div>
+              <strong>{t("settings.port")}</strong>
+              <p>{t("settings.port.note", { port: info.data.listenPort })}</p>
+            </div>
+          </div>
+        )}
         <div className="setting">
           <div>
             <strong>{t("settings.autoDelete")}</strong>

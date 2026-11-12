@@ -7,6 +7,7 @@ import { titleKey, toTitleRef, useLibrary } from "../state/library";
 import { useSettings } from "../state/settings";
 import { CatalogError, typeLabel } from "./Cards";
 import { LanguagePicker } from "./LanguagePicker";
+import { OnboardingImport } from "./OnboardingImport";
 import { WindowButtons } from "./Shell";
 
 type Step = "language" | "picks" | "howTo";
@@ -212,6 +213,7 @@ function PicksStep({
   };
 
   const count = picks.size;
+  const imported = useLibrary((state) => Object.keys(state.tracked).length > 0);
   const counter =
     count === 0
       ? t("onboarding.picks.count.none", { target: recommendedPicks })
@@ -259,6 +261,7 @@ function PicksStep({
       </div>
 
       <div className="onboarding__body">
+        {!searching && <OnboardingImport />}
         {source.error ? (
           <CatalogError onRetry={source.reload} />
         ) : source.loading || typed !== query ? (
@@ -301,7 +304,7 @@ function PicksStep({
         <button className="button button--large onboarding__quiet" onClick={onSkip}>
           {t("onboarding.skip")}
         </button>
-        <button className="button button--primary button--large" disabled={count === 0} onClick={onContinue}>
+        <button className="button button--primary button--large" disabled={count === 0 && !imported} onClick={onContinue}>
           {t("onboarding.continue")}
         </button>
       </footer>

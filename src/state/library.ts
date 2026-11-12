@@ -2,12 +2,21 @@ import { create } from "zustand";
 import {
   accountDataVersion,
   dismissedRemovalKey,
+  freshTombstones,
+  isProgress,
+  isRecord,
+  isSourceList,
+  isTitle,
+  isTrackEntry,
   mergeAccountData,
   progressRemovalKey,
   trackedRemovalKey,
+  validEntries,
+  withNumbers,
   type AccountData,
   type Dismissal,
   type TitlePreferences,
+  type TrackedField,
 } from "../lib/account";
 import { backend } from "../lib/backend";
 import { t, type MessageKey } from "../lib/i18n";
@@ -16,8 +25,16 @@ import type { MediaItem, MediaType } from "../lib/tmdb";
 import { useUi } from "./ui";
 
 const storeName = "library";
+const progressStoreName = "progress";
+const quarantineStoreName = "library-damaged";
+const beforeRestoreStoreName = "library-before-restore";
+const libraryFileVersion = 3;
 const saveDelayMs = 500;
+const progressSaveDelayMs = 4000;
 const specialsSeason = 0;
+const announcedLimit = 2000;
+const legacyAnnouncedKey = "kinuza.announcedEpisodes";
+const legacyReleaseWatchKey = "kinuza.releaseWatch";
 export const watchedThreshold = 0.92;
 export const maxRating = 10;
 
@@ -52,6 +69,7 @@ export interface TrackEntry extends TitleRef {
   totalEpisodes?: number;
   addedAt: number;
   updatedAt: number;
+  fieldsUpdatedAt?: Partial<Record<TrackedField, number>>;
 }
 
 export interface Source {
@@ -77,6 +95,13 @@ export interface Progress {
   played?: number;
 }
 
+export interface ReleaseWatch {
+  title: TitleRef;
+  topicId: string;
+  infoHash: string;
+  defaultSeason: number;
+}
+
 type EpisodeContext = Omit<Progress, "position" | "duration" | "updatedAt">;
 
 interface LibraryData {
@@ -86,6 +111,8 @@ interface LibraryData {
   removed: Record<string, number>;
   preferences: Record<string, TitlePreferences>;
   dismissed: Record<string, Dismissal>;
+  releaseWatches: Record<string, ReleaseWatch>;
+  announcedEpisodes: string[] | null;
   onboardedAt?: number;
 }
 
@@ -93,9 +120,12 @@ interface LegacyData {
   saved?: Record<string, TitleRef & { addedAt: number }>;
 }
 
+export type RestoreMode = "merge" | "replace";
+
 interface LibraryState extends LibraryData {
   loaded: boolean;
   firstRun: boolean;
+  unreadable: boolean;
   load: () => Promise<void>;
   setStatus: (title: TitleRef, status: WatchStatus | null) => void;
   setRating: (title: TitleRef, rating: number | null) => void;
@@ -114,8 +144,12 @@ interface LibraryState extends LibraryData {
   dismiss: (title: TitleRef, detail?: Pick<Dismissal, "reason" | "personId" | "personName">) => void;
   restoreDismissed: (key: string) => void;
   finishOnboarding: (liked: { title: TitleRef; rating: number | null }[]) => void;
+  followRelease: (watch: ReleaseWatch) => void;
+  forgetRelease: (key: string) => void;
+  rememberAnnounced: (ids: string[]) => void;
   exportAccountData: () => AccountData;
   mergeAccountData: (other: AccountData) => void;
+  restoreAccountData: (other: AccountData, mode: RestoreMode) => Promise<void>;
 }
 
 export function titleKey(type: MediaType, id: number): string {
@@ -165,68 +199,78 @@ function withAutoStatus(
 ): Record<string, TrackEntry> {
   const key = titleKey(title.type, title.id);
   const entry = tracked[key];
-  const now = Date.now();
 
   let status: WatchStatus = entry?.status ?? "watching";
   if (isFinished(title, entry, progress)) status = "completed";
   else if (status !== "completed") status = "watching";
 
   if (entry && entry.status === status) return tracked;
-  const base: TrackEntry = entry ?? { ...title, status: null, rating: null, addedAt: now, updatedAt: now };
-  return { ...tracked, [key]: { ...base, status, updatedAt: now } };
+  if (entry) return { ...tracked, [key]: { ...entry, status } };
+  const now = Date.now();
+  return { ...tracked, [key]: { ...title, status, rating: null, addedAt: now, updatedAt: now } };
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isTitle(value: unknown): value is TitleRef {
-  return isRecord(value) && (value.type === "movie" || value.type === "tv") && typeof value.id === "number";
-}
-
-function validEntries<T>(value: unknown, valid: (item: unknown) => boolean): Record<string, T> {
-  if (!isRecord(value)) return {};
-  const kept: Record<string, T> = {};
-  for (const [key, item] of Object.entries(value)) {
-    if (valid(item)) kept[key] = item as T;
+function readLegacy<T>(key: string): T | undefined {
+  try {
+    const text = localStorage.getItem(key);
+    return text === null ? undefined : (JSON.parse(text) as T);
+  } catch {
+    return undefined;
   }
-  return kept;
 }
 
-function isProgress(item: unknown): boolean {
-  return isRecord(item) && typeof item.position === "number" && typeof item.duration === "number" && isTitle(item.title);
+function forgetLegacy(): void {
+  try {
+    localStorage.removeItem(legacyAnnouncedKey);
+    localStorage.removeItem(legacyReleaseWatchKey);
+  } catch {
+    return;
+  }
 }
 
-function isSourceList(item: unknown): boolean {
-  return Array.isArray(item) && item.every((source) => isRecord(source) && typeof source.infoHash === "string" && typeof source.fileIndex === "number");
+function newestProgress(...lists: Record<string, Progress>[]): Record<string, Progress> {
+  const merged: Record<string, Progress> = {};
+  for (const list of lists) {
+    for (const [key, item] of Object.entries(list)) {
+      const known = merged[key];
+      if (!known || (item.updatedAt ?? 0) > (known.updatedAt ?? 0)) merged[key] = item;
+    }
+  }
+  return merged;
 }
 
-function migrate(raw: unknown): LibraryData {
+function migrate(raw: unknown, dropped: { count: number }): LibraryData {
   const data = (isRecord(raw) ? raw : {}) as Partial<LibraryData> & LegacyData;
-  const progress = validEntries<Progress>(data.progress, isProgress);
-  const tracked = validEntries<TrackEntry>(data.tracked, isTitle);
+  const progress = validEntries<Progress>(data.progress, isProgress, dropped);
+  const tracked = validEntries<TrackEntry>(data.tracked, isTrackEntry, dropped);
+  for (const [key, entry] of Object.entries(tracked)) tracked[key] = withNumbers(entry);
 
-  for (const [key, item] of Object.entries(validEntries<TitleRef & { addedAt: number }>(data.saved, isTitle))) {
-    tracked[key] ??= { ...item, status: "planned", rating: null, updatedAt: item.addedAt };
+  for (const [key, item] of Object.entries(validEntries<TitleRef & { addedAt: number }>(data.saved, isTitle, dropped))) {
+    tracked[key] ??= withNumbers({ ...item, status: "planned", rating: null, updatedAt: item.addedAt } as TrackEntry);
   }
   for (const item of Object.values(progress)) {
     const key = titleKey(item.title.type, item.title.id);
     const finished = item.title.type === "movie" && isWatched(item);
-    tracked[key] ??= {
+    tracked[key] ??= withNumbers({
       ...item.title,
       status: finished ? "completed" : "watching",
       rating: null,
       addedAt: item.updatedAt,
       updatedAt: item.updatedAt,
-    };
+    });
   }
+  const announced = Array.isArray(data.announcedEpisodes)
+    ? data.announcedEpisodes.filter((item): item is string => typeof item === "string")
+    : null;
   return {
     tracked,
-    sources: validEntries<Source[]>(data.sources, isSourceList),
+    sources: validEntries<Source[]>(data.sources, isSourceList, dropped),
     progress,
-    removed: validEntries<number>(data.removed, (item) => typeof item === "number"),
-    preferences: validEntries<TitlePreferences>(data.preferences, isRecord),
-    dismissed: validEntries<Dismissal>(data.dismissed, isTitle),
+    removed: freshTombstones(validEntries<number>(data.removed, (item) => typeof item === "number")),
+    preferences: validEntries<TitlePreferences>(data.preferences, isRecord, dropped),
+    dismissed: validEntries<Dismissal>(data.dismissed, isTitle, dropped),
+    releaseWatches: validEntries<ReleaseWatch>(data.releaseWatches, (item) => isRecord(item) && isTitle(item.title), dropped),
+    announcedEpisodes: announced,
     onboardedAt: typeof data.onboardedAt === "number" ? data.onboardedAt : undefined,
   };
 }
@@ -236,9 +280,13 @@ function isEmpty(record: Record<string, unknown>): boolean {
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
+let progressTimer: ReturnType<typeof setTimeout> | undefined;
 let unsaved: LibraryData | null = null;
+let unsavedProgress: Record<string, Progress> | null = null;
 let savingBlocked = false;
+let progressStored = false;
 let saveFailureShown = false;
+let legacyPending = false;
 
 function blockSaving(error: unknown): void {
   savingBlocked = true;
@@ -246,28 +294,47 @@ function blockSaving(error: unknown): void {
   useUi.getState().toast(t("library.loadFailed"), "error");
 }
 
-function write(state: LibraryData): Promise<void> {
-  if (savingBlocked) return Promise.resolve();
-  const data: LibraryData = {
+function saveFailed(error: unknown): void {
+  report("library", "journal.library.save", error);
+  if (saveFailureShown) return;
+  saveFailureShown = true;
+  useUi.getState().toast(t("library.saveFailed"), "error");
+}
+
+function libraryDocument(state: LibraryData): string {
+  return JSON.stringify({
+    version: libraryFileVersion,
     tracked: state.tracked,
     sources: state.sources,
-    progress: state.progress,
-    removed: state.removed,
+    progress: progressStored ? undefined : state.progress,
+    removed: freshTombstones(state.removed),
     preferences: state.preferences,
     dismissed: state.dismissed,
+    releaseWatches: state.releaseWatches,
+    announcedEpisodes: state.announcedEpisodes,
     onboardedAt: state.onboardedAt,
-  };
-  return backend.storeSet(storeName, JSON.stringify(data)).then(
-    () => {
-      saveFailureShown = false;
-    },
-    (error) => {
-      report("library", "journal.library.save", error);
-      if (saveFailureShown) return;
-      saveFailureShown = true;
-      useUi.getState().toast(t("library.saveFailed"), "error");
-    },
-  );
+  });
+}
+
+async function writeProgress(progress: Record<string, Progress>): Promise<void> {
+  if (savingBlocked) return;
+  await backend.storeSet(progressStoreName, JSON.stringify({ version: libraryFileVersion, progress }));
+  progressStored = true;
+}
+
+async function write(state: LibraryData): Promise<void> {
+  if (savingBlocked) return;
+  try {
+    if (!progressStored) await writeProgress(state.progress);
+    await backend.storeSet(storeName, libraryDocument(state));
+    saveFailureShown = false;
+    if (legacyPending) {
+      legacyPending = false;
+      forgetLegacy();
+    }
+  } catch (error) {
+    saveFailed(error);
+  }
 }
 
 function scheduleSave(state: LibraryData): void {
@@ -276,26 +343,77 @@ function scheduleSave(state: LibraryData): void {
   saveTimer = setTimeout(() => void flushLibrary(), saveDelayMs);
 }
 
-export function flushLibrary(): Promise<void> {
+function scheduleProgressSave(progress: Record<string, Progress>): void {
+  unsavedProgress = progress;
+  if (progressTimer !== undefined) return;
+  progressTimer = setTimeout(() => {
+    progressTimer = undefined;
+    void flushProgress();
+  }, progressSaveDelayMs);
+}
+
+function flushProgress(): Promise<void> {
+  clearTimeout(progressTimer);
+  progressTimer = undefined;
+  const pending = unsavedProgress;
+  unsavedProgress = null;
+  if (!pending) return Promise.resolve();
+  return writeProgress(pending).catch(saveFailed);
+}
+
+export async function flushLibrary(): Promise<void> {
   clearTimeout(saveTimer);
   const pending = unsaved;
   unsaved = null;
-  return pending ? write(pending) : Promise.resolve();
+  await flushProgress();
+  if (pending) await write(pending);
 }
+
+const libraryKeys: (keyof LibraryData)[] = [
+  "tracked",
+  "sources",
+  "removed",
+  "preferences",
+  "dismissed",
+  "releaseWatches",
+  "announcedEpisodes",
+  "onboardedAt",
+];
 
 export const useLibrary = create<LibraryState>((set, get) => {
   const update = (change: (state: LibraryData) => Partial<LibraryData>) => {
+    const before = get();
     set((state) => change(state));
-    scheduleSave(get());
+    const after = get();
+    if (after.progress !== before.progress) scheduleProgressSave(after.progress);
+    if (!progressStored && after.progress !== before.progress) scheduleSave(after);
+    if (libraryKeys.some((key) => after[key] !== before[key])) scheduleSave(after);
   };
 
-  const patchEntry = (title: TitleRef, change: Partial<TrackEntry>) =>
+  const patchEntry = (title: TitleRef, change: Partial<Pick<TrackEntry, TrackedField>>) =>
     update((state) => {
       const key = titleKey(title.type, title.id);
       const now = Date.now();
       const base: TrackEntry = state.tracked[key] ?? { ...title, status: null, rating: null, addedAt: now, updatedAt: now };
-      return { tracked: { ...state.tracked, [key]: { ...base, ...change, updatedAt: now } } };
+      const stamps = { ...base.fieldsUpdatedAt };
+      for (const field of Object.keys(change) as TrackedField[]) stamps[field] = now;
+      return { tracked: { ...state.tracked, [key]: { ...base, ...change, fieldsUpdatedAt: stamps, updatedAt: now } } };
     });
+
+  const replaceWith = (data: AccountData, keepSources: boolean) => {
+    const current = get();
+    return {
+      tracked: data.tracked,
+      progress: data.progress,
+      removed: freshTombstones(data.removed),
+      preferences: data.preferences ?? {},
+      dismissed: data.dismissed ?? {},
+      onboardedAt: data.onboardedAt,
+      sources: keepSources || !data.sources ? current.sources : data.sources,
+      releaseWatches: data.releaseWatches ?? current.releaseWatches,
+      announcedEpisodes: data.announcedEpisodes ?? current.announcedEpisodes,
+    };
+  };
 
   return {
     tracked: {},
@@ -304,20 +422,53 @@ export const useLibrary = create<LibraryState>((set, get) => {
     removed: {},
     preferences: {},
     dismissed: {},
+    releaseWatches: {},
+    announcedEpisodes: null,
     onboardedAt: undefined,
     loaded: false,
     firstRun: false,
+    unreadable: false,
 
     async load() {
       try {
-        const document = await backend.storeGet(storeName);
-        const data = migrate(document ? JSON.parse(document.text) : {});
+        const [document, progressDocument] = await Promise.all([backend.storeGet(storeName), backend.storeGet(progressStoreName)]);
+        const dropped = { count: 0 };
+        const raw: unknown = document ? JSON.parse(document.text) : {};
+        const data = migrate(raw, dropped);
+        if (progressDocument) {
+          const stored: unknown = JSON.parse(progressDocument.text);
+          const separate = validEntries<Progress>(isRecord(stored) ? stored.progress : undefined, isProgress, dropped);
+          data.progress = newestProgress(data.progress, separate);
+          progressStored = true;
+        }
+        if (isEmpty(data.releaseWatches)) {
+          const legacy = readLegacy<Record<string, ReleaseWatch>>(legacyReleaseWatchKey);
+          if (isRecord(legacy)) {
+            data.releaseWatches = validEntries<ReleaseWatch>(legacy, (item) => isRecord(item) && isTitle(item.title));
+            legacyPending = true;
+          }
+        }
+        if (data.announcedEpisodes === null) {
+          const legacy = readLegacy<unknown>(legacyAnnouncedKey);
+          if (Array.isArray(legacy)) {
+            data.announcedEpisodes = legacy.filter((item): item is string => typeof item === "string");
+            legacyPending = true;
+          }
+        }
         const firstRun = !data.onboardedAt && isEmpty(data.tracked) && isEmpty(data.progress);
-        set({ ...data, firstRun, loaded: true });
+        set({ ...data, firstRun, loaded: true, unreadable: false });
+        if (dropped.count > 0 && document) {
+          report("library", "journal.library.dropped", String(dropped.count));
+          await backend.storeSet(quarantineStoreName, document.text).catch(() => undefined);
+          useUi.getState().toast(t("library.dropped", { count: dropped.count }), "info");
+        }
         if (document?.recovered) useUi.getState().toast(t("library.recovered"), "info");
+        if (!progressStored || legacyPending || (isRecord(raw) && raw.version !== libraryFileVersion && document)) {
+          scheduleSave(get());
+        }
       } catch (error) {
         blockSaving(error);
-        set({ loaded: true });
+        set({ loaded: true, unreadable: true });
       }
     },
 
@@ -366,9 +517,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
         const sources = { ...state.sources };
         for (const { unitKey: key, source } of entries) {
           const existing = sources[key] ?? [];
-          const duplicate = existing.some(
-            (item) => item.infoHash === source.infoHash && item.fileIndex === source.fileIndex,
-          );
+          const duplicate = existing.some((item) => item.infoHash === source.infoHash && item.fileIndex === source.fileIndex);
           if (!duplicate) sources[key] = [...existing, source];
         }
         return { sources };
@@ -428,10 +577,17 @@ export const useLibrary = create<LibraryState>((set, get) => {
         const now = Date.now();
         for (const { unitKey: key, context } of entries) {
           if (watched) {
+            if (isWatched(progress[key])) continue;
             progress[key] = { ...context, position: 1, duration: 1, updatedAt: now };
           } else {
-            delete progress[key];
-            removed[progressRemovalKey(key)] = now;
+            const known = progress[key];
+            if (!known || !isWatched(known)) continue;
+            if (known.duration > 1) {
+              progress[key] = { ...known, position: 0, updatedAt: now };
+            } else {
+              delete progress[key];
+              removed[progressRemovalKey(key)] = now;
+            }
           }
         }
         const tracked = watched ? withAutoStatus(state.tracked, progress, entries[0].context.title) : state.tracked;
@@ -478,19 +634,77 @@ export const useLibrary = create<LibraryState>((set, get) => {
       });
     },
 
+    followRelease(watch) {
+      update((state) => ({ releaseWatches: { ...state.releaseWatches, [titleKey("tv", watch.title.id)]: watch } }));
+    },
+
+    forgetRelease(key) {
+      update((state) => {
+        if (!state.releaseWatches[key]) return {};
+        const releaseWatches = { ...state.releaseWatches };
+        delete releaseWatches[key];
+        return { releaseWatches };
+      });
+    },
+
+    rememberAnnounced(ids) {
+      update((state) => {
+        const known = state.announcedEpisodes ?? [];
+        const fresh = ids.filter((id) => !known.includes(id));
+        if (fresh.length === 0 && state.announcedEpisodes !== null) return {};
+        return { announcedEpisodes: [...known, ...fresh].slice(-announcedLimit) };
+      });
+    },
+
     exportAccountData() {
-      const { tracked, progress, removed, preferences, dismissed, onboardedAt } = get();
-      return { version: accountDataVersion, tracked, progress, removed, preferences, dismissed, onboardedAt };
+      const { tracked, progress, removed, preferences, dismissed, onboardedAt, sources, releaseWatches, announcedEpisodes } = get();
+      return {
+        version: accountDataVersion,
+        tracked,
+        progress,
+        removed: freshTombstones(removed),
+        preferences,
+        dismissed,
+        onboardedAt,
+        sources,
+        releaseWatches,
+        announcedEpisodes: announcedEpisodes ?? undefined,
+      };
     },
 
     mergeAccountData(other) {
-      savingBlocked = false;
+      if (savingBlocked) throw new Error("library_unreadable");
       update(() => {
         const merged = mergeAccountData(get().exportAccountData(), other);
-        const { tracked, progress, removed, preferences, onboardedAt } = merged;
-        return { tracked, progress, removed, preferences, dismissed: merged.dismissed ?? {}, onboardedAt };
+        return {
+          tracked: merged.tracked,
+          progress: merged.progress,
+          removed: merged.removed,
+          preferences: merged.preferences,
+          dismissed: merged.dismissed ?? {},
+          onboardedAt: merged.onboardedAt,
+          sources: merged.sources ?? get().sources,
+          releaseWatches: merged.releaseWatches ?? get().releaseWatches,
+          announcedEpisodes: merged.announcedEpisodes ?? get().announcedEpisodes,
+        };
       });
       if (get().onboardedAt) set({ firstRun: false });
+    },
+
+    async restoreAccountData(other, mode) {
+      if (mode === "merge") {
+        get().mergeAccountData(other);
+        await flushLibrary();
+        return;
+      }
+      if (!savingBlocked) {
+        await backend.storeSet(beforeRestoreStoreName, JSON.stringify(get().exportAccountData()));
+      }
+      savingBlocked = false;
+      progressStored = false;
+      update(() => replaceWith(other, false));
+      set({ unreadable: false, firstRun: false });
+      await flushLibrary();
     },
   };
 });

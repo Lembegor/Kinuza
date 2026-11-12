@@ -10,6 +10,7 @@ import {
   Eye,
   EyeOff,
   FolderOpen,
+  ListChecks,
   Play,
   Plus,
   Search,
@@ -20,6 +21,7 @@ import {
 import { CatalogError, PosterRow, typeLabel } from "../components/Cards";
 import { AnimeOrder } from "../components/AnimeOrder";
 import { FranchiseRow } from "../components/Franchise";
+import { Gallery } from "../components/Gallery";
 import { RatingStars, StatusMenu } from "../components/TrackControls";
 import { TrailerOverlay } from "../components/TrailerOverlay";
 import { backend, describeError, isDesktop } from "../lib/backend";
@@ -220,17 +222,32 @@ function Overview({ text }: { text: string }) {
   );
 }
 
-function EpisodeRow({ title, episode, target }: { title: TitleRef; episode: Episode; target: AddSourceTarget }) {
+function EpisodeRow({
+  title,
+  episode,
+  target,
+  onMarkUpTo,
+}: {
+  title: TitleRef;
+  episode: Episode;
+  target: AddSourceTarget;
+  onMarkUpTo: (() => void) | null;
+}) {
   const key = unitKey("tv", title.id, episode.season, episode.episode);
   const stored = useLibrary((state) => state.sources[key]);
   const progress = useLibrary((state) => state.progress[key]);
   const { setWatched } = useLibrary.getState();
   const play = useUi((state) => state.play);
   const openAddSource = useUi((state) => state.openAddSource);
+  const spoilerDescriptions = useSettings((state) => state.spoilerDescriptions);
+  const spoilerStills = useSettings((state) => state.spoilerStills);
+  const [revealed, setRevealed] = useState(false);
   const { t } = useT();
 
   const sources = useMemo(() => sortSources(stored ?? []), [stored]);
   const watched = isWatched(progress);
+  const guarded = !watched && !revealed && spoilerDescriptions !== "show";
+  const stillGuarded = !watched && !revealed && spoilerStills;
   const playable = sources.length > 0;
   const aired = episode.airDate !== "" && episode.airDate <= localDay(new Date());
   const findSource = () => openAddSource({ target: { ...target, defaultSeason: episode.season } });
@@ -255,7 +272,11 @@ function EpisodeRow({ title, episode, target }: { title: TitleRef; episode: Epis
         onClick={() => (playable ? start() : findSource())}
         aria-label={playable ? t("title.episode.watch") : t("title.episode.find")}
       >
-        {still ? <img src={still} alt="" loading="lazy" draggable={false} /> : <div className="episode__blank" />}
+        {still ? (
+          <img src={still} alt="" loading="lazy" draggable={false} className={stillGuarded ? "is-spoiler" : ""} />
+        ) : (
+          <div className="episode__blank" />
+        )}
         {playable && (
           <span className="episode__play">
             <Play size={20} fill="currentColor" />
@@ -289,11 +310,33 @@ function EpisodeRow({ title, episode, target }: { title: TitleRef; episode: Epis
         <div className="episode__meta">
           {[formatDate(episode.airDate), formatRuntime(episode.runtimeMinutes)].filter(Boolean).join(" · ")}
         </div>
-        {episode.overview && (
-          <p className={`episode__overview ${watched ? "" : "is-veiled"}`} tabIndex={watched ? undefined : 0} title={watched ? undefined : t("title.episode.spoiler")}>
-            {episode.overview}
-          </p>
-        )}
+        {episode.overview &&
+          (guarded && spoilerDescriptions === "hide" ? (
+            <button className="episode__reveal" onClick={() => setRevealed(true)}>
+              <Eye size={13} />
+              {t("title.episode.showDescription")}
+            </button>
+          ) : (
+            <p
+              className={`episode__overview ${guarded ? "is-veiled" : ""}`}
+              role={guarded ? "button" : undefined}
+              tabIndex={guarded ? 0 : undefined}
+              title={guarded ? t("title.episode.spoiler") : undefined}
+              onClick={guarded ? () => setRevealed(true) : undefined}
+              onKeyDown={
+                guarded
+                  ? (event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        setRevealed(true);
+                      }
+                    }
+                  : undefined
+              }
+            >
+              {episode.overview}
+            </p>
+          ))}
       </div>
       <div className="episode__side">
         <div className="episode__chips">
@@ -301,6 +344,11 @@ function EpisodeRow({ title, episode, target }: { title: TitleRef; episode: Epis
             <QualityChip key={source.id} source={source} onRemove={() => removeSourceWithUndo(key, source)} />
           ))}
         </div>
+        {onMarkUpTo && !watched && (
+          <button className="icon-button" aria-label={t("title.episode.markUpTo")} title={t("title.episode.markUpTo")} onClick={onMarkUpTo}>
+            <ListChecks size={16} />
+          </button>
+        )}
         <button
           className="icon-button"
           aria-label={watched ? t("title.episode.markUnwatched") : t("title.episode.markWatched")}
@@ -349,6 +397,27 @@ function SeriesEpisodes({
   ]
     .filter(Boolean)
     .join(" · ");
+
+  const markUpTo = async (until: Episode) => {
+    const today = localDay(new Date());
+    const earlierSeasons = details.seasons.filter((item) => item.seasonNumber !== specialsSeason && item.seasonNumber < until.season);
+    const earlier = await Promise.all(earlierSeasons.map((item) => tmdb.season(details.id, item.seasonNumber).catch(() => [] as Episode[])));
+    const chosen = [...earlier.flat(), ...list.filter((episode) => episode.episode <= until.episode)].filter(
+      (episode) => episode.airDate !== "" && episode.airDate <= today,
+    );
+    const known = useLibrary.getState().progress;
+    const fresh = chosen.filter((episode) => !isWatched(known[keyOf(episode)]));
+    if (fresh.length === 0) return;
+    const entries = fresh.map((episode) => ({
+      unitKey: keyOf(episode),
+      context: { title, season: episode.season, episode: episode.episode, episodeName: episode.name },
+    }));
+    useLibrary.getState().setManyWatched(entries, true);
+    useUi.getState().toast(t("title.episode.markedUpTo", { count: fresh.length }), "success", {
+      label: t("feed.dismissed.undo"),
+      run: () => useLibrary.getState().setManyWatched(entries, false),
+    });
+  };
 
   const toggleSeasonWatched = () =>
     useLibrary.getState().setManyWatched(
@@ -403,7 +472,13 @@ function SeriesEpisodes({
       ) : (
         <div className="episode-list">
           {(episodes.data ?? []).map((episode) => (
-            <EpisodeRow key={episode.episode} title={title} episode={episode} target={target} />
+            <EpisodeRow
+              key={episode.episode}
+              title={title}
+              episode={episode}
+              target={target}
+              onMarkUpTo={season !== specialsSeason && (episode.episode > 1 || season > 1) ? () => void markUpTo(episode) : null}
+            />
           ))}
         </div>
       )}
@@ -652,6 +727,8 @@ export default function TitlePage() {
             </div>
           </section>
         )}
+
+        <Gallery type={type} id={id} />
 
         {data.collection && <FranchiseRow collection={data.collection} currentId={id} />}
 

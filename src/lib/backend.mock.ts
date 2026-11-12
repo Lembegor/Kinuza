@@ -111,6 +111,7 @@ export async function mockInvoke(command: string, args: Record<string, unknown> 
         defaultDownloadDir: "C:\\Users\\you\\Videos\\Kinuza",
         externalPlayer: "VLC",
         sessionReset: false,
+        listenPort: 51413,
       } satisfies AppInfo;
     case "torrent_inspect":
       await new Promise((resolve) => setTimeout(resolve, 900));

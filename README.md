@@ -1,36 +1,36 @@
 # Kinuza
 
-Приложение для Windows и Linux, чтобы смотреть фильмы, сериалы и аниме: каталог с постерами и описаниями, свой список просмотренного и плеер, который показывает видео из торрента сразу — онлайн или пока оно скачивается.
+A Windows and Linux app for watching films, series and anime: a catalog with posters and descriptions, your own watch list, and a player that plays video from a torrent right away — streaming or while it downloads.
 
-- Каталог, поиск и рекомендации по вашим оценкам.
-- Поиск раздач прямо в приложении, либо своя magnet-ссылка или `.torrent`-файл.
-- Просмотр онлайн без скачивания или с сохранением на диск.
-- Плеер с выбором озвучки и субтитров, продолжением с места остановки и следующей серией.
-- Календарь выхода серий и уведомления о новых.
-- Интерфейс на русском, украинском и английском.
+- Catalog, search and recommendations based on your ratings.
+- Find releases right in the app, or use your own magnet link or `.torrent` file.
+- Watch online without downloading, or save to disk.
+- A player with audio track and subtitle choice, resume where you stopped, and the next episode.
+- An episode release calendar and notifications about new ones.
+- Interface in Russian, Ukrainian and English.
 
-## Установка
+## Installation
 
-1. Откройте [последний релиз](https://github.com/Lembegor/Kinuza/releases/latest) и скачайте файл `Kinuza_…_x64-setup.exe`.
-2. Запустите его. Права администратора не нужны.
+1. Open the [latest release](https://github.com/Lembegor/Kinuza/releases/latest) and download `Kinuza_…_x64-setup.exe`.
+2. Run it. No administrator rights are needed.
 
-Windows при этом покажет два окна, это ожидаемо:
+Windows will show two windows along the way, this is expected:
 
-- **SmartScreen** («Система Windows защитила ваш компьютер») — нажмите «Подробнее» → «Выполнить в любом случае».
-- **Брандмауэр** — разрешите доступ к сети, он нужен для загрузки торрентов.
+- **SmartScreen** ("Windows protected your PC") — click "More info" → "Run anyway".
+- **Firewall** — allow network access, it is needed to download torrents.
 
-Обновлять вручную ничего не нужно: когда выходит новая версия, приложение само предлагает «Обновить и перезапустить».
+There is nothing to update by hand: when a new version comes out, the app offers "Update and restart" by itself.
 
 ### Linux
 
-В том же релизе лежат три файла, выберите один:
+The same release has three files, pick one:
 
-- `Kinuza_…_amd64.deb` — для Ubuntu, Debian, Mint и похожих: `sudo apt install ./Kinuza_…_amd64.deb`.
-- `Kinuza-…x86_64.rpm` — для Fedora и openSUSE: `sudo dnf install ./Kinuza-…x86_64.rpm`.
-- `Kinuza_…_amd64.AppImage` — для любого дистрибутива без установки: сделайте файл исполняемым (`chmod +x`) и запустите.
+- `Kinuza_…_amd64.deb` — for Ubuntu, Debian, Mint and similar: `sudo apt install ./Kinuza_…_amd64.deb`.
+- `Kinuza-…x86_64.rpm` — for Fedora and openSUSE: `sudo dnf install ./Kinuza-…x86_64.rpm`.
+- `Kinuza_…_amd64.AppImage` — for any distribution without installing: make the file executable (`chmod +x`) and run it.
 
-На Linux видео играет встроенный плеер; если формат ему не подходит, Kinuza перекодирует видео через FFmpeg (скачивается из приложения одной кнопкой) или откроет его во внешнем mpv или VLC. Значок в трее в GNOME виден только с расширением AppIndicator, поэтому сворачивание в трей там по умолчанию выключено.
+On Linux, video plays in the built-in player; if it can't handle a format, Kinuza converts the video with FFmpeg (downloaded from the app with one click) or opens it in an external mpv or VLC. In GNOME the tray icon shows only with the AppIndicator extension, so minimizing to the tray is off by default there.
 
 ---
 
-Постеры, описания и списки серий предоставлены TMDB. This product uses the TMDB API but is not endorsed or certified by TMDB.
+Posters, descriptions and episode lists are provided by TMDB. This product uses the TMDB API but is not endorsed or certified by TMDB.

@@ -7,11 +7,13 @@ mod commands;
 mod engine;
 mod external_player;
 mod ffmpeg;
+mod children;
 mod files;
 mod host;
 mod imdb;
 mod launch;
 mod logging;
+mod media_keys;
 mod mpv;
 mod online_subtitles;
 mod rutracker;
@@ -59,6 +61,7 @@ pub fn run() {
         .manage(ffmpeg::FfmpegState::default())
         .manage(mpv::MpvState::default())
         .manage(files::FileGrants::default())
+        .manage(media_keys::MediaKeys::default())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
@@ -110,6 +113,8 @@ pub fn run() {
             commands::open_external,
             files::read_file_bytes,
             commands::take_launch_request,
+            commands::torrent_file_map,
+            online_subtitles::subtitle_file_hash,
             commands::associations_status,
             commands::associations_set,
             commands::open_default_apps_settings,
@@ -129,6 +134,13 @@ pub fn run() {
             mpv::mpv_warm,
             mpv::mpv_quit,
             mpv::mpv_add_subtitle_text,
+            mpv::mpv_audio_filter,
+            mpv::mpv_stats,
+            mpv::mpv_screenshot,
+            files::save_screenshot,
+            media_keys::media_session_start,
+            media_keys::media_session_state,
+            media_keys::media_session_stop,
             rutracker::rutracker_login_window,
             rutracker::rutracker_search,
             rutracker::rutracker_magnet,
@@ -141,6 +153,7 @@ pub fn run() {
                 tauri::async_runtime::block_on(mpv::shutdown(&app.state::<mpv::MpvState>()));
                 if let Some(state) = app.try_state::<AppState>() {
                     mpv::clear_subtitle_files(&state.data_dir);
+                    tauri::async_runtime::block_on(state.engine.stop());
                 }
             }
         });

@@ -4,6 +4,7 @@ import { useT } from "../lib/i18n";
 import { isTopDialog, useDialogFocus } from "../lib/useDialogFocus";
 import { useUi, type Toast } from "../state/ui";
 import { useUpdater } from "../state/updater";
+import { HotkeyList } from "./HotkeyList";
 
 const toastIcons = { info: Info, success: CircleCheck, error: CircleAlert };
 const toastLifetimeMs = 5000;
@@ -119,6 +120,17 @@ export function ConfirmDialog() {
           <button className="button" data-autofocus onClick={close}>
             {t("common.cancel")}
           </button>
+          {request.secondaryLabel && request.onSecondary && (
+            <button
+              className="button button--primary"
+              onClick={() => {
+                request.onSecondary?.();
+                close();
+              }}
+            >
+              {request.secondaryLabel}
+            </button>
+          )}
           <button
             className={`button ${request.danger ? "button--danger" : "button--primary"}`}
             onClick={() => {
@@ -167,6 +179,63 @@ export function UpdateNotice() {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+export function AppHotkeys() {
+  const { t } = useT();
+  const [open, setOpen] = useState(false);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDialogFocus(dialogRef, open);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const typing = event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement;
+      if (open && event.key === "Escape" && isTopDialog(dialogRef)) {
+        event.stopImmediatePropagation();
+        setOpen(false);
+        return;
+      }
+      const ui = useUi.getState();
+      if (typing || ui.player || ui.addSource || ui.confirm) return;
+      if (event.shiftKey && event.code === "Slash" && !event.ctrlKey && !event.altKey) {
+        event.preventDefault();
+        setOpen((value) => !value);
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [open]);
+
+  if (!open) return null;
+  return (
+    <div className="backdrop backdrop--top" onMouseDown={() => setOpen(false)}>
+      <div
+        ref={dialogRef}
+        className="dialog dialog--hotkeys"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="hotkeys-title"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="dialog__head">
+          <h2 id="hotkeys-title">{t("hotkeys.app.title")}</h2>
+          <button className="icon-button" data-autofocus aria-label={t("common.close")} onClick={() => setOpen(false)}>
+            <X size={18} />
+          </button>
+        </div>
+        <div className="dialog--hotkeys__columns">
+          <section>
+            <h3>{t("hotkeys.app.section")}</h3>
+            <HotkeyList section="app" />
+          </section>
+          <section>
+            <h3>{t("hotkeys.player.section")}</h3>
+            <HotkeyList section="player" />
+          </section>
+        </div>
+      </div>
     </div>
   );
 }

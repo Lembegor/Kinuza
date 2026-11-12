@@ -66,7 +66,7 @@ export function useConvertedAudio(
     const timer = setInterval(() => {
       const video = videoRef.current;
       if (!video || !audio.src) return;
-      audio.volume = levels.current.volume;
+      audio.volume = Math.min(1, levels.current.volume);
       audio.muted = levels.current.muted;
       if (audio.playbackRate !== video.playbackRate) audio.playbackRate = video.playbackRate;
 

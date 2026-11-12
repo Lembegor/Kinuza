@@ -29,6 +29,7 @@ pub struct AppInfo {
     default_download_dir: String,
     external_player: Option<String>,
     session_reset: bool,
+    listen_port: u16,
 }
 
 #[tauri::command]
@@ -39,6 +40,7 @@ pub fn app_info(app: tauri::AppHandle, state: State<'_, AppState>) -> AppInfo {
         default_download_dir: state.default_download_dir.to_string_lossy().into_owned(),
         external_player: external_player::find().map(|player| player.name.to_owned()),
         session_reset: state.engine.session_was_reset(),
+        listen_port: state.engine.listen_port(),
     }
 }
 
@@ -261,6 +263,11 @@ pub async fn open_external(
     };
     external_player::launch(&player, &target).map_err(to_message)?;
     Ok(player.name.to_owned())
+}
+
+#[tauri::command]
+pub fn torrent_file_map(state: State<'_, AppState>, info_hash: String, file_index: usize, buckets: usize) -> CommandResult<Vec<u8>> {
+    state.engine.file_pieces(&info_hash, file_index).map(|pieces| pieces.buckets(buckets)).map_err(to_message)
 }
 
 #[tauri::command]

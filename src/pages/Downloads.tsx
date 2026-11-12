@@ -31,7 +31,21 @@ function statusText(torrent: TorrentView): string {
   return eta ? t("downloads.status.remaining", { time: eta }) : t("downloads.status.searching");
 }
 
-function useTorrentTitles(): Record<string, { path: string; label: string }> {
+interface TorrentTitle {
+  path: string;
+  label: string;
+  series: string | null;
+  seasons: number[];
+}
+
+function seasonsLabel(seasons: number[]): string {
+  if (seasons.length === 0) return "";
+  const sorted = [...seasons].sort((a, b) => a - b);
+  if (sorted.length === 1) return t("common.season", { season: sorted[0] });
+  return t("downloads.group.seasons", { from: sorted[0], to: sorted[sorted.length - 1] });
+}
+
+function useTorrentTitles(): Record<string, TorrentTitle> {
   const sources = useLibrary((state) => state.sources);
   const tracked = useLibrary((state) => state.tracked);
   const progress = useLibrary((state) => state.progress);
@@ -42,14 +56,18 @@ function useTorrentTitles(): Record<string, { path: string; label: string }> {
     for (const [key, title] of Object.entries(tracked)) names.set(key, title.title);
     for (const item of Object.values<Progress>(progress)) names.set(`${item.title.type}:${item.title.id}`, item.title.title);
 
-    const result: Record<string, { path: string; label: string }> = {};
+    const result: Record<string, TorrentTitle> = {};
     for (const [unit, list] of Object.entries<Source[]>(sources)) {
-      const [type, id] = unit.split(":");
+      const [type, id, season] = unit.split(":");
       for (const source of list) {
-        result[source.infoHash] ??= {
+        const known = (result[source.infoHash] ??= {
           path: `/title/${type}/${id}`,
           label: names.get(`${type}:${id}`) ?? t("common.openPage"),
-        };
+          series: type === "tv" ? `tv:${id}` : null,
+          seasons: [],
+        });
+        const number = Number(season);
+        if (type === "tv" && Number.isFinite(number) && number > 0 && !known.seasons.includes(number)) known.seasons.push(number);
       }
     }
     return result;
@@ -71,7 +89,33 @@ async function openFolder(path: string): Promise<void> {
   await revealItemInDir(path).catch((error) => useUi.getState().toast(describeError(error), "error"));
 }
 
-function TorrentCard({ torrent, link }: { torrent: TorrentView; link?: { path: string; label: string } }) {
+function TorrentGroup({ title, torrents, titles }: { title: TorrentTitle; torrents: TorrentView[]; titles: Record<string, TorrentTitle> }) {
+  const { tn } = useT();
+  const done = torrents.filter((torrent) => torrent.finished).length;
+  const speed = torrents.reduce((sum, torrent) => sum + torrent.downloadSpeed, 0);
+  const ordered = [...torrents].sort((a, b) => (Math.min(...(titles[a.infoHash]?.seasons ?? [0])) || 0) - (Math.min(...(titles[b.infoHash]?.seasons ?? [0])) || 0));
+  return (
+    <details className="torrent-group" open>
+      <summary>
+        <Link to={title.path} className="torrent-group__title" onClick={(event) => event.stopPropagation()}>
+          {title.label}
+        </Link>
+        <span className="torrent-group__meta">
+          {tn("downloads.group.count", torrents.length)}
+          {done > 0 && done < torrents.length ? ` · ${t("downloads.group.done", { count: done })}` : ""}
+          {speed > 0 ? ` · ↓ ${formatSpeed(speed)}` : ""}
+        </span>
+      </summary>
+      <div className="torrent-list">
+        {ordered.map((torrent) => (
+          <TorrentCard key={torrent.infoHash} torrent={torrent} link={undefined} badge={seasonsLabel(titles[torrent.infoHash]?.seasons ?? [])} />
+        ))}
+      </div>
+    </details>
+  );
+}
+
+function TorrentCard({ torrent, link, badge }: { torrent: TorrentView; link?: { path: string; label: string }; badge?: string }) {
   const askConfirm = useUi((state) => state.askConfirm);
   const removeFromLibrary = useLibrary((state) => state.removeTorrent);
   const { t } = useT();
@@ -86,8 +130,7 @@ function TorrentCard({ torrent, link }: { torrent: TorrentView; link?: { path: s
       optionLabel: t("downloads.remove.files"),
       danger: true,
       onConfirm: (deleteFiles) => {
-        removeFromLibrary(torrent.infoHash);
-        void run(backend.remove(torrent.infoHash, deleteFiles));
+        void run(backend.remove(torrent.infoHash, deleteFiles).then(() => removeFromLibrary(torrent.infoHash)));
       },
     });
 
@@ -101,6 +144,7 @@ function TorrentCard({ torrent, link }: { torrent: TorrentView; link?: { path: s
               {link.label}
             </Link>
           )}
+          {badge && <span className="torrent__badge">{badge}</span>}
           <span>{statusText(torrent)}</span>
           <span>
             {isOnlineOnly(torrent)
@@ -167,6 +211,23 @@ export default function Downloads() {
     () => [...torrents].sort((a, b) => Number(a.finished) - Number(b.finished) || a.name.localeCompare(b.name)),
     [torrents],
   );
+  const { groups, rest } = useMemo(() => {
+    const bySeries = new Map<string, TorrentView[]>();
+    const loose: TorrentView[] = [];
+    for (const torrent of sorted) {
+      const series = titles[torrent.infoHash]?.series;
+      if (series) bySeries.set(series, [...(bySeries.get(series) ?? []), torrent]);
+      else loose.push(torrent);
+    }
+    const grouped: { key: string; title: TorrentTitle; torrents: TorrentView[] }[] = [];
+    for (const [key, list] of bySeries) {
+      if (list.length === 1) loose.push(list[0]);
+      else grouped.push({ key, title: titles[list[0].infoHash], torrents: list });
+    }
+    grouped.sort((a, b) => a.title.label.localeCompare(b.title.label));
+    loose.sort((a, b) => Number(a.finished) - Number(b.finished) || a.name.localeCompare(b.name));
+    return { groups: grouped, rest: loose };
+  }, [sorted, titles]);
 
   return (
     <div className="page">
@@ -189,10 +250,22 @@ export default function Downloads() {
           text={t("downloads.empty.text")}
         />
       ) : (
-        <div className="torrent-list">
-          {sorted.map((torrent) => (
-            <TorrentCard key={torrent.infoHash} torrent={torrent} link={titles[torrent.infoHash]} />
+        <div className="torrent-groups">
+          {groups.map((group) => (
+            <TorrentGroup key={group.key} title={group.title} torrents={group.torrents} titles={titles} />
           ))}
+          {rest.length > 0 && (
+            <div className="torrent-list">
+              {rest.map((torrent) => (
+                <TorrentCard
+                  key={torrent.infoHash}
+                  torrent={torrent}
+                  link={titles[torrent.infoHash]}
+                  badge={seasonsLabel(titles[torrent.infoHash]?.seasons ?? [])}
+                />
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>

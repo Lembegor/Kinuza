@@ -1,3 +1,4 @@
+import type { AudioMode } from "../state/settings";
 import { isWindows } from "./platform";
 
 export interface MpvStatus {
@@ -48,6 +49,9 @@ export const mpv = {
   command: (...command: unknown[]) => invoke<void>("mpv_command", { command }),
   set: (name: string, value: unknown) => invoke<void>("mpv_set", { name, value }),
   addSubtitleText: (text: string, title: string) => invoke<void>("mpv_add_subtitle_text", { text, title }),
+  audioFilter: (mode: AudioMode) => invoke<void>("mpv_audio_filter", { mode }),
+  stats: () => invoke<Record<string, unknown>>("mpv_stats"),
+  screenshot: (label: string) => invoke<string>("mpv_screenshot", { label }),
   async onEvent(handler: (event: MpvEvent) => void): Promise<() => void> {
     const { listen } = await import("@tauri-apps/api/event");
     return listen<MpvEvent>("mpv-event", (message) => handler(message.payload));

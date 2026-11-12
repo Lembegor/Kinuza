@@ -1,4 +1,3 @@
-import { create } from "zustand";
 import { backend } from "../lib/backend";
 import { t, tn } from "../lib/i18n";
 import { report } from "../lib/journal";
@@ -6,46 +5,20 @@ import { episodeFiles, planReleaseUpdate, toSource } from "../lib/releaseUpdate"
 import { rutracker, rutrackerErrors } from "../lib/rutracker";
 import { tmdb } from "../lib/tmdb";
 import { newEpisodes } from "./calendar";
-import { titleKey, unitKey, useLibrary, type Source, type TitleRef } from "./library";
+import { unitKey, useLibrary, type ReleaseWatch, type Source, type TitleRef } from "./library";
 import { useSettings } from "./settings";
 import { useTorrents } from "./torrents";
 import { useUi } from "./ui";
 
-const storageKey = "kinuza.releaseWatch";
+export type { ReleaseWatch };
 
-export interface ReleaseWatch {
-  title: TitleRef;
-  topicId: string;
-  infoHash: string;
-  defaultSeason: number;
-}
-
-interface ReleaseWatchState {
-  watches: Record<string, ReleaseWatch>;
-  follow: (watch: ReleaseWatch) => void;
-  forget: (key: string) => void;
-}
-
-function readStored(): Record<string, ReleaseWatch> {
-  try {
-    const stored: unknown = JSON.parse(localStorage.getItem(storageKey) ?? "{}");
-    return stored && typeof stored === "object" ? (stored as Record<string, ReleaseWatch>) : {};
-  } catch {
-    return {};
-  }
-}
-
-export const useReleaseWatch = create<ReleaseWatchState>((set, get) => {
-  const save = (watches: Record<string, ReleaseWatch>) => {
-    set({ watches });
-    localStorage.setItem(storageKey, JSON.stringify(watches));
-  };
-  return {
-    watches: readStored(),
-    follow: (watch) => save({ ...get().watches, [titleKey("tv", watch.title.id)]: watch }),
-    forget: (key) => save(Object.fromEntries(Object.entries(get().watches).filter(([existing]) => existing !== key))),
-  };
-});
+export const useReleaseWatch = {
+  getState: () => ({
+    watches: useLibrary.getState().releaseWatches,
+    follow: (watch: ReleaseWatch) => useLibrary.getState().followRelease(watch),
+    forget: (key: string) => useLibrary.getState().forgetRelease(key),
+  }),
+};
 
 export interface AddedEpisodes {
   title: TitleRef;

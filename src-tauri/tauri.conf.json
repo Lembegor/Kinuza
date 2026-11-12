@@ -31,7 +31,7 @@
         "default-src": "'self'",
         "script-src": "'self'",
         "style-src": "'self' 'unsafe-inline'",
-        "img-src": "'self' data: blob: https:",
+        "img-src": "'self' data: blob: https: http://127.0.0.1:*",
         "media-src": "'self' blob: http://127.0.0.1:*",
         "connect-src": "'self' ipc: http://ipc.localhost http://127.0.0.1:* https://api.themoviedb.org https://graphql.anilist.co",
         "frame-src": "https://www.youtube-nocookie.com https://www.youtube.com",

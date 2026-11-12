@@ -4,6 +4,7 @@ import { SearchX, UserRound } from "lucide-react";
 import { CatalogError, EmptyState, PosterGrid } from "../components/Cards";
 import { useT, type MessageKey } from "../lib/i18n";
 import { imageUrl, tmdb, type FoundPerson, type MediaItem } from "../lib/tmdb";
+import { isWatched, titleKey, unitKey, useLibrary } from "../state/library";
 import { useAsync } from "../lib/useAsync";
 
 type Filter = "all" | "movie" | "tv" | "anime" | "people";
@@ -60,6 +61,9 @@ export default function Search() {
   const query = (params.get("q") ?? "").trim();
   const filter = readFilter(params.get("type"));
   const pages = readPages(params.get("pages"));
+  const hideWatched = params.get("unwatched") === "1";
+  const tracked = useLibrary((state) => state.tracked);
+  const progress = useLibrary((state) => state.progress);
 
   const results = useAsync(
     async () => {
@@ -81,17 +85,26 @@ export default function Search() {
     `search:${query}:${pages}`,
   );
 
-  const change = (next: { type?: Filter; pages?: number }) => {
+  const change = (next: { type?: Filter; pages?: number; hideWatched?: boolean }) => {
     const search = new URLSearchParams();
     if (query) search.set("q", query);
     const type = next.type ?? filter;
     if (type !== "all") search.set("type", type);
+    if (next.hideWatched ?? hideWatched) search.set("unwatched", "1");
     const count = next.pages ?? (next.type !== undefined ? 1 : pages);
     if (count > 1) search.set("pages", String(count));
     setParams(search, { replace: true });
   };
 
-  const visible = useMemo(() => (filter === "people" ? [] : (results.data?.items ?? []).filter((item) => matches(item, filter))), [results.data, filter]);
+  const visible = useMemo(() => {
+    if (filter === "people") return [];
+    const seen = (item: MediaItem) => {
+      const entry = tracked[titleKey(item.type, item.id)];
+      if (entry?.status === "completed") return true;
+      return item.type === "movie" && isWatched(progress[unitKey("movie", item.id)]);
+    };
+    return (results.data?.items ?? []).filter((item) => matches(item, filter) && !(hideWatched && seen(item)));
+  }, [results.data, filter, hideWatched, tracked, progress]);
   const people = filter === "people" ? (results.data?.people ?? []) : filter === "all" ? (results.data?.people ?? []).slice(0, peopleInAll) : [];
   const nothing = visible.length === 0 && people.length === 0;
 
@@ -105,6 +118,11 @@ export default function Search() {
               {t(item.label)}
             </button>
           ))}
+          {filter !== "people" && (
+            <button className={`chip ${hideWatched ? "is-active" : ""}`} aria-pressed={hideWatched} onClick={() => change({ hideWatched: !hideWatched })}>
+              {t("search.filter.hideWatched")}
+            </button>
+          )}
         </div>
       </div>
 
