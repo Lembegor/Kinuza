@@ -7,6 +7,7 @@ mod commands;
 mod engine;
 mod external_player;
 mod ffmpeg;
+mod fingerprint;
 mod children;
 mod files;
 mod host;
@@ -16,6 +17,7 @@ mod logging;
 mod media_keys;
 mod mpv;
 mod online_subtitles;
+mod report;
 mod rutracker;
 mod server;
 mod store;
@@ -37,6 +39,7 @@ pub struct AppState {
     pub data_dir: PathBuf,
     pub default_download_dir: PathBuf,
     pub pending_launch: Mutex<Option<launch::LaunchRequest>>,
+    pub updated_from: Option<String>,
 }
 
 const DOWNLOAD_FOLDER_NAME: &str = "Kinuza";
@@ -60,6 +63,7 @@ pub fn run() {
         .manage(imdb::ImdbState::default())
         .manage(ffmpeg::FfmpegState::default())
         .manage(mpv::MpvState::default())
+        .manage(fingerprint::PrintState::default())
         .manage(files::FileGrants::default())
         .manage(media_keys::MediaKeys::default())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
@@ -128,6 +132,9 @@ pub fn run() {
             ffmpeg::ffmpeg_install,
             ffmpeg::media_tracks,
             mpv::mpv_status,
+            fingerprint::audio_print,
+            fingerprint::audio_print_cancel,
+            fingerprint::audio_segments,
             mpv::mpv_install,
             mpv::mpv_command,
             mpv::mpv_set,
@@ -138,6 +145,8 @@ pub fn run() {
             mpv::mpv_stats,
             mpv::mpv_screenshot,
             files::save_screenshot,
+            report::report_build,
+            report::report_send,
             media_keys::media_session_start,
             media_keys::media_session_state,
             media_keys::media_session_stop,
@@ -199,7 +208,7 @@ async fn build_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
         .join(DOWNLOAD_FOLDER_NAME);
 
     logging::start(&data_dir, &app.package_info().version.to_string());
-    store::snapshot_on_version_change(&data_dir, &app.package_info().version.to_string());
+    let updated_from = store::snapshot_on_version_change(&data_dir, &app.package_info().version.to_string());
 
     let engine = Engine::start(
         default_download_dir.clone(),
@@ -215,5 +224,6 @@ async fn build_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
         data_dir,
         default_download_dir,
         pending_launch: Mutex::new(launch::from_args(std::env::args().skip(1))),
+        updated_from,
     })
 }

@@ -30,6 +30,7 @@ pub struct AppInfo {
     external_player: Option<String>,
     session_reset: bool,
     listen_port: u16,
+    updated_from: Option<String>,
 }
 
 #[tauri::command]
@@ -41,6 +42,7 @@ pub fn app_info(app: tauri::AppHandle, state: State<'_, AppState>) -> AppInfo {
         external_player: external_player::find().map(|player| player.name.to_owned()),
         session_reset: state.engine.session_was_reset(),
         listen_port: state.engine.listen_port(),
+        updated_from: state.updated_from.clone(),
     }
 }
 

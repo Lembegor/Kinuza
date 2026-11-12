@@ -43,6 +43,7 @@ export interface AppInfo {
   externalPlayer: string | null;
   sessionReset: boolean;
   listenPort: number;
+  updatedFrom: string | null;
 }
 
 export interface LaunchRequest {
@@ -152,6 +153,14 @@ export interface OnlineSubtitle {
   hashMatch: boolean;
 }
 
+export interface ReportRequest {
+  description: string;
+  sender: string;
+  journal: string;
+  settings: string;
+  includeLog: boolean;
+}
+
 export interface OnlineSubtitleQuery {
   tmdbId: number;
   season: number | null;
@@ -198,6 +207,16 @@ export interface AudioTrackInfo {
   isOriginal: boolean;
 }
 
+export interface PrintTarget {
+  infoHash: string;
+  fileIndex: number;
+}
+
+export interface SoundSegments {
+  intro: { start: number; end: number } | null;
+  credits: { start: number; end: number; sceneAfter: boolean } | null;
+}
+
 export const backend = {
   ffmpegStatus: () => call<FfmpegStatus>("ffmpeg_status"),
   ffmpegInstall: () => call<void>("ffmpeg_install"),
@@ -224,7 +243,13 @@ export const backend = {
   readFileBytes: (path: string) => call<ArrayBuffer>("read_file_bytes", { path }),
   findOnlineSubtitles: (apiKey: string, query: OnlineSubtitleQuery) =>
     call<OnlineSubtitle[]>("online_subtitles_search", { apiKey, query }),
+  buildReport: (request: ReportRequest) => call<string>("report_build", { request }),
+  sendReport: (token: string, chatId: string, request: ReportRequest) => call<void>("report_send", { token, chatId, request }),
   subtitleFileHash: (infoHash: string, fileIndex: number) => call<string>("subtitle_file_hash", { infoHash, fileIndex }),
+  audioPrint: (target: PrintTarget, part: "head" | "tail", seconds: number) => call<boolean>("audio_print", { target, part, seconds }),
+  audioPrintCancel: () => call<void>("audio_print_cancel"),
+  audioSegments: (target: PrintTarget, duration: number, neighbours: PrintTarget[]) =>
+    call<SoundSegments>("audio_segments", { target, duration, neighbours }),
   torrentFileMap: (infoHash: string, fileIndex: number, buckets: number) =>
     call<number[]>("torrent_file_map", { infoHash, fileIndex, buckets }),
   async saveScreenshot(png: Uint8Array, label: string): Promise<string> {
@@ -282,6 +307,9 @@ const errorMessages: Record<string, MessageKey> = {
   library_unreadable: "errors.libraryUnreadable",
   disk_full: "errors.diskFull",
   tracker_busy: "errors.trackerBusy",
+  report_failed: "report.failed",
+  report_unconfigured: "report.unconfigured",
+  report_empty: "report.empty",
 };
 
 export function describeError(error: unknown): string {

@@ -12,7 +12,7 @@ use crate::{
     vectored_traits::AsyncReadVectoredIntoCompat,
 };
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum ConnectionKind {
     #[serde(rename = "tcp")]
     Tcp,
@@ -207,6 +207,26 @@ impl StreamConnector {
 
     pub fn stats(&self) -> &ConnectStatsAtomic {
         &self.stats
+    }
+
+    pub async fn connect_utp(
+        &self,
+        addr: SocketAddr,
+    ) -> Result<(ConnectionKind, BoxAsyncReadVectored, BoxAsyncWrite)> {
+        let sock = match (self.proxy_config.as_ref(), self.utp_socket.as_ref()) {
+            (None, Some(sock)) => sock,
+            _ => return Err(Error::ConnectDisabled),
+        };
+        if addr.port() == 0 || (self.ipv4_only && addr.is_ipv6()) {
+            return Err(Error::ConnectDisabled);
+        }
+        let stream = self
+            .with_stat(ConnectionKind::Utp, addr.is_ipv6(), sock.connect(addr))
+            .await
+            .map_err(Error::UtpConnect)?;
+        debug!(?addr, "connected over uTP to a hole punched peer");
+        let (r, w) = stream.split();
+        Ok((ConnectionKind::Utp, Box::new(r), Box::new(w)))
     }
 
     pub async fn connect(

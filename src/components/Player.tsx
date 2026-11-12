@@ -38,6 +38,8 @@ import {
   type AudioTrackInfo,
   type Chapter,
   type OnlineSubtitle,
+  type PrintTarget,
+  type SoundSegments,
   type SubtitleTrackInfo,
   type TorrentFile,
 } from "../lib/backend";
@@ -59,6 +61,7 @@ import {
 import { imageUrl, tmdb } from "../lib/tmdb";
 import { useAsync } from "../lib/useAsync";
 import { sortSources } from "../pages/Title";
+import { useSoundSegments } from "./useSoundSegments";
 import { isWatched, titleKey, unitKey, useLibrary, type Source } from "../state/library";
 import { useSettings, type SubtitleBackground, type SubtitleColor, type SubtitleFont, type VideoQuality } from "../state/settings";
 import { fileProgress, useTorrents } from "../state/torrents";
@@ -130,8 +133,37 @@ const skippableChapters: { kind: "intro" | "credits" | "recap"; pattern: RegExp 
   { kind: "recap", pattern: /\b(recap|previously)\b|ранее|в предыдущ/i },
 ];
 
-function skipKind(chapter: Chapter): "intro" | "credits" | "recap" | null {
+type SkipKind = "intro" | "credits" | "recap";
+
+interface SkipSegment {
+  kind: SkipKind;
+  start: number;
+  end: number;
+  sceneAfter: boolean;
+}
+
+const sceneAfterShortestSeconds = 15;
+const soundNeighbourOffsets = [-1, 1, -2, 2];
+const soundNeighboursUsed = 3;
+
+function skipKind(chapter: Chapter): SkipKind | null {
   return skippableChapters.find(({ pattern }) => pattern.test(chapter.title))?.kind ?? null;
+}
+
+function skipSegments(chapters: Chapter[], sound: SoundSegments | null, duration: number): SkipSegment[] {
+  const segments: SkipSegment[] = chapters.flatMap((chapter) => {
+    const kind = skipKind(chapter);
+    if (!kind) return [];
+    const sceneAfter = kind === "credits" && duration > 0 && chapter.end < duration - sceneAfterShortestSeconds;
+    return [{ kind, start: chapter.start, end: chapter.end, sceneAfter }];
+  });
+  if (sound?.intro && !segments.some((segment) => segment.kind === "intro")) {
+    segments.push({ kind: "intro", start: sound.intro.start, end: sound.intro.end, sceneAfter: false });
+  }
+  if (sound?.credits && !segments.some((segment) => segment.kind === "credits")) {
+    segments.push({ kind: "credits", start: sound.credits.start, end: sound.credits.end, sceneAfter: sound.credits.sceneAfter });
+  }
+  return segments.sort((a, b) => a.start - b.start);
 }
 
 const onlineSubtitlesKey: string = import.meta.env.VITE_OPENSUBTITLES_API_KEY ?? "";
@@ -532,7 +564,6 @@ function PlayerView({ session }: { session: PlayerSession }) {
     [],
   );
   const heardConverted = usingMpv || conversionStart !== null ? null : (convertedTrack ?? (audioDelay !== 0 ? audioTrack : null));
-  const skippable = chapters.find((chapter) => current >= chapter.start && current < chapter.end - skipOfferEndsSeconds && skipKind(chapter) !== null);
   const pickedAudio = useRef(false);
   const subtitlesDecided = useRef(false);
   const [hint, setHint] = useState<{ text: string; id: number } | null>(null);
@@ -577,6 +608,32 @@ function PlayerView({ session }: { session: PlayerSession }) {
     if (!next) return null;
     return allSources[unitKey("tv", session.title.id, next.season, next.episode)] ? next : null;
   }, [seasonEpisodes.data, allSources, session]);
+
+  const soundNeighbours = useMemo<PrintTarget[]>(() => {
+    if (session.season === undefined || session.episode === undefined || !source) return [];
+    const found: PrintTarget[] = [];
+    for (const offset of soundNeighbourOffsets) {
+      const list = sortSources(allSources[unitKey("tv", session.title.id, session.season, session.episode + offset)] ?? []);
+      const pick = list.find((item) => item.infoHash === source.infoHash) ?? pickInitialSource(list, undefined, settings.preferredQuality);
+      if (pick && found.length < soundNeighboursUsed) found.push({ infoHash: pick.infoHash, fileIndex: pick.fileIndex });
+    }
+    return found;
+  }, [allSources, session.title.id, session.season, session.episode, source, settings.preferredQuality]);
+  const chapterKinds = new Set(chapters.map(skipKind));
+  const soundSegments = useSoundSegments({
+    enabled: settings.soundSegments && metadataReady,
+    target: source ? { infoHash: source.infoHash, fileIndex: source.fileIndex } : null,
+    neighbours: soundNeighbours,
+    duration,
+    current,
+    startAt: resumeAt.current,
+    playing,
+    buffering,
+    needIntro: !chapterKinds.has("intro"),
+    needCredits: !chapterKinds.has("credits"),
+  });
+  const segments = useMemo(() => skipSegments(chapters, soundSegments, duration), [chapters, soundSegments, duration]);
+  const skippable = segments.find((segment) => current >= segment.start && current < segment.end - skipOfferEndsSeconds);
 
   const subtitleOptions = useMemo<SubtitleOption[]>(() => {
     if (!torrent || !source) return [];
@@ -849,11 +906,9 @@ function PlayerView({ session }: { session: PlayerSession }) {
     setMenu(null);
   };
 
-  const creditsStart = useMemo(
-    () => chapters.find((chapter) => skipKind(chapter) === "credits" && duration > 0 && chapter.start > duration / 2)?.start ?? null,
-    [chapters, duration],
-  );
-  const upNextFrom = nextEpisode && duration >= upNextMinDurationSeconds ? (creditsStart ?? duration - upNextTailSeconds) : null;
+  const credits = segments.find((segment) => segment.kind === "credits" && duration > 0 && segment.start > duration / 2);
+  const upNextFrom =
+    nextEpisode && duration >= upNextMinDurationSeconds && !credits?.sceneAfter ? (credits?.start ?? duration - upNextTailSeconds) : null;
 
   const playNext = useCallback(() => {
     if (!nextEpisode) return;
@@ -2102,10 +2157,10 @@ function PlayerView({ session }: { session: PlayerSession }) {
         </div>
       )}
 
-      {skippable && !failed && !(upNextVisible && skipKind(skippable) === "credits") && (
+      {skippable && !failed && !(upNextVisible && skippable.kind === "credits") && (
         <button className="player__skip" onClick={() => seekTo(skippable.end)}>
           <SkipForward size={16} />
-          {t(`player.skip.${skipKind(skippable) ?? "intro"}`)}
+          {t(skippable.sceneAfter ? "player.skip.toScene" : `player.skip.${skippable.kind}`)}
         </button>
       )}
 

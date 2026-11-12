@@ -47,6 +47,8 @@ jobs:
         env:
           VITE_TMDB_API_KEY: ${{ secrets.VITE_TMDB_API_KEY }}
           VITE_OPENSUBTITLES_API_KEY: ${{ secrets.VITE_OPENSUBTITLES_API_KEY }}
+          VITE_REPORT_BOT_TOKEN: ${{ secrets.VITE_REPORT_BOT_TOKEN }}
+          VITE_REPORT_CHAT_ID: ${{ secrets.VITE_REPORT_CHAT_ID }}
         run: npx tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
       - uses: actions/upload-artifact@v4

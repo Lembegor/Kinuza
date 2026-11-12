@@ -5,7 +5,7 @@ use std::{
     sync::Mutex,
 };
 
-const KEPT_STARTS: usize = 5;
+const KEPT_STARTS: usize = 10;
 const FILE_LIMIT_BYTES: u64 = 20 * 1024 * 1024;
 const DEFAULT_FILTER: &str = "warn,kinuza_lib=info,librqbit=info,librqbit_tracker_comms=debug";
 

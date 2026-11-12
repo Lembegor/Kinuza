@@ -135,21 +135,23 @@ fn keep_rejected(folder: &Path, name: &str, value: &str) -> Option<PathBuf> {
     Some(path)
 }
 
-pub fn snapshot_on_version_change(data_dir: &Path, version: &str) {
+pub fn snapshot_on_version_change(data_dir: &Path, version: &str) -> Option<String> {
     let folder = data_dir.join(STORE_FOLDER_NAME);
     let marker = folder.join(VERSION_FILE_NAME);
     let previous = fs::read_to_string(&marker).map(|text| text.trim().to_owned()).unwrap_or_default();
     if previous == version {
-        return;
+        return None;
     }
     let label = if previous.is_empty() { "unknown".to_owned() } else { previous.clone() };
     let backups = folder.join(BACKUP_FOLDER_NAME);
+    let mut had_data = false;
     for name in BACKED_UP_STORES {
         let Ok(path) = document_path(&folder, name) else { continue };
         let Ok(text) = fs::read_to_string(&path) else { continue };
         if !is_json(&text) {
             continue;
         }
+        had_data = true;
         let target = backups.join(format!("{name}-before-{version}-from-{label}.json"));
         match write_atomic(&target, text.as_bytes()) {
             Ok(()) => tracing::info!(
@@ -164,6 +166,7 @@ pub fn snapshot_on_version_change(data_dir: &Path, version: &str) {
     } else {
         tracing::info!("store: app version {label} -> {version}");
     }
+    had_data.then_some(previous)
 }
 
 fn read_document(folder: &Path, name: &str) -> Result<Option<StoredDocument>, String> {
@@ -472,17 +475,18 @@ mod tests {
     fn a_new_version_keeps_the_old_files() {
         let folder = folder("version");
         let store = folder.join(STORE_FOLDER_NAME);
+        assert_eq!(snapshot_on_version_change(&folder, "0.9.0"), None);
         save_document(&store, "library", r#"{"tracked":{"a":1},"progress":{}}"#, false).unwrap();
-        snapshot_on_version_change(&folder, "1.0.0");
-        snapshot_on_version_change(&folder, "1.0.0");
-        snapshot_on_version_change(&folder, "1.1.0");
+        assert_eq!(snapshot_on_version_change(&folder, "1.0.0"), Some("0.9.0".to_owned()));
+        assert_eq!(snapshot_on_version_change(&folder, "1.0.0"), None);
+        assert_eq!(snapshot_on_version_change(&folder, "1.1.0"), Some("1.0.0".to_owned()));
         let names: Vec<String> = fs::read_dir(store.join(BACKUP_FOLDER_NAME))
             .unwrap()
             .filter_map(Result::ok)
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
             .filter(|name| name.contains("-before-"))
             .collect();
-        assert!(names.contains(&"library-before-1.0.0-from-unknown.json".to_owned()));
+        assert!(names.contains(&"library-before-1.0.0-from-0.9.0.json".to_owned()));
         assert!(names.contains(&"library-before-1.1.0-from-1.0.0.json".to_owned()));
         assert_eq!(names.len(), 2);
     }

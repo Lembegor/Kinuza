@@ -1048,6 +1048,7 @@ impl Session {
             max_request_window: other
                 .max_request_window
                 .or(self.peer_opts.max_request_window),
+            utp_only: other.utp_only || self.peer_opts.utp_only,
         }
     }
 

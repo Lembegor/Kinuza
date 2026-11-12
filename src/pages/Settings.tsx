@@ -17,6 +17,7 @@ import { useSettings, type AudioMode, type SpoilerMode, type SubtitleBackground,
 import { accentColors } from "../lib/appearance";
 import { isDownload, useTorrents } from "../state/torrents";
 import { useUi } from "../state/ui";
+import { hasChangelog, useWhatsNew } from "../components/WhatsNew";
 import { useUpdater, type UpdateStatus } from "../state/updater";
 
 const updateLabels: Record<UpdateStatus, MessageKey | null> = {
@@ -315,6 +316,13 @@ export default function Settings() {
             <p>{t("settings.player.autoNext.note")}</p>
           </div>
           <Toggle label={t("settings.player.autoNext")} checked={settings.autoNextEpisode} onChange={(value) => settings.patch({ autoNextEpisode: value })} />
+        </div>
+        <div className="setting">
+          <div>
+            <strong>{t("settings.player.soundSegments")}</strong>
+            <p>{t("settings.player.soundSegments.note")}</p>
+          </div>
+          <Toggle label={t("settings.player.soundSegments")} checked={settings.soundSegments} onChange={(value) => settings.patch({ soundSegments: value })} />
         </div>
         {mpv.supported && (
           <div className="setting">
@@ -672,6 +680,11 @@ export default function Settings() {
             <p>{updateLabel ? t(updateLabel) : t("settings.updates.note")}</p>
           </div>
           <div className="setting__actions">
+            {info.data && hasChangelog(info.data.version) && (
+              <button className="button" onClick={() => info.data && useWhatsNew.getState().open(info.data.version)}>
+                {t("whatsNew.open")}
+              </button>
+            )}
             {updater.status === "available" ? (
               <button className="button button--primary" onClick={() => void updater.install()}>
                 {t("settings.updates.install", { version: updater.version })}

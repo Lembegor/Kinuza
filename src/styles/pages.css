@@ -2312,3 +2312,37 @@
   font-size: 13px;
   font-variant-numeric: tabular-nums;
 }
+
+.report {
+  display: grid;
+  gap: 12px;
+}
+
+.report__lead,
+.report__privacy {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.report__field {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.report__text {
+  min-height: 110px;
+  padding: 10px 12px;
+  resize: vertical;
+  font: inherit;
+  line-height: 1.5;
+}
+
+.report__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}

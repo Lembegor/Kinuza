@@ -112,6 +112,7 @@ export async function mockInvoke(command: string, args: Record<string, unknown> 
         externalPlayer: "VLC",
         sessionReset: false,
         listenPort: 51413,
+        updatedFrom: null,
       } satisfies AppInfo;
     case "torrent_inspect":
       await new Promise((resolve) => setTimeout(resolve, 900));

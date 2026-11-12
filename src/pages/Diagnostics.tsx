@@ -8,6 +8,7 @@ import { clearJournal, loadJournal, useJournal, type JournalArea, type JournalEn
 import { rutracker, rutrackerErrors } from "../lib/rutracker";
 import { catalogHealth } from "../lib/tmdb";
 import { restoreFeed, tuneWeights, useFeed } from "../state/feed";
+import { ReportProblem } from "../components/ReportProblem";
 import { useSettings } from "../state/settings";
 import { useUi } from "../state/ui";
 
@@ -339,6 +340,8 @@ export default function Diagnostics() {
         </button>
       </div>
       <p className="diagnostics__lead">{t("diagnostics.lead")}</p>
+
+      <ReportProblem />
 
       <section className="settings-group">
         <h2>{t("diagnostics.checks")}</h2>

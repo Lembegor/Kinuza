@@ -72,8 +72,9 @@ use peer_binary_protocol::{
     extended::{
         self, ExtendedMessage,
         handshake::ExtendedHandshake,
+        ut_holepunch::{HolepunchError, HolepunchKind, UtHolepunch},
         ut_metadata::{UtMetadata, UtMetadataData},
-        ut_pex::UtPex,
+        ut_pex::{PEX_FLAG_HOLEPUNCH, PEX_FLAG_REACHABLE, PEX_FLAG_UTP, UtPex},
     },
 };
 use tokio::sync::{
@@ -482,6 +483,7 @@ impl TorrentStateLive {
         let handler = PeerHandler {
             addr: checked_peer.addr,
             incoming: true,
+            holepunched: false,
             on_bitfield_notify: Default::default(),
             flow_control: Mutex::new(PeerFlowControl::new(self.max_request_window())),
             state: self.clone(),
@@ -535,6 +537,7 @@ impl TorrentStateLive {
         self: Arc<Self>,
         addr: SocketAddr,
         permit: OwnedSemaphorePermit,
+        holepunched: bool,
     ) -> crate::Result<()> {
         let state = self;
         let (rx, tx) = state.peers.mark_peer_connecting(addr)?;
@@ -546,6 +549,7 @@ impl TorrentStateLive {
         let handler = PeerHandler {
             addr,
             incoming: false,
+            holepunched,
             on_bitfield_notify: Default::default(),
             flow_control: Mutex::new(PeerFlowControl::new(state.max_request_window())),
             state: state.clone(),
@@ -560,6 +564,7 @@ impl TorrentStateLive {
         let options = PeerConnectionOptions {
             connect_timeout: state.shared.options.peer_connect_timeout,
             read_write_timeout: state.shared.options.peer_read_write_timeout,
+            utp_only: holepunched,
             ..Default::default()
         };
         let peer_connection = PeerConnection::new(
@@ -662,7 +667,7 @@ impl TorrentStateLive {
             state.spawn(
                 debug_span!(parent: state.shared.span.clone(), "manage_peer", peer = ?addr),
                 format!("[{}][addr={addr}]manage_peer", state.shared.id),
-                aframe!(state.clone().task_manage_outgoing_peer(addr, permit)),
+                aframe!(state.clone().task_manage_outgoing_peer(addr, permit, false)),
             );
         }
     }
@@ -725,6 +730,97 @@ impl TorrentStateLive {
 
     fn transmit_haves(&self, index: ValidPieceIndex) {
         let _ = self.have_broadcast_tx.send(index);
+    }
+
+    fn request_holepunch(&self, target: SocketAddr) {
+        if self.metadata.info.info().private {
+            return;
+        }
+        let relay = self
+            .peers
+            .with_peer_mut(target, "holepunch relay", |peer| {
+                if peer.holepunch_tried {
+                    return None;
+                }
+                let relay = peer.relay?;
+                peer.holepunch_tried = true;
+                Some(relay)
+            })
+            .flatten();
+        let Some(relay) = relay else {
+            return;
+        };
+        let sent = self
+            .peers
+            .with_live(relay, |live| {
+                live.holepunch
+                    && live
+                        .tx
+                        .send(WriterRequest::UtHolepunch(UtHolepunch::rendezvous(target)))
+                        .is_ok()
+            })
+            .unwrap_or(false);
+        if sent {
+            debug!(?target, ?relay, "holepunch: asked the relay for a rendezvous");
+        }
+    }
+
+    fn holepunch_connect(self: &Arc<Self>, addr: SocketAddr) {
+        if self.metadata.info.info().private || addr.port() == 0 {
+            return;
+        }
+        if self.shared.options.disable_upload() && self.is_finished_and_no_active_streams() {
+            return;
+        }
+        let Some(session) = self.shared.session.upgrade() else {
+            return;
+        };
+        if (session.ipv4_only && addr.is_ipv6())
+            || session.blocklist.has(addr.ip())
+            || session.allowlist.as_ref().is_some_and(|list| !list.has(addr.ip()))
+        {
+            return;
+        }
+        self.peers.add_if_not_seen(addr);
+        let ready = self
+            .peers
+            .with_peer_mut(addr, "holepunch connect", |peer| match peer.get_state() {
+                PeerState::Queued | PeerState::NotNeeded => true,
+                PeerState::Dead => {
+                    peer.set_state(PeerState::Queued, &self.peers);
+                    true
+                }
+                PeerState::Connecting(_) | PeerState::Live(_) => false,
+            })
+            .unwrap_or(false);
+        if !ready {
+            return;
+        }
+        let Ok(permit) = self.peer_semaphore.clone().try_acquire_owned() else {
+            debug!(?addr, "holepunch: no free peer slot");
+            return;
+        };
+        debug!(?addr, "holepunch: connecting over uTP");
+        self.clone().spawn(
+            debug_span!(parent: self.shared.span.clone(), "holepunch_peer", peer = ?addr),
+            format!("[{}][addr={addr}]holepunch_peer", self.shared.id),
+            aframe!(self.clone().task_manage_outgoing_peer(addr, permit, true)),
+        );
+    }
+
+    fn pex_flags(&self, addr: SocketAddr) -> u8 {
+        self.peers
+            .with_live(addr, |live| {
+                let mut flags = PEX_FLAG_REACHABLE;
+                if live.holepunch {
+                    flags |= PEX_FLAG_HOLEPUNCH;
+                }
+                if live.connection_kind == ConnectionKind::Utp {
+                    flags |= PEX_FLAG_UTP;
+                }
+                flags
+            })
+            .unwrap_or(PEX_FLAG_REACHABLE)
     }
 
     pub(crate) fn add_peer_if_not_seen(&self, addr: SocketAddr) -> crate::Result<bool> {
@@ -987,8 +1083,10 @@ impl TorrentStateLive {
             // and addrs_closed_to_sent are only filtered addresses from sent_peers_live
 
             if !connected.is_empty() || !dropped.is_empty() {
-                let pex_msg = extended::ut_pex::UtPex::from_addrs(
-                    connected.iter().copied(),
+                let flagged: Vec<(SocketAddr, u8)> =
+                    connected.iter().map(|addr| (*addr, self.pex_flags(*addr))).collect();
+                let pex_msg = extended::ut_pex::UtPex::from_addrs_with_flags(
+                    flagged.iter().copied(),
                     dropped.iter().copied(),
                 );
                 if tx.send(WriterRequest::UtPex(pex_msg)).is_err() {
@@ -1038,6 +1136,7 @@ struct PeerHandler {
 
     addr: SocketAddr,
     incoming: bool,
+    holepunched: bool,
     tx: PeerTx,
 
     first_message_received: AtomicBool,
@@ -1109,6 +1208,11 @@ impl PeerConnectionHandler for &'_ PeerHandler {
                         })?;
                 }
             }
+            Message::Extended(ExtendedMessage::UtHolepunch(message)) => {
+                if !self.state.metadata.info.info().private {
+                    self.on_holepunch_message(message);
+                }
+            }
             Message::Extended(ExtendedMessage::UtPex(pex)) => {
                 if self.state.metadata.info.info().private {
                     warn!(
@@ -1142,6 +1246,13 @@ impl PeerConnectionHandler for &'_ PeerHandler {
 
     fn on_handshake(&self, handshake: Handshake, ckind: ConnectionKind) -> anyhow::Result<()> {
         self.state.set_peer_live(self.addr, handshake, ckind);
+        if self.holepunched {
+            info!(
+                id = self.state.shared.id,
+                peer = ?self.addr,
+                "holepunch: connected to a peer behind NAT"
+            );
+        }
         Ok(())
     }
 
@@ -1165,6 +1276,12 @@ impl PeerConnectionHandler for &'_ PeerHandler {
     }
 
     fn on_extended_handshake(&self, hs: &ExtendedHandshake<ByteBuf>) -> anyhow::Result<()> {
+        let holepunch = hs.m.ut_holepunch.is_some();
+        self.state
+            .peers
+            .with_live_mut(self.addr, "update peer holepunch support", |live| {
+                live.holepunch = holepunch;
+            });
         if let Some(client_name) = hs.v.as_ref().and_then(format_peer_client_name) {
             self.state
                 .peers
@@ -1279,6 +1396,7 @@ impl PeerHandler {
             }
         };
         let prev = pe.value_mut().take_state(peers);
+        let never_connected = matches!(prev, PeerState::Connecting(_));
 
         match prev {
             PeerState::Connecting(_) => {}
@@ -1361,6 +1479,10 @@ impl PeerHandler {
 
         // Prevent deadlocks.
         drop(pe);
+
+        if never_connected && !self.holepunched {
+            self.state.request_holepunch(handle);
+        }
 
         if let Some(dur) = backoff {
             if cfg!(feature = "_disable_reconnect_test") {
@@ -2035,6 +2157,13 @@ impl PeerHandler {
     }
 
     fn on_pex_message(&self, msg: UtPex<ByteBuf<'_>>) {
+        let relay = self.addr;
+        let relay_holepunches = self
+            .state
+            .peers
+            .with_live(relay, |live| live.holepunch)
+            .unwrap_or(false);
+        let introduced: Vec<SocketAddr> = msg.added_peers().map(|peer| peer.addr).collect();
         msg.dropped_peers()
             .chain(msg.added_peers())
             .for_each(|peer| {
@@ -2051,6 +2180,85 @@ impl PeerHandler {
                     })
                     .ok();
             });
+        if relay_holepunches {
+            for addr in introduced {
+                self.state.peers.with_peer_mut(addr, "remember pex relay", |peer| {
+                    if peer.get_live().is_none() {
+                        peer.relay = Some(relay);
+                    }
+                });
+            }
+        }
+    }
+
+    fn holepunch_endpoint(&self) -> SocketAddr {
+        self.state
+            .peers
+            .with_peer(self.addr, |peer| {
+                let utp = peer
+                    .get_live()
+                    .is_some_and(|live| live.connection_kind == ConnectionKind::Utp);
+                if utp || !self.incoming {
+                    self.addr
+                } else {
+                    peer.outgoing_address.unwrap_or(self.addr)
+                }
+            })
+            .unwrap_or(self.addr)
+    }
+
+    fn on_holepunch_message(&self, message: UtHolepunch) {
+        match message.kind {
+            HolepunchKind::Rendezvous => self.relay_holepunch(message.addr),
+            HolepunchKind::Connect => {
+                debug!(peer = ?message.addr, relay = ?self.addr, "holepunch: relay asked us to connect");
+                self.state.holepunch_connect(message.addr);
+            }
+            HolepunchKind::Error => {
+                debug!(
+                    peer = ?message.addr,
+                    relay = ?self.addr,
+                    error = ?message.error,
+                    "holepunch: relay could not help"
+                );
+            }
+        }
+    }
+
+    fn relay_holepunch(&self, target: SocketAddr) {
+        let refuse = |error: HolepunchError| {
+            let _ = self
+                .tx
+                .send(WriterRequest::UtHolepunch(UtHolepunch::error(target, error)));
+        };
+        if target == self.addr || target.port() == 0 {
+            refuse(HolepunchError::NoSuchPeer);
+            return;
+        }
+        let Some((supported, target_tx)) = self
+            .state
+            .peers
+            .with_live(target, |live| (live.holepunch, live.tx.clone()))
+        else {
+            refuse(HolepunchError::NotConnected);
+            return;
+        };
+        if !supported {
+            refuse(HolepunchError::NoSupport);
+            return;
+        }
+        let initiator = self.holepunch_endpoint();
+        if target_tx
+            .send(WriterRequest::UtHolepunch(UtHolepunch::connect(initiator)))
+            .is_err()
+        {
+            refuse(HolepunchError::NotConnected);
+            return;
+        }
+        let _ = self
+            .tx
+            .send(WriterRequest::UtHolepunch(UtHolepunch::connect(target)));
+        debug!(?initiator, ?target, "holepunch: relayed a rendezvous");
     }
 
     fn is_choked(&self) -> bool {

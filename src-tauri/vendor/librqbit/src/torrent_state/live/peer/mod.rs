@@ -30,6 +30,8 @@ pub(crate) struct Peer {
     state: PeerState,
     pub stats: stats::atomic::PeerStats,
     pub outgoing_address: Option<SocketAddr>,
+    pub relay: Option<SocketAddr>,
+    pub holepunch_tried: bool,
 }
 
 impl Peer {
@@ -49,6 +51,8 @@ impl Peer {
             state,
             stats: Default::default(),
             outgoing_address: None,
+            relay: None,
+            holepunch_tried: false,
         }
     }
 
@@ -58,6 +62,8 @@ impl Peer {
             outgoing_address: Some(addr),
             stats: Default::default(),
             state: Default::default(),
+            relay: None,
+            holepunch_tried: false,
         }
     }
 
@@ -280,6 +286,8 @@ pub(crate) struct LivePeerState {
     pub tx: PeerTx,
 
     pub connection_kind: ConnectionKind,
+
+    pub holepunch: bool,
 }
 
 impl LivePeerState {
@@ -300,6 +308,7 @@ impl LivePeerState {
             request_slots_changed: Default::default(),
             tx,
             connection_kind,
+            holepunch: false,
         }
     }
 

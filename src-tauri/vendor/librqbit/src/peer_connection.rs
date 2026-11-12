@@ -62,6 +62,7 @@ pub enum WriterRequest {
     Message(Message<'static>),
     UtMetadata(UtMetadata<ByteBufOwned>),
     UtPex(UtPex<ByteBufOwned>),
+    UtHolepunch(peer_binary_protocol::extended::ut_holepunch::UtHolepunch),
     ReadChunkRequest(ChunkInfo),
     Disconnect(anyhow::Result<()>),
 }
@@ -83,6 +84,9 @@ pub struct PeerConnectionOptions {
     /// one at a stream's read position after a seek, is requested only after
     /// those, so a smaller window makes streams react faster to seeks.
     pub max_request_window: Option<usize>,
+
+    #[serde(default)]
+    pub utp_only: bool,
 }
 
 pub(crate) struct PeerConnection<H> {
@@ -227,7 +231,13 @@ impl<H: PeerConnectionHandler> PeerConnection<H> {
         let (ckind, mut read, mut write) = with_timeout(
             "connecting",
             connect_timeout,
-            self.connector.connect(self.addr),
+            async {
+                if self.options.utp_only {
+                    self.connector.connect_utp(self.addr).await
+                } else {
+                    self.connector.connect(self.addr).await
+                }
+            },
         )
         .await?;
 
@@ -399,6 +409,10 @@ impl<H: PeerConnectionHandler> PeerConnection<H> {
                     }
                     WriterRequest::UtPex(ut_pex) => {
                         Message::Extended(ExtendedMessage::UtPex(ut_pex.as_borrowed()))
+                            .serialize(&mut *write_buf, ext_msg_ids)?
+                    }
+                    WriterRequest::UtHolepunch(message) => {
+                        Message::Extended(ExtendedMessage::UtHolepunch(message))
                             .serialize(&mut *write_buf, ext_msg_ids)?
                     }
                     WriterRequest::ReadChunkRequest(chunk) => {

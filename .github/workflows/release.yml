@@ -86,6 +86,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
           VITE_TMDB_API_KEY: ${{ secrets.VITE_TMDB_API_KEY }}
           VITE_OPENSUBTITLES_API_KEY: ${{ secrets.VITE_OPENSUBTITLES_API_KEY }}
+          VITE_REPORT_BOT_TOKEN: ${{ secrets.VITE_REPORT_BOT_TOKEN }}
+          VITE_REPORT_CHAT_ID: ${{ secrets.VITE_REPORT_CHAT_ID }}
         with:
           releaseId: ${{ needs.draft.outputs.release_id }}
           includeUpdaterJson: false
@@ -127,6 +129,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
           VITE_TMDB_API_KEY: ${{ secrets.VITE_TMDB_API_KEY }}
           VITE_OPENSUBTITLES_API_KEY: ${{ secrets.VITE_OPENSUBTITLES_API_KEY }}
+          VITE_REPORT_BOT_TOKEN: ${{ secrets.VITE_REPORT_BOT_TOKEN }}
+          VITE_REPORT_CHAT_ID: ${{ secrets.VITE_REPORT_CHAT_ID }}
         with:
           releaseId: ${{ needs.draft.outputs.release_id }}
           includeUpdaterJson: false

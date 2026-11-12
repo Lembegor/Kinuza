@@ -5,6 +5,7 @@ import { AddSourceDialog } from "./components/AddSourceDialog";
 import { Onboarding } from "./components/Onboarding";
 import { AppHotkeys, ConfirmDialog, Toasts, UpdateNotice } from "./components/Overlays";
 import { PageStack } from "./components/PageStack";
+import { WhatsNew } from "./components/WhatsNew";
 import { Player } from "./components/Player";
 import { Sidebar, Titlebar } from "./components/Shell";
 import { backend, describeError, getAppInfo, isDesktop, onLaunchRequest, type LaunchRequest } from "./lib/backend";
@@ -254,6 +255,7 @@ export default function App() {
         <AddSourceDialog />
         <ConfirmDialog />
         <AppHotkeys />
+        <WhatsNew ready={!introducing} />
         <UpdateNotice />
         <Toasts />
         {dragging && (
