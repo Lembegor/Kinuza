@@ -45,10 +45,15 @@ jobs:
           notes_file=$(mktemp)
           git tag -l --format='%(contents)' "$tag" > "$notes_file"
           [ -s "$notes_file" ] || echo "Kinuza $version" > "$notes_file"
-          id=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq ".[] | select(.tag_name == \"$tag\") | .id" | head -n 1)
+          id=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq "[.[] | select(.tag_name == \"$tag\")][0].id // empty")
           if [ -z "$id" ]; then
-            gh release create "$tag" --draft --verify-tag --title "Kinuza $version" --notes-file "$notes_file"
-            id=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq ".[] | select(.tag_name == \"$tag\") | .id" | head -n 1)
+            id=$(gh api -X POST "repos/$GITHUB_REPOSITORY/releases" \
+              -f tag_name="$tag" \
+              -f name="Kinuza $version" \
+              -F body=@"$notes_file" \
+              -F draft=true \
+              -F prerelease=false \
+              --jq .id)
           fi
           [ -n "$id" ] || { echo "::error::Could not open the draft release."; exit 1; }
           echo "release_id=$id" >> "$GITHUB_OUTPUT"
