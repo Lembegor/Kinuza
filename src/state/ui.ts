@@ -22,6 +22,7 @@ export interface AddSourceTarget {
   originalLanguage?: string;
   seasons: SeasonInfo[];
   defaultSeason: number;
+  pinnedSeason?: number;
 }
 
 export interface AddSourceRequest {

@@ -102,6 +102,7 @@ export interface ReleaseWatch {
   topicId: string;
   infoHash: string;
   defaultSeason: number;
+  pinnedSeason?: number;
 }
 
 type EpisodeContext = Omit<Progress, "position" | "duration" | "updatedAt">;

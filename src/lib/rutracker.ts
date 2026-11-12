@@ -32,7 +32,8 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
 }
 
 export const rutracker = {
-  search: (query: string, quiet = false) => call<RutrackerItem[]>("rutracker_search", { query, quiet }),
+  search: (query: string, quiet = false, page = 0) => call<RutrackerItem[]>("rutracker_search", { query, quiet, page }),
+  pageSize: 50,
   login: () => call<void>("rutracker_login_window"),
   getMagnet: (id: string, quiet = false) => call<string>("rutracker_magnet", { id, quiet }),
   inspectRelease: async (id: string, quiet = false): Promise<TorrentPreview> => {

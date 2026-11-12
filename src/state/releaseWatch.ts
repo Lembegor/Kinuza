@@ -48,7 +48,7 @@ async function updateFromTopic(watch: ReleaseWatch): Promise<number> {
     sourcesFrom(seriesId, watch.infoHash),
     (season, episode) => (library.sources[unitKey("tv", seriesId, season, episode)] ?? []).length > 0,
     preview,
-    episodeFiles(preview, details.seasons, watch.defaultSeason),
+    episodeFiles(preview, details.seasons, watch.defaultSeason, watch.pinnedSeason),
   );
   if (plan.added.length === 0) {
     remember();

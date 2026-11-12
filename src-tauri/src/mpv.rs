@@ -116,6 +116,7 @@ const OBSERVED: &[&str] = &[
     "track-list",
     "chapter-list",
     "video-params",
+    "vo-configured",
     "volume",
     "mute",
     "speed",

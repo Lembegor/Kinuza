@@ -8,6 +8,7 @@ import {
   ExternalLink,
   Frame,
   Gauge,
+  ListVideo,
   LoaderCircle,
   Maximize,
   PictureInPicture2,
@@ -17,6 +18,7 @@ import {
   RotateCcw,
   RotateCw,
   Settings2,
+  SkipBack,
   SkipForward,
   TriangleAlert,
   Users,
@@ -58,10 +60,11 @@ import {
   type Cue,
   type SubtitleLabel,
 } from "../lib/subtitles";
-import { imageUrl, tmdb } from "../lib/tmdb";
+import { imageUrl, tmdb, type Episode } from "../lib/tmdb";
 import { useAsync } from "../lib/useAsync";
 import { sortSources } from "../pages/Title";
 import { useSoundSegments } from "./useSoundSegments";
+import { PlayerEpisodes } from "./PlayerEpisodes";
 import { isWatched, titleKey, unitKey, useLibrary, type Source } from "../state/library";
 import { useSettings, type SubtitleBackground, type SubtitleColor, type SubtitleFont, type VideoQuality } from "../state/settings";
 import { fileProgress, useTorrents } from "../state/torrents";
@@ -194,6 +197,8 @@ const heldStartLimitMs = 4000;
 const originalTrackTitle = /оригинал|original|\borig\b/i;
 const commentaryTrackTitle = /коммент|comment/i;
 const nextEpisodeCountdownSeconds = 8;
+const stuckEndSeconds = 1.5;
+const stuckEndWaitMs = 2500;
 const interpolationLimitSeconds = 1.5;
 const clockStepSeconds = 0.25;
 const naturalStepSeconds = 2;
@@ -602,12 +607,49 @@ function PlayerView({ session }: { session: PlayerSession }) {
     () => (session.season !== undefined ? tmdb.season(session.title.id, session.season) : Promise.resolve([])),
     [session.title.id, session.season],
   );
-  const nextEpisode = useMemo(() => {
+  const regularSeasons = useMemo(
+    () =>
+      (titleDetails.data?.seasons ?? [])
+        .map((season) => season.seasonNumber)
+        .filter((number) => number > 0)
+        .sort((a, b) => a - b),
+    [titleDetails.data],
+  );
+  const seasonPlace = session.season === undefined ? -1 : regularSeasons.indexOf(session.season);
+  const seasonAfter = seasonPlace >= 0 ? regularSeasons[seasonPlace + 1] : undefined;
+  const seasonBefore = seasonPlace > 0 ? regularSeasons[seasonPlace - 1] : undefined;
+  const inSeason = seasonEpisodes.data ?? [];
+  const laterInSeason = session.episode === undefined ? [] : inSeason.filter((episode) => episode.episode > session.episode!);
+  const earlierInSeason = session.episode === undefined ? [] : inSeason.filter((episode) => episode.episode < session.episode!);
+  const needAfter = seasonEpisodes.data !== null && seasonEpisodes.data !== undefined && laterInSeason.length === 0 && seasonAfter !== undefined;
+  const needBefore = seasonEpisodes.data !== null && seasonEpisodes.data !== undefined && earlierInSeason.length === 0 && seasonBefore !== undefined;
+  const afterEpisodes = useAsync(
+    () => (needAfter ? tmdb.season(session.title.id, seasonAfter!) : Promise.resolve([] as Episode[])),
+    [session.title.id, needAfter, seasonAfter],
+  );
+  const beforeEpisodes = useAsync(
+    () => (needBefore ? tmdb.season(session.title.id, seasonBefore!) : Promise.resolve([] as Episode[])),
+    [session.title.id, needBefore, seasonBefore],
+  );
+  const hasSource = useCallback(
+    (episode: Episode) => (allSources[unitKey("tv", session.title.id, episode.season, episode.episode)] ?? []).length > 0,
+    [allSources, session.title.id],
+  );
+  const nextCandidate = useMemo<Episode | null>(() => {
     if (session.episode === undefined) return null;
-    const next = (seasonEpisodes.data ?? []).find((episode) => episode.episode === session.episode! + 1);
-    if (!next) return null;
-    return allSources[unitKey("tv", session.title.id, next.season, next.episode)] ? next : null;
-  }, [seasonEpisodes.data, allSources, session]);
+    const sameSeason = [...laterInSeason].sort((a, b) => a.episode - b.episode)[0];
+    if (sameSeason) return sameSeason;
+    return [...(afterEpisodes.data ?? [])].sort((a, b) => a.episode - b.episode)[0] ?? null;
+  }, [laterInSeason, afterEpisodes.data, session.episode]);
+  const previousCandidate = useMemo<Episode | null>(() => {
+    if (session.episode === undefined) return null;
+    const sameSeason = [...earlierInSeason].sort((a, b) => b.episode - a.episode)[0];
+    if (sameSeason) return sameSeason;
+    return [...(beforeEpisodes.data ?? [])].sort((a, b) => b.episode - a.episode)[0] ?? null;
+  }, [earlierInSeason, beforeEpisodes.data, session.episode]);
+  const nextEpisode = nextCandidate && hasSource(nextCandidate) ? nextCandidate : null;
+  const previousEpisode = previousCandidate && hasSource(previousCandidate) ? previousCandidate : null;
+  const [episodesShown, setEpisodesShown] = useState(false);
 
   const soundNeighbours = useMemo<PrintTarget[]>(() => {
     if (session.season === undefined || session.episode === undefined || !source) return [];
@@ -1167,6 +1209,12 @@ function PlayerView({ session }: { session: PlayerSession }) {
         i: toggleMini,
         m: () => setMuted((value) => !value),
         n: playNext,
+        b: () => {
+          if (previousEpisode) playEpisode(previousEpisode);
+        },
+        e: () => {
+          if (session.episode !== undefined) setEpisodesShown((value) => !value);
+        },
         c: () => setMenu((value) => (value === "subtitles" ? null : "subtitles")),
         a: () => setMenu((value) => (value === "audio" ? null : "audio")),
         "[": () => stepRate(-1),
@@ -1178,7 +1226,8 @@ function PlayerView({ session }: { session: PlayerSession }) {
         },
         "?": () => setHotkeysShown((value) => !value),
         Escape: () => {
-          if (hotkeysShown) setHotkeysShown(false);
+          if (episodesShown) setEpisodesShown(false);
+          else if (hotkeysShown) setHotkeysShown(false);
           else if (statsShown) setStatsShown(false);
           else if (onlinePanel) setOnlinePanel(false);
           else if (menu) setMenu(null);
@@ -1193,7 +1242,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
         wakeControls();
         return;
       }
-      const sameKeys: Record<string, string> = { "а": "f", "ь": "m", "л": "k", "о": "j", "д": "l", "т": "n", "с": "c", "ф": "a", "х": "[", "ъ": "]", "п": "g", "р": "h", "ы": "s", "ш": "i", "м": "v", "к": "r", "з": "p", "в": "d" };
+      const sameKeys: Record<string, string> = { "и": "b", "у": "e", "а": "f", "ь": "m", "л": "k", "о": "j", "д": "l", "т": "n", "с": "c", "ф": "a", "х": "[", "ъ": "]", "п": "g", "р": "h", "ы": "s", "ш": "i", "м": "v", "к": "r", "з": "p", "в": "d" };
       const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
       const asksForHelp = event.shiftKey && event.code === "Slash";
       const extra = extraKeys.current;
@@ -1207,7 +1256,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [togglePlay, seekBy, seekTo, changeVolume, toggleFullscreen, playNext, close, menu, fullscreen, wakeControls, rate, showHint, subtitleDelay, skippable, toggleMini, onlinePanel, hotkeysShown, statsShown]);
+  }, [togglePlay, seekBy, seekTo, changeVolume, toggleFullscreen, playNext, close, menu, fullscreen, wakeControls, rate, showHint, subtitleDelay, skippable, toggleMini, onlinePanel, hotkeysShown, statsShown, previousEpisode, episodesShown]);
 
 
   useEffect(() => {
@@ -1695,6 +1744,40 @@ function PlayerView({ session }: { session: PlayerSession }) {
     };
   }, [buffering, metadataReady]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const sourceTarget = (season: number) => {
+    const pageTarget = useUi.getState().pageTarget;
+    if (pageTarget && pageTarget.title.id === session.title.id && pageTarget.title.type === session.title.type) {
+      return { ...pageTarget, defaultSeason: season };
+    }
+    const details = titleDetails.data;
+    return {
+      title: session.title,
+      originalTitle: details?.originalTitle,
+      originalLanguage: details?.language,
+      seasons: details?.seasons ?? [],
+      defaultSeason: season,
+    };
+  };
+
+  const playEpisode = (episode: Episode) => {
+    if (episode.season === session.season && episode.episode === session.episode) return;
+    setEpisodesShown(false);
+    saveProgress();
+    play({
+      title: session.title,
+      unitKey: unitKey("tv", session.title.id, episode.season, episode.episode),
+      season: episode.season,
+      episode: episode.episode,
+      episodeName: episode.name,
+    });
+  };
+
+  const findEpisode = (episode: Episode) => {
+    saveProgress();
+    closePlayer();
+    useUi.getState().openAddSource({ target: sourceTarget(episode.season) });
+  };
+
   const findLighter = (filter: string) => {
     const pageTarget = useUi.getState().pageTarget;
     const target =
@@ -1731,10 +1814,24 @@ function PlayerView({ session }: { session: PlayerSession }) {
   });
 
   const onEnded = () => {
+    if (endedRef.current) return;
+    endedRef.current = true;
     saveProgress();
     setEnded(true);
     if (nextEpisode && settings.autoNextEpisode) setCountdown(nextEpisodeCountdownSeconds);
   };
+  const endedRef = useRef(false);
+  endedRef.current = ended;
+  const onEndedRef = useRef(onEnded);
+  onEndedRef.current = onEnded;
+
+  useEffect(() => {
+    if (ended || failed || duration < upNextMinDurationSeconds || current < duration - stuckEndSeconds) return;
+    const timer = setTimeout(() => {
+      if (filmTime() >= filmLength() - stuckEndSeconds) onEndedRef.current();
+    }, stuckEndWaitMs);
+    return () => clearTimeout(timer);
+  }, [current, duration, ended, failed, filmTime, filmLength]);
 
   const handlers: MediaHandlers = {
     onPlay: () => setPlaying(true),
@@ -1970,12 +2067,27 @@ function PlayerView({ session }: { session: PlayerSession }) {
         ) : ended ? (
           <div className="player__message">
             <strong>{t("player.ended")}</strong>
+            {nextCandidate && (
+              <p>
+                {t("player.upNext.title")}: {t("common.seasonEpisode", { season: nextCandidate.season, episode: nextCandidate.episode })} · {nextCandidate.name}
+              </p>
+            )}
             <div className="player__message-actions">
+              {nextEpisode ? (
+                <button className="button button--primary" onClick={playNext}>
+                  <SkipForward size={16} />
+                  {t("player.next")}
+                </button>
+              ) : nextCandidate ? (
+                <button className="button button--primary" onClick={() => findEpisode(nextCandidate)}>
+                  {t("player.episodes.findNext")}
+                </button>
+              ) : null}
               <button className="button" onClick={() => seekTo(0)}>
                 <RotateCcw size={16} />
                 {t("player.restart")}
               </button>
-              <button className="button button--primary" onClick={close}>
+              <button className={`button ${nextCandidate ? "" : "button--primary"}`} onClick={close}>
                 {t("common.close")}
               </button>
             </div>
@@ -2158,10 +2270,29 @@ function PlayerView({ session }: { session: PlayerSession }) {
       )}
 
       {skippable && !failed && !(upNextVisible && skippable.kind === "credits") && (
-        <button className="player__skip" onClick={() => seekTo(skippable.end)}>
-          <SkipForward size={16} />
-          {t(skippable.sceneAfter ? "player.skip.toScene" : `player.skip.${skippable.kind}`)}
-        </button>
+        <div className="player__skips">
+          <button className="player__skip" onClick={() => seekTo(skippable.end)}>
+            <SkipForward size={16} />
+            {t(skippable.sceneAfter ? "player.skip.toScene" : `player.skip.${skippable.kind}`)}
+          </button>
+          {skippable.kind === "credits" && skippable.sceneAfter && nextEpisode && (
+            <button className="player__skip" onClick={playNext}>
+              <SkipForward size={16} />
+              {t("player.next")}
+            </button>
+          )}
+        </div>
+      )}
+
+      {episodesShown && session.season !== undefined && session.episode !== undefined && (
+        <PlayerEpisodes
+          titleId={session.title.id}
+          seasons={titleDetails.data?.seasons ?? []}
+          current={{ season: session.season, episode: session.episode }}
+          onPlay={playEpisode}
+          onFind={findEpisode}
+          onClose={() => setEpisodesShown(false)}
+        />
       )}
 
       <div className="player__bottom">
@@ -2191,9 +2322,36 @@ function PlayerView({ session }: { session: PlayerSession }) {
           <button className="player__button" aria-label={t("player.seekForward")} onClick={() => seekBy(seekStepSeconds)}>
             <RotateCw size={19} />
           </button>
-          {nextEpisode && (
-            <button className="player__button" aria-label={t("player.next")} title={`${t("player.next.named", { name: nextEpisode.name })} (N)`} onClick={playNext}>
+          {session.episode !== undefined && (
+            <button
+              className="player__button"
+              aria-label={t("player.previous")}
+              title={previousEpisode ? `${t("player.previous.named", { name: previousEpisode.name })} (B)` : t("player.previous.none")}
+              disabled={!previousEpisode}
+              onClick={() => previousEpisode && playEpisode(previousEpisode)}
+            >
+              <SkipBack size={19} />
+            </button>
+          )}
+          {session.episode !== undefined && (
+            <button
+              className="player__button"
+              aria-label={t("player.next")}
+              title={nextEpisode ? `${t("player.next.named", { name: nextEpisode.name })} (N)` : t("player.next.none")}
+              disabled={!nextEpisode}
+              onClick={playNext}
+            >
               <SkipForward size={19} />
+            </button>
+          )}
+          {session.episode !== undefined && (
+            <button
+              className={`player__button ${episodesShown ? "is-on" : ""}`}
+              aria-label={t("player.episodes")}
+              title={`${t("player.episodes")} (E)`}
+              onClick={() => setEpisodesShown((value) => !value)}
+            >
+              <ListVideo size={19} />
             </button>
           )}
           <div className="player__volume">

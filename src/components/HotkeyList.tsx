@@ -21,6 +21,8 @@ const hotkeys: Hotkey[] = [
   { keys: ["F"], label: "hotkeys.fullscreen" },
   { keys: ["I"], label: "hotkeys.mini" },
   { keys: ["N"], label: "hotkeys.next" },
+  { keys: ["B"], label: "hotkeys.previous" },
+  { keys: ["E"], label: "hotkeys.episodes" },
   { keys: ["S"], label: "hotkeys.skip" },
   { keys: ["A"], label: "hotkeys.audio" },
   { keys: ["C"], label: "hotkeys.subtitles" },

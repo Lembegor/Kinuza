@@ -24,6 +24,7 @@ const installGiveUpMs = 3 * 60 * 1000;
 const rapidSeekMs = 600;
 const exactSeekDelayMs = 350;
 const restartLimit = 1;
+const pictureSettleMs = 60;
 const seekGiveUpMs = 5000;
 
 function showPicture(shown: boolean): void {
@@ -57,6 +58,9 @@ export class MpvVideo {
   private seekGiveUp: ReturnType<typeof setTimeout> | undefined;
   private url: string | null = null;
   private restarts = 0;
+  private outputReady = false;
+  private frameShown = false;
+  private pictureTimer: ReturnType<typeof setTimeout> | undefined;
 
   get currentTime(): number {
     return this.seekTarget ?? this.time;
@@ -152,7 +156,8 @@ export class MpvVideo {
     this.bufferedRanges = [];
     this.trackList = [];
     this.chapterList = [];
-    showPicture(false);
+    this.frameShown = false;
+    this.refreshPicture();
     await mpv.set("volume", Math.round(this.volumeNow * 100));
     await mpv.set("mute", this.mutedNow);
     await mpv.set("speed", this.rateNow);
@@ -229,7 +234,21 @@ export class MpvVideo {
     return true;
   }
 
+  private refreshPicture(): void {
+    clearTimeout(this.pictureTimer);
+    if (!(this.width > 0 && this.outputReady && this.frameShown)) {
+      showPicture(false);
+      return;
+    }
+    this.pictureTimer = setTimeout(() => showPicture(this.width > 0 && this.outputReady && this.frameShown), pictureSettleMs);
+  }
+
   handle(event: MpvEvent): void {
+    if (event.event === "playback-restart") {
+      this.frameShown = true;
+      this.refreshPicture();
+      return;
+    }
     if (event.event === "file-loaded") {
       this.loaded = true;
       this.announceMetadata();
@@ -243,7 +262,9 @@ export class MpvVideo {
       return;
     }
     if (event.event === "shutdown") {
-      showPicture(false);
+      this.outputReady = false;
+      this.frameShown = false;
+      this.refreshPicture();
       if (this.url && !this.restart()) this.handlers.onError?.();
       return;
     }
@@ -283,6 +304,10 @@ export class MpvVideo {
         }
         break;
       }
+      case "vo-configured":
+        this.outputReady = data === true;
+        this.refreshPicture();
+        break;
       case "eof-reached":
         if (data === true && this.loaded) this.handlers.onEnded?.();
         break;
@@ -304,7 +329,7 @@ export class MpvVideo {
         const params = data as { dw?: number; dh?: number; w?: number; h?: number } | null;
         this.width = params?.dw ?? params?.w ?? 0;
         this.height = params?.dh ?? params?.h ?? 0;
-        showPicture(this.width > 0);
+        this.refreshPicture();
         this.announceMetadata();
         break;
       }

@@ -3,7 +3,7 @@ import { ArrowLeft, ChevronDown, Download, FileUp, Link2, LoaderCircle, Play, Se
 import { backend, describeError, isDesktop, type TorrentFile, type TorrentPreview } from "../lib/backend";
 import { formatBytes } from "../lib/format";
 import { useT } from "../lib/i18n";
-import { baseName, guessTitleQuery, isMagnetLink, isVideoFile, parseEpisode, parseQuality, resolveEpisode } from "../lib/parse";
+import { baseName, guessTitleQuery, isMagnetLink, isVideoFile, parseEpisode, parseQuality, resolveEpisodes } from "../lib/parse";
 import { toSource } from "../lib/releaseUpdate";
 import { imageUrl, tmdb, type MediaItem, type SeasonInfo } from "../lib/tmdb";
 import { useAsync } from "../lib/useAsync";
@@ -42,7 +42,7 @@ function InputStep({
   target: AddSourceTarget | null;
   suggested: AddSourceTarget | null;
   onLink: (link: string) => void;
-  onRelease: (release: Promise<TorrentPreview>, topicId: string) => void;
+  onRelease: (release: Promise<TorrentPreview>, topicId: string, season?: number, single?: boolean) => void;
   onFile: (path: string) => void;
   onChooseTitle: (target: AddSourceTarget) => void;
 }) {
@@ -214,24 +214,38 @@ interface EpisodeRowState {
   episode: number | null;
 }
 
-function buildEpisodeRows(preview: TorrentPreview, seasons: SeasonInfo[], defaultSeason: number): EpisodeRowState[] {
-  return videoFiles(preview).map((file) => {
-    const slot = resolveEpisode(parseEpisode(file.path), seasons, defaultSeason);
+function buildEpisodeRows(preview: TorrentPreview, seasons: SeasonInfo[], defaultSeason: number, pinnedSeason?: number): EpisodeRowState[] {
+  const files = videoFiles(preview);
+  const slots = resolveEpisodes(files.map((file) => file.path), seasons, defaultSeason, pinnedSeason);
+  return files.map((file, index) => {
+    const slot = slots[index];
     return { file, included: slot !== null, season: slot?.season ?? defaultSeason, episode: slot?.episode ?? null };
   });
 }
 
 type AddMode = "stream" | "download";
 
-function AddActions({ note, disabled, onAdd }: { note?: string; disabled: boolean; onAdd: (mode: AddMode) => void }) {
+function AddActions({
+  note,
+  disabled,
+  downloadLabel,
+  downloadDisabled,
+  onAdd,
+}: {
+  note?: string;
+  disabled: boolean;
+  downloadLabel?: string;
+  downloadDisabled?: boolean;
+  onAdd: (mode: AddMode) => void;
+}) {
   const { t } = useT();
   return (
     <>
       <div className="dialog__actions">
         {note && <span className="dialog__note">{note}</span>}
-        <button className="button" disabled={disabled} onClick={() => onAdd("download")}>
+        <button className="button" disabled={disabled || downloadDisabled} onClick={() => onAdd("download")}>
           <Download size={16} />
-          {t("common.download")}
+          {downloadLabel ?? t("common.download")}
         </button>
         <button className="button button--primary" disabled={disabled} onClick={() => onAdd("stream")}>
           <Play size={16} fill="currentColor" />
@@ -282,38 +296,88 @@ function SeriesMapping({
   target: AddSourceTarget;
   onConfirm: (rows: EpisodeRowState[], mode: AddMode) => void;
 }) {
-  const [defaultSeason, setDefaultSeason] = useState(target.defaultSeason);
-  const [rows, setRows] = useState(() => buildEpisodeRows(preview, target.seasons, target.defaultSeason));
+  const [rows, setRows] = useState(() => buildEpisodeRows(preview, target.seasons, target.defaultSeason, target.pinnedSeason));
   const { t, tn } = useT();
 
-  const changeDefaultSeason = (season: number) => {
-    setDefaultSeason(season);
-    setRows(buildEpisodeRows(preview, target.seasons, season));
-  };
   const patchRow = (index: number, change: Partial<EpisodeRowState>) =>
     setRows((current) => current.map((row) => (row.file.index === index ? { ...row, ...change } : row)));
+  const toggleRow = (row: EpisodeRowState) => patchRow(row.file.index, { included: !row.included });
 
-  const ready = rows.filter((row) => row.included && row.episode !== null);
+  const ready = rows.filter((row) => row.episode !== null);
+  const toDownload = ready.filter((row) => row.included);
   const seasonNumbers = target.seasons.length > 0 ? target.seasons.map((season) => season.seasonNumber) : [1];
+  const allIncluded = rows.length > 0 && rows.every((row) => row.included);
+  const someIncluded = rows.some((row) => row.included);
+  const included = rows.filter((row) => row.included);
+  const sharedSeason = included.length > 0 && included.every((row) => row.season === included[0].season) ? included[0].season : null;
+  const numberedEpisodes = included.flatMap((row) => (row.episode === null ? [] : [row.episode]));
+  const firstEpisode = numberedEpisodes.length > 0 ? Math.min(...numberedEpisodes) : null;
+
+  const setAll = (value: boolean) => setRows((current) => current.map((row) => ({ ...row, included: value })));
+  const setSeasonForAll = (season: number) =>
+    setRows((current) => current.map((row) => (row.included ? { ...row, season } : row)));
+  const startFrom = (episode: number) => {
+    if (firstEpisode === null || !Number.isFinite(episode) || episode < 1) return;
+    const shift = episode - firstEpisode;
+    setRows((current) => current.map((row) => (row.included && row.episode !== null ? { ...row, episode: row.episode + shift } : row)));
+  };
 
   return (
     <>
+      <p className="dialog__text">{t("addSource.series.check")}</p>
       <div className="mapping-head">
-        <p className="dialog__text">{t("addSource.series.check")}</p>
-        <label className="mapping-head__season">
-          {t("addSource.series.defaultSeason")}
-          <select className="select" value={defaultSeason} onChange={(event) => changeDefaultSeason(Number(event.target.value))}>
-            {seasonNumbers.map((season) => (
-              <option key={season} value={season}>
-                {season === 0 ? t("common.specials") : season}
-              </option>
-            ))}
-          </select>
+        <label className="mapping-head__all">
+          <input
+            type="checkbox"
+            checked={allIncluded}
+            ref={(element) => {
+              if (element) element.indeterminate = someIncluded && !allIncluded;
+            }}
+            onChange={(event) => setAll(event.target.checked)}
+          />
+          {t("addSource.series.all")}
         </label>
+        <div className="mapping-head__bulk">
+          <label className="mapping-head__field">
+            {t("addSource.series.seasonForAll")}
+            <select
+              className="select"
+              value={sharedSeason ?? ""}
+              disabled={included.length === 0}
+              onChange={(event) => setSeasonForAll(Number(event.target.value))}
+            >
+              {sharedSeason === null && <option value="">—</option>}
+              {seasonNumbers.map((season) => (
+                <option key={season} value={season}>
+                  {season === 0 ? t("common.specials") : season}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="mapping-head__field">
+            {t("addSource.series.firstEpisode")}
+            <input
+              className="input input--number"
+              type="number"
+              min={1}
+              value={firstEpisode ?? ""}
+              disabled={firstEpisode === null}
+              onChange={(event) => startFrom(Number(event.target.value))}
+            />
+          </label>
+        </div>
       </div>
+      <p className="mapping-note">{t("addSource.series.online")}</p>
       <div className="file-list">
         {rows.map((row) => (
-          <div key={row.file.index} className={`file-row ${row.included && row.episode !== null ? "is-selected" : ""}`}>
+          <div
+            key={row.file.index}
+            className={`file-row file-row--pickable ${row.episode !== null ? "is-selected" : ""}`}
+            onClick={(event) => {
+              if ((event.target as HTMLElement).closest("input, select, label")) return;
+              toggleRow(row);
+            }}
+          >
             <input
               type="checkbox"
               checked={row.included}
@@ -329,7 +393,7 @@ function SeriesMapping({
               <select className="select" value={row.season} onChange={(event) => patchRow(row.file.index, { season: Number(event.target.value) })}>
                 {seasonNumbers.map((season) => (
                   <option key={season} value={season}>
-                    {season}
+                    {season === 0 ? t("common.specials") : season}
                   </option>
                 ))}
               </select>
@@ -360,6 +424,8 @@ function SeriesMapping({
             : t("addSource.series.hint")
         }
         disabled={ready.length === 0}
+        downloadLabel={t("addSource.series.downloadChecked", { count: toDownload.length })}
+        downloadDisabled={toDownload.length === 0}
         onAdd={(mode) => onConfirm(ready, mode)}
       />
     </>
@@ -446,18 +512,24 @@ function AddSourceFlow({ request }: { request: AddSourceRequest }) {
     return () => window.removeEventListener("keydown", onKey);
   });
 
-  const commit = async (entries: { unitKey: string; file: TorrentFile }[], mode: AddMode) => {
+  const commit = async (entries: { unitKey: string; file: TorrentFile; download?: boolean }[], mode: AddMode) => {
     if (!preview || !target) return;
     setBusy(true);
     try {
       const downloadDir = useSettings.getState().downloadDir || null;
-      const downloaded = mode === "download" ? entries.map((entry) => entry.file.index) : [];
+      const downloaded = mode === "download" ? entries.filter((entry) => entry.download ?? true).map((entry) => entry.file.index) : [];
       await backend.addTorrent(preview.infoHash, downloaded, downloadDir);
       useLibrary.getState().addSources(entries.map((entry) => ({ unitKey: entry.unitKey, source: toSource(preview, entry.file) })));
       if (target.title.type === "tv" && topic.current) {
         useReleaseWatch
           .getState()
-          .follow({ title: target.title, topicId: topic.current, infoHash: preview.infoHash, defaultSeason: target.defaultSeason });
+          .follow({
+            title: target.title,
+            topicId: topic.current,
+            infoHash: preview.infoHash,
+            defaultSeason: target.defaultSeason,
+            ...(target.pinnedSeason !== undefined ? { pinnedSeason: target.pinnedSeason } : {}),
+          });
       }
       void useTorrents.getState().refresh();
       close();
@@ -520,8 +592,12 @@ function AddSourceFlow({ request }: { request: AddSourceRequest }) {
               topic.current = null;
               void inspect(backend.inspectLink(link));
             }}
-            onRelease={(release, topicId) => {
+            onRelease={(release, topicId, season, single) => {
               topic.current = topicId;
+              if (target && target.title.type === "tv") {
+                const { pinnedSeason: _previous, ...rest } = target;
+                setTarget(season === undefined ? rest : { ...rest, defaultSeason: season, ...(single ? { pinnedSeason: season } : {}) });
+              }
               void inspect(release);
             }}
             onFile={(path) => {
@@ -559,6 +635,7 @@ function AddSourceFlow({ request }: { request: AddSourceRequest }) {
                 rows.map((row) => ({
                   unitKey: unitKey("tv", target.title.id, row.season, row.episode ?? 1),
                   file: row.file,
+                  download: row.included,
                 })),
                 mode,
               )

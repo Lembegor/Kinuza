@@ -131,6 +131,12 @@ export interface SeasonInfo {
   name: string;
   episodeCount: number;
   year: string;
+  airDate?: string;
+}
+
+export interface ShowNames {
+  name: string;
+  seasons: Record<number, string>;
 }
 
 export interface Details extends MediaItem {
@@ -494,6 +500,7 @@ export const tmdb = {
           name: season.name,
           episodeCount: season.episode_count,
           year: (season.air_date ?? "").slice(0, 4),
+          airDate: season.air_date ?? "",
         }))
         .sort((a: SeasonInfo, b: SeasonInfo) => (a.seasonNumber || Infinity) - (b.seasonNumber || Infinity)),
       recommendations: toItems(raw.recommendations?.results, type).slice(0, 18),
@@ -645,6 +652,13 @@ export const tmdb = {
     return { last: toEpisode(raw.last_episode_to_air), next: toEpisode(raw.next_episode_to_air) };
   },
 
+  async showNames(seriesId: number, language: string): Promise<ShowNames> {
+    const raw = await request<Raw>(`/tv/${seriesId}`, { language }, seasonMaxAgeMs);
+    return {
+      name: raw.name ?? "",
+      seasons: Object.fromEntries((raw.seasons ?? []).map((season: Raw) => [season.season_number, season.name ?? ""])),
+    };
+  },
   async season(seriesId: number, seasonNumber: number): Promise<Episode[]> {
     const raw = await request<Raw>(`/tv/${seriesId}/season/${seasonNumber}`, {}, seasonMaxAgeMs);
     return (raw.episodes ?? []).map((episode: Raw) => ({

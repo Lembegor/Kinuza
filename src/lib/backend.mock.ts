@@ -27,6 +27,19 @@ const demoPreview: TorrentPreview = {
   ],
 };
 
+const demoSeriesPreview: TorrentPreview = {
+  infoHash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  name: "Jojo's Bizarre Adventure Stardust Crusaders - Egypt Hen [BDRip 1080p]",
+  alreadyAdded: false,
+  files: Array.from({ length: 24 }, (_, i) => ({
+    index: i,
+    path: `Jojo's Bizarre Adventure Stardust Crusaders - Egypt Hen [BDRip 1080p]/[Some-Stuffs]_Jojo's_Bizarre_Adventure_Stardust_Crusaders_${String(i + 1).padStart(2, "0")}_(${i + 25})_(1920x1080_Hi10P_BDRip_FLAC).mkv`,
+    length: 1.6 * GiB + i * 1e7,
+    included: true,
+    downloaded: 0,
+  })),
+};
+
 const torrents: TorrentView[] = [];
 const startedAt = Date.now();
 
@@ -72,6 +85,23 @@ const demoTrackerOther = {
   pageUrl: "https://example.com/",
 };
 
+const demoSeriesItems = [
+  ["Невероятные приключения ДжоДжо: Гонка «Стальной шар» (ТВ-7) / Steel Ball Run: JoJo no Kimyou na Bouken [ONA] [01-08 из XX] [2026, приключения, WEB-DL] [1080p] [UKR, ENG, JAP+Sub]", "8.85 GB", 75],
+  ["Невероятные Приключения ДжоДжо (ТВ-1) / JoJo no Kimyou na Bouken / JoJo's Bizarre Adventure [TV] [26 из 26] [2012-2013, приключения, BDRip] [1080p] [RUS(ext), JAP+Sub]", "38.77 GB", 47],
+  ["Невероятные приключения ДжоДжо: Каменный океан (ТВ-6, часть 3) / JoJo no Kimyou na Bouken: Stone Ocean [ONA] [14 из 14] [2022, BDRip] [1080p] [JAP+Sub]", "20.31 GB", 46],
+  ["Невероятные приключения ДжоДжо: Каменный океан (ТВ-6, часть 1) / JoJo no Kimyou na Bouken: Stone Ocean [ONA] [12 из 12] [2021, WEB-DL] [1080p] [RUS(int), JAP+Sub]", "14.1 GB", 31],
+  ["Невероятные приключения ДжоДжо: Крестоносцы звёздной пыли (ТВ-2) / JoJo no Kimyou na Bouken: Stardust Crusaders [TV] [24 из 24] [2014, BDRip] [1080p] [RUS(ext), JAP+Sub]", "30.2 GB", 22],
+  ["Невероятные приключения ДжоДжо: Крестоносцы звёздной пыли - Битва в Египте (ТВ-3) / JoJo no Kimyou na Bouken: Stardust Crusaders - Egypt-hen [TV] [24 из 24] [2015, BDRip] [1080p]", "29.7 GB", 19],
+  ["Невероятные приключения ДжоДжо: Несокрушимый алмаз (ТВ-4) / JoJo no Kimyou na Bouken: Diamond wa Kudakenai [TV] [39 из 39] [2016, BDRip] [1080p] [RUS(ext), JAP+Sub]", "52.4 GB", 15],
+  ["Невероятные приключения ДжоДжо: Золотой ветер (ТВ-5) / JoJo no Kimyou na Bouken: Ougon no Kaze [TV] [39 из 39] [2018-2019, BDRip] [1080p] [JAP+Sub]", "48.9 GB", 14],
+  ["Невероятные приключения ДжоДжо (ТВ-1 - ТВ-6) / JoJo no Kimyou na Bouken [TV] [190 из 190] [2012-2023, BDRip] [720p] [RUS(ext), JAP+Sub]", "120 GB", 9],
+  ["JoJo no Kimyou na Bouken: Stone Ocean [ONA] [01-38 из 38] [2021-2022, WEB-DL] [1080p] [JAP+Sub]", "41 GB", 6],
+].map(([title, size, seeds], index) => ({ id: String(7100000 + index), title: String(title), size: String(size), seeds: Number(seeds), pageUrl: "https://example.com/" }));
+
+function demoWords(text: string): string[] {
+  return text.toLowerCase().replace(/ё/g, "е").split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+}
+
 export async function mockInvoke(command: string, args: Record<string, unknown> = {}): Promise<unknown> {
   switch (command) {
     case "online_subtitles_search":
@@ -94,6 +124,14 @@ export async function mockInvoke(command: string, args: Record<string, unknown> 
       return { rating: 8.8, votes: 2_600_000 };
     case "rutracker_search":
       await new Promise((resolve) => setTimeout(resolve, 500));
+      if (demoWords(String(args.query ?? "")).some((word) => word === "джоджо" || word === "jojo")) {
+        if (Number(args.page ?? 0) > 0) return [];
+        const wanted = demoWords(String(args.query));
+        return demoSeriesItems.filter((item) => {
+          const words = new Set(demoWords(item.title));
+          return wanted.every((word) => words.has(word));
+        });
+      }
       return [...demoTrackerItems.slice(0, 4), demoTrackerOther, ...demoTrackerItems.slice(4)];
     case "rutracker_login_window":
       return null;
@@ -101,7 +139,7 @@ export async function mockInvoke(command: string, args: Record<string, unknown> 
       await new Promise((resolve) => setTimeout(resolve, 1500));
       return { [demoTrackerItems[3].id]: { width: 1024, height: 426 } };
     case "rutracker_torrent_inspect":
-      return demoPreview;
+      return String(args.id ?? "").startsWith("7100") ? demoSeriesPreview : demoPreview;
     case "rutracker_magnet":
       return `magnet:?xt=urn:btih:${demoPreview.infoHash}`;
     case "app_info":

@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { ArrowUp, ExternalLink, HardDrive, LoaderCircle, Monitor, Search, Sparkles } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ArrowUp, ChevronDown, ExternalLink, HardDrive, LoaderCircle, Monitor, Search, Sparkles } from "lucide-react";
 import { animeInfo } from "../lib/anilist";
 import { isDesktop, type TorrentPreview } from "../lib/backend";
 import { t, useT, type MessageKey } from "../lib/i18n";
@@ -16,6 +16,8 @@ import {
   type VoiceKind,
 } from "../lib/parse";
 import { rutracker, rutrackerErrors, type RutrackerItem, type VideoSize } from "../lib/rutracker";
+import { buildProfiles, matchSeasons, seasonQueries, taskKey, type SearchTask, type SeasonMatch, type SeasonProfile } from "../lib/seasonSearch";
+import { tmdb } from "../lib/tmdb";
 import { useAsync } from "../lib/useAsync";
 import { useSettings, type TrackerSort } from "../state/settings";
 import { useUi, type AddSourceTarget } from "../state/ui";
@@ -23,6 +25,10 @@ import { LanguageFlags } from "./LanguageFlags";
 
 const pageLookupLimit = 20;
 const anySeason = 0;
+const mainQueryPages = 4;
+const extraQueryPages = 2;
+const seasonQueryLimit = 14;
+const seasonChipNameLength = 36;
 
 const resolutionFilters = [
   { id: "2160", label: "4K", minRank: 2000 },
@@ -85,7 +91,37 @@ interface ReleaseRow {
   resolution: string;
   pageSize: VideoSize | null;
   sizeBytes: number;
-  seasons: [number, number] | null;
+  match: SeasonMatch | null;
+}
+
+type SeasonGroup = "season" | "several" | "unknown" | "other";
+
+function seasonGroup(match: SeasonMatch | null, season: number): SeasonGroup {
+  if (season === anySeason || match === null) return season === anySeason ? "season" : "unknown";
+  if (!match.seasons.includes(season)) return "other";
+  return match.seasons.length === 1 ? "season" : "several";
+}
+
+function matchLabel(match: SeasonMatch | null, scope: ReleaseScope | null, anime: boolean): string {
+  const episodes = scope?.episodes ? t("tracker.scope.episodes", scope.episodes) : "";
+  if (!match || match.seasons.length === 0) return anime || match ? episodes : scope ? scopeLabel(scope) : "";
+  const first = Math.min(...match.seasons);
+  const last = Math.max(...match.seasons);
+  const seasonText = first === last ? t("common.season", { season: first }) : t("tracker.scope.seasons", { from: first, to: last });
+  return [seasonText, episodes].filter(Boolean).join(" · ");
+}
+
+function mergeItems(known: RutrackerItem[], found: RutrackerItem[]): RutrackerItem[] {
+  const byId = new Map(known.map((item) => [item.id, item]));
+  for (const item of found) {
+    const kept = byId.get(item.id);
+    if (!kept || item.seeds > kept.seeds) byId.set(item.id, item);
+  }
+  return [...byId.values()].sort((a, b) => b.seeds - a.seeds);
+}
+
+function readable(name: string | undefined): string {
+  return name && /^[\p{Script=Latin}\p{Script=Cyrillic}\p{N}\p{P}\p{S}\p{Zs}]+$/u.test(name) ? name : "";
 }
 
 function resolutionFilterOf(resolution: string): string | null {
@@ -144,7 +180,13 @@ function toggled<T>(list: readonly T[], value: T): T[] {
   return list.includes(value) ? list.filter((item) => item !== value) : [...list, value];
 }
 
-export function TrackerSearch({ target, onPick }: { target: AddSourceTarget; onPick: (release: Promise<TorrentPreview>, topicId: string) => void }) {
+export function TrackerSearch({
+  target,
+  onPick,
+}: {
+  target: AddSourceTarget;
+  onPick: (release: Promise<TorrentPreview>, topicId: string, season?: number, single?: boolean) => void;
+}) {
   const initialQuery = useMemo(() => defaultQuery(target), [target]);
   const [queryInput, setQueryInput] = useState(initialQuery);
   const [activeQuery, setActiveQuery] = useState(initialQuery);
@@ -155,32 +197,134 @@ export function TrackerSearch({ target, onPick }: { target: AddSourceTarget; onP
   const [needsAuth, setNeedsAuth] = useState(false);
   const [authBusy, setAuthBusy] = useState(false);
   const [resolvingId, setResolvingId] = useState<string | null>(null);
+  const [extraLeft, setExtraLeft] = useState(0);
+  const [othersShown, setOthersShown] = useState(false);
 
   const prefs = useSettings((state) => state.trackerPrefs);
   const patchSettings = useSettings((state) => state.patch);
   const setPrefs = (change: Partial<typeof prefs>) =>
     patchSettings({ trackerPrefs: { ...useSettings.getState().trackerPrefs, ...change } });
-  const [season, setSeason] = useState(anySeason);
+  const seasonNumbers = target.title.type === "tv" ? target.seasons.map((item) => item.seasonNumber).filter((number) => number > 0) : [];
+  const [season, setSeason] = useState(() => (seasonNumbers.length > 1 && seasonNumbers.includes(target.defaultSeason) ? target.defaultSeason : anySeason));
   const { t, tn, locale, language } = useT();
+  const automatic = activeQuery.trim() === initialQuery.trim();
+  const isAnime = target.originalLanguage === "ja";
 
-  const fetchResults = async () => {
-    if (!activeQuery) return;
-    setLoading(true);
-    setError(null);
-    setNeedsAuth(false);
+  const anime = useAsync(
+    () =>
+      isAnime
+        ? animeInfo({ names: [target.originalTitle ?? "", target.title.title], type: target.title.type, year: Number(target.title.year) || null }).catch(() => null)
+        : Promise.resolve(null),
+    [target.title.type, target.title.id],
+  );
+  const otherLanguages = useAsync(
+    () =>
+      target.title.type === "tv"
+        ? Promise.all(["ru-RU", "en-US"].map((code) => tmdb.showNames(target.title.id, code).catch(() => null)))
+        : Promise.resolve([]),
+    [target.title.type, target.title.id],
+  );
+  const namesReady = !anime.loading && !otherLanguages.loading;
+
+  const showNames = useMemo(() => {
+    const localized = (otherLanguages.data ?? []).map((names) => names?.name ?? "");
+    const animeNames = anime.data ? [anime.data.current.romaji, anime.data.current.english, anime.data.parts[0]?.romaji ?? ""] : [];
+    return [...new Set([initialQuery, ...animeNames, ...localized, target.title.title, readable(target.originalTitle)].map((name) => name.replace(/\s*\([^()]*\)\s*$/, "").trim()).filter(Boolean))];
+  }, [initialQuery, anime.data, otherLanguages.data, target.title.title, target.originalTitle]);
+
+  const profiles = useMemo<SeasonProfile[]>(() => {
+    if (target.title.type !== "tv" || seasonNumbers.length === 0) return [];
+    const seasonNames: Record<number, string[]> = {};
+    for (const names of otherLanguages.data ?? []) {
+      for (const [number, name] of Object.entries(names?.seasons ?? {})) seasonNames[Number(number)] = [...(seasonNames[Number(number)] ?? []), name];
+    }
+    return buildProfiles({
+      seasons: target.seasons,
+      showNames,
+      seasonNames,
+      animeParts: anime.data?.parts ?? null,
+      label: (item) => t("common.season", { season: item.seasonNumber }),
+      currentYear: new Date().getFullYear(),
+    });
+  }, [target.title.type, target.seasons, showNames, otherLanguages.data, anime.data, seasonNumbers.length, t]);
+
+  const runner = useRef({ generation: 0, queue: [] as (SearchTask & { generation: number })[], done: new Set<string>(), busy: false, seasonsQueued: -1 });
+
+  const pump = async () => {
+    const state = runner.current;
+    if (state.busy) return;
+    state.busy = true;
     try {
-      setItems(await rutracker.search(activeQuery));
-    } catch (failure) {
-      if (failure === rutrackerErrors.authRequired) setNeedsAuth(true);
-      else setError(searchErrorText(failure));
+      while (state.queue.length > 0) {
+        const task = state.queue.shift()!;
+        if (task.generation !== state.generation || state.done.has(taskKey(task))) continue;
+        state.done.add(taskKey(task));
+        setExtraLeft(state.queue.filter((item) => item.generation === state.generation).length + (task.quiet ? 1 : 0));
+        try {
+          const found = await rutracker.search(task.query, task.quiet, task.page);
+          if (task.generation !== state.generation) continue;
+          setItems((known) => mergeItems(known, found));
+          const pages = task.season === null && !task.quiet ? mainQueryPages : extraQueryPages;
+          if (found.length >= rutracker.pageSize && task.page + 1 < pages) {
+            state.queue.unshift({ ...task, page: task.page + 1, quiet: true });
+          }
+          if (!task.quiet) setLoading(false);
+        } catch (failure) {
+          if (task.generation !== state.generation || task.quiet) continue;
+          state.queue = [];
+          if (failure === rutrackerErrors.authRequired) setNeedsAuth(true);
+          else setError(searchErrorText(failure));
+          setLoading(false);
+        }
+      }
     } finally {
-      setLoading(false);
+      state.busy = false;
+      setExtraLeft(0);
     }
   };
 
+  const enqueue = (tasks: SearchTask[]) => {
+    const state = runner.current;
+    state.queue.push(...tasks.map((task) => ({ ...task, generation: state.generation })));
+    void pump();
+  };
+
+  const startSearch = () => {
+    if (!activeQuery.trim()) return;
+    const state = runner.current;
+    state.generation += 1;
+    state.queue = [];
+    state.done = new Set();
+    state.seasonsQueued = -1;
+    setItems([]);
+    setLoading(true);
+    setError(null);
+    setNeedsAuth(false);
+    setOthersShown(false);
+    enqueue([{ query: activeQuery.trim(), page: 0, quiet: false, season: null }]);
+  };
+
   useEffect(() => {
-    void fetchResults();
+    startSearch();
   }, [activeQuery]);
+
+  useEffect(
+    () => () => {
+      runner.current.generation += 1;
+      runner.current.queue = [];
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const state = runner.current;
+    if (!automatic || !namesReady || loading || needsAuth || error !== null || state.seasonsQueued === state.generation) return;
+    state.seasonsQueued = state.generation;
+    const alternatives: SearchTask[] = showNames.slice(1).map((query) => ({ query, page: 0, quiet: true, season: null }));
+    const ordered = [...profiles].sort((a, b) => Number(b.number === season) - Number(a.number === season));
+    const bySeason = ordered.flatMap((profile) => seasonQueries(showNames, profile)).slice(0, seasonQueryLimit);
+    enqueue([...bySeason.filter((task) => task.season === season), ...alternatives, ...bySeason.filter((task) => task.season !== season)]);
+  }, [automatic, namesReady, loading, needsAuth, error, profiles, showNames]);
 
   const releases = useMemo(() => new Map(items.map((item) => [item.id, parseTrackerRelease(item.title)])), [items]);
   const [videoSizes, setVideoSizes] = useState<Record<string, VideoSize>>({});
@@ -225,20 +369,30 @@ export function TrackerSearch({ target, onPick }: { target: AddSourceTarget; onP
           resolution: release.resolution || (pageSize ? qualityFromSize(pageSize.width, pageSize.height) : ""),
           pageSize,
           sizeBytes: parseSize(item.size),
-          seasons: release.scope?.seasons ?? null,
+          match: matchSeasons(item.title, profiles, isAnime),
         };
       }),
-    [items, releases, videoSizes],
+    [items, releases, videoSizes, profiles, isAnime],
   );
 
+  const passesOtherFilters = (row: ReleaseRow) =>
+    (!prefs.videoOnly || row.isVideo) && voiceFilters.every((filter) => !prefs.voices.includes(filter.id) || filter.matches(row.release));
+
+  const seasonCounts = useMemo(() => {
+    const counts = new Map<number, number>();
+    for (const row of rows) {
+      if (!passesOtherFilters(row)) continue;
+      for (const number of row.match?.seasons ?? []) counts.set(number, (counts.get(number) ?? 0) + 1);
+    }
+    return counts;
+  }, [rows, prefs.videoOnly, prefs.voices]);
+
   const beforeResolution = useMemo(
-    () =>
-      rows.filter(
-        (row) =>
-          (!prefs.videoOnly || row.isVideo) &&
-          voiceFilters.every((filter) => !prefs.voices.includes(filter.id) || filter.matches(row.release)) &&
-          (season === anySeason || row.seasons === null || (row.seasons[0] <= season && season <= row.seasons[1])),
-      ),
+    () => rows.filter((row) => passesOtherFilters(row) && (othersShown || seasonGroup(row.match, season) !== "other")),
+    [rows, prefs.videoOnly, prefs.voices, season, othersShown],
+  );
+  const otherSeasonCount = useMemo(
+    () => (season === anySeason ? 0 : rows.filter((row) => passesOtherFilters(row) && seasonGroup(row.match, season) === "other").length),
     [rows, prefs.videoOnly, prefs.voices, season],
   );
 
@@ -262,17 +416,30 @@ export function TrackerSearch({ target, onPick }: { target: AddSourceTarget; onP
     return [...matching].sort((a, b) => direction * (a.sizeBytes - b.sizeBytes));
   }, [beforeResolution, prefs.resolutions, prefs.sort, language, target.originalLanguage]);
 
+  const groupOrder: SeasonGroup[] = ["season", "several", "unknown", "other"];
+  const grouped = useMemo(
+    () =>
+      season === anySeason
+        ? visible
+        : groupOrder.flatMap((group) => visible.filter((row) => seasonGroup(row.match, season) === group)),
+    [visible, season],
+  );
+
   const filtersActive = prefs.resolutions.length > 0 || prefs.voices.length > 0 || season !== anySeason;
   const resetFilters = () => {
     setPrefs({ resolutions: [], voices: [] });
     setSeason(anySeason);
+  };
+  const chooseSeason = (number: number) => {
+    setSeason(number);
+    setOthersShown(false);
   };
 
   const handleLogin = async () => {
     setAuthBusy(true);
     try {
       await rutracker.login();
-      await fetchResults();
+      startSearch();
     } catch (failure) {
       if (failure !== rutrackerErrors.cancelled) useUi.getState().toast(t("tracker.error.loginFailed"), "error");
     } finally {
@@ -280,37 +447,20 @@ export function TrackerSearch({ target, onPick }: { target: AddSourceTarget; onP
     }
   };
 
-  const pickItem = (item: RutrackerItem) => {
-    setResolvingId(item.id);
-    const release = rutracker.inspectRelease(item.id);
+  const pickItem = (row: ReleaseRow) => {
+    setResolvingId(row.item.id);
+    const release = rutracker.inspectRelease(row.item.id);
     release.catch(() => undefined).finally(() => setResolvingId(null));
-    onPick(release, item.id);
-  };
-
-  const anime = useAsync(
-    () =>
-      target.originalLanguage === "ja"
-        ? animeInfo({ names: [target.originalTitle ?? "", target.title.title], type: target.title.type, year: Number(target.title.year) || null })
-        : Promise.resolve(null),
-    [target.title.type, target.title.id],
-  );
-  const otherNames = anime.data
-    ? [...new Set([anime.data.current.romaji, anime.data.current.english])].filter(
-        (name) => name && name.toLowerCase() !== activeQuery.trim().toLowerCase(),
-      )
-    : [];
-  const searchFor = (name: string) => {
-    setQueryInput(name);
-    setActiveQuery(name);
+    const seasons = row.match?.seasons ?? [];
+    const picked = season !== anySeason && seasons.includes(season) ? season : seasons.length > 0 ? Math.min(...seasons) : undefined;
+    onPick(release, row.item.id, picked, seasons.length === 1);
   };
 
   const submitSearch = (event: React.FormEvent) => {
     event.preventDefault();
-    if (queryInput === activeQuery) void fetchResults();
+    if (queryInput === activeQuery) startSearch();
     else setActiveQuery(queryInput);
   };
-
-  const seasonNumbers = target.title.type === "tv" ? target.seasons.map((item) => item.seasonNumber).filter((number) => number > 0) : [];
 
   return (
     <div className="archive">
@@ -342,15 +492,49 @@ export function TrackerSearch({ target, onPick }: { target: AddSourceTarget; onP
               {t("tracker.search")}
             </button>
           </form>
-          {otherNames.length > 0 && (
-            <div className="tracker-names">
-              <span>{t("tracker.names.hint")}</span>
-              {otherNames.map((name) => (
-                <button key={name} type="button" className="chip" disabled={loading} onClick={() => searchFor(name)}>
-                  {name}
-                </button>
-              ))}
+          {seasonNumbers.length > 1 && (
+            <div className="tracker-seasons" role="group" aria-label={t("tracker.filter.season")}>
+              <button
+                type="button"
+                className={`chip ${season === anySeason ? "is-active" : ""}`}
+                aria-pressed={season === anySeason}
+                onClick={() => chooseSeason(anySeason)}
+              >
+                {t("tracker.filter.allSeasons")}
+                <small>{rows.filter(passesOtherFilters).length}</small>
+              </button>
+              {profiles.map((profile) => {
+                const active = season === profile.number;
+                const name = target.seasons.find((item) => item.seasonNumber === profile.number)?.name ?? "";
+                const named = profile.names.length > 0 && name.length <= seasonChipNameLength && !/\d/.test(name);
+                return (
+                  <button
+                    key={profile.number}
+                    type="button"
+                    className={`chip ${active ? "is-active" : ""}`}
+                    aria-pressed={active}
+                    title={name || profile.label}
+                    onClick={() => chooseSeason(profile.number)}
+                  >
+                    {named ? (
+                      <>
+                        <b>{profile.number}</b>
+                        {name}
+                      </>
+                    ) : (
+                      profile.label
+                    )}
+                    <small>{seasonCounts.get(profile.number) ?? 0}</small>
+                  </button>
+                );
+              })}
             </div>
+          )}
+          {extraLeft > 0 && !loading && (
+            <p className="tracker-more">
+              <LoaderCircle size={13} className="spin" />
+              {t("tracker.searchingMore")}
+            </p>
           )}
 
           <div className="tracker-filters">
@@ -398,16 +582,6 @@ export function TrackerSearch({ target, onPick }: { target: AddSourceTarget; onP
               </button>
             </div>
             <div className="tracker-filters__group tracker-filters__group--end">
-              {seasonNumbers.length > 1 && (
-                <select className="select" aria-label={t("tracker.filter.season")} value={season} onChange={(event) => setSeason(Number(event.target.value))}>
-                  <option value={anySeason}>{t("tracker.filter.allSeasons")}</option>
-                  {seasonNumbers.map((number) => (
-                    <option key={number} value={number}>
-                      {t("common.season", { season: number })}
-                    </option>
-                  ))}
-                </select>
-              )}
               <select
                 className="select"
                 aria-label={t("tracker.sort")}
@@ -429,7 +603,7 @@ export function TrackerSearch({ target, onPick }: { target: AddSourceTarget; onP
             <p className="archive__note">{error}</p>
           ) : items.length === 0 ? (
             <p className="archive__note">{t("tracker.empty", { query: activeQuery })}</p>
-          ) : visible.length === 0 ? (
+          ) : visible.length === 0 && otherSeasonCount === 0 ? (
             <p className="archive__note">
               {tn("tracker.noneMatch", items.length)}{" "}
               {filtersActive ? (
@@ -444,19 +618,32 @@ export function TrackerSearch({ target, onPick }: { target: AddSourceTarget; onP
             </p>
           ) : (
             <div className="tracker-list">
-              {visible.map((row, index) => (
-                <TrackerItem
-                  key={row.item.id}
-                  row={row}
-                  best={prefs.sort === "best" && index === 0 && row.isVideo}
-                  originalLanguage={target.originalLanguage ?? ""}
-                  locale={locale}
-                  pageSizeLoading={sizeLookupIds.has(row.item.id)}
-                  resolving={resolvingId === row.item.id}
-                  disabled={resolvingId !== null}
-                  onPick={() => pickItem(row.item)}
-                />
-              ))}
+              {grouped.map((row, index) => {
+                const group = seasonGroup(row.match, season);
+                const startsGroup = season !== anySeason && group !== "season" && (index === 0 || seasonGroup(grouped[index - 1].match, season) !== group);
+                return (
+                  <div key={row.item.id} className="tracker-list__entry">
+                    {startsGroup && <h3 className="tracker-list__group">{t(`tracker.group.${group}`, { season })}</h3>}
+                    <TrackerItem
+                      row={row}
+                      best={prefs.sort === "best" && index === 0 && row.isVideo && group === "season"}
+                      anime={isAnime}
+                      originalLanguage={target.originalLanguage ?? ""}
+                      locale={locale}
+                      pageSizeLoading={sizeLookupIds.has(row.item.id)}
+                      resolving={resolvingId === row.item.id}
+                      disabled={resolvingId !== null}
+                      onPick={() => pickItem(row)}
+                    />
+                  </div>
+                );
+              })}
+              {otherSeasonCount > 0 && !othersShown && (
+                <button type="button" className="tracker-others" onClick={() => setOthersShown(true)}>
+                  <ChevronDown size={15} />
+                  {tn("tracker.otherSeasons", otherSeasonCount)}
+                </button>
+              )}
             </div>
           )}
         </>
@@ -500,6 +687,7 @@ function TrackerResolution({ row, loading }: { row: ReleaseRow; loading: boolean
 function TrackerItem({
   row,
   best,
+  anime,
   originalLanguage,
   locale,
   pageSizeLoading,
@@ -509,6 +697,7 @@ function TrackerItem({
 }: {
   row: ReleaseRow;
   best: boolean;
+  anime: boolean;
   originalLanguage: string;
   locale: string;
   pageSizeLoading: boolean;
@@ -531,7 +720,10 @@ function TrackerItem({
             </span>
           )}
           {release.quality && <span className="quality-tag">{release.quality}</span>}
-          {release.scope && <span className="tracker-item__tag tracker-item__tag--scope">{scopeLabel(release.scope)}</span>}
+          {(() => {
+            const label = matchLabel(row.match, release.scope, anime);
+            return label ? <span className="tracker-item__tag tracker-item__tag--scope">{label}</span> : null;
+          })()}
           {release.tags.map((tag) => (
             <span key={tag} className="tracker-item__tag">
               {tag}

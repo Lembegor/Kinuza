@@ -28,6 +28,7 @@ import { useInbox } from "./state/inbox";
 import { useLibrary } from "./state/library";
 import { useSettings } from "./state/settings";
 import { startTorrentPolling } from "./state/torrents";
+import { scheduleSourceRepair } from "./state/sourceRepair";
 import { useUi } from "./state/ui";
 import { notify } from "./state/notifications";
 import { useUpdater } from "./state/updater";
@@ -191,9 +192,11 @@ export default function App() {
       if (mpv.supported) void mpv.warm().catch(() => undefined);
     }, mpvWarmDelayMs);
     const stopPolling = startTorrentPolling();
+    const stopRepair = scheduleSourceRepair();
     return () => {
       clearTimeout(warm);
       stopPolling();
+      stopRepair();
     };
   }, []);
 

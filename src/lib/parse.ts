@@ -317,6 +317,32 @@ export function resolveEpisode(
   return { season: defaultSeason, episode: guess.episode };
 }
 
+function throughNumber(path: string, episode: number): number | null {
+  const file = path.replace(/\\/g, "/").split("/").pop() ?? "";
+  const found = /(?:^|[ ._-])(\d{1,3})[ ._-]*\((\d{1,3})\)/.exec(file);
+  return found && Number(found[1]) === episode ? Number(found[2]) : null;
+}
+
+export function resolveEpisodes(paths: string[], seasons: SeasonInfo[], defaultSeason: number, pinnedSeason?: number): (EpisodeSlot | null)[] {
+  const guesses = paths.map(parseEpisode);
+  const stated = new Set(guesses.flatMap((guess) => (guess.season === null ? [] : [guess.season])));
+  const overridden = pinnedSeason !== undefined && stated.size === 1 && !stated.has(pinnedSeason);
+  const fallback = pinnedSeason ?? defaultSeason;
+  const through = guesses.map((guess, index) => (guess.episode === null ? null : throughNumber(paths[index], guess.episode)));
+  const numbered = guesses.flatMap((guess, index) => (guess.episode === null ? [] : [{ episode: guess.episode, season: guess.season, through: through[index] }]));
+  const shift = numbered[0]?.through != null ? numbered[0].through - numbered[0].episode : 0;
+  const capacity = seasons.find((season) => season.seasonNumber === fallback)?.episodeCount ?? 0;
+  const shifted =
+    shift > 0 &&
+    numbered.every((entry) => entry.through === entry.episode + shift) &&
+    Math.max(...numbered.map((entry) => entry.episode + shift)) <= capacity &&
+    (overridden || numbered.every((entry) => entry.season === null || entry.season === fallback));
+  return guesses.map((guess) => {
+    const adjusted = overridden ? { ...guess, season: null } : guess;
+    return resolveEpisode(shifted && adjusted.episode !== null ? { season: fallback, episode: adjusted.episode + shift } : adjusted, seasons, fallback);
+  });
+}
+
 export function guessTitleQuery(torrentName: string): string {
   const withoutBrackets = torrentName.replace(/\[[^\]]*\]/g, " ");
   const cut = withoutBrackets.search(

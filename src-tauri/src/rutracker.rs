@@ -52,6 +52,7 @@ const PROBE_INTERVAL: Duration = Duration::from_millis(400);
 const CHALLENGE_GRACE: Duration = Duration::from_secs(6);
 const MARK_STALE_SCRIPT: &str = "window.__kinuzaStale = true;";
 const MAX_SEARCH_RESULTS: usize = 50;
+const LAST_SEARCH_PAGE: u32 = 9;
 const MAX_SIZE_LOOKUPS: usize = 20;
 const SEARCH_ORDER: &str = "o=10&s=2";
 const MAGNET_PREFIX: &str = "magnet:?xt=urn:btih:";
@@ -522,10 +523,13 @@ pub async fn rutracker_search(
     state: tauri::State<'_, Mutex<RutrackerState>>,
     query: String,
     quiet: Option<bool>,
+    page: Option<u32>,
 ) -> Result<Vec<RutrackerItem>, String> {
     let (encoded_query, _, _) = WINDOWS_1251.encode(&query);
+    let start = page.unwrap_or(0).min(LAST_SEARCH_PAGE) as usize * MAX_SEARCH_RESULTS;
+    let paging = if start > 0 { format!("&start={start}") } else { String::new() };
     let url = forum_url(&format!(
-        "tracker.php?nm={}&{SEARCH_ORDER}",
+        "tracker.php?nm={}&{SEARCH_ORDER}{paging}",
         percent_encode(&encoded_query, NON_ALPHANUMERIC)
     ));
 
