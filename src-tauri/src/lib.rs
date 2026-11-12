@@ -20,6 +20,7 @@ mod online_subtitles;
 mod report;
 mod rutracker;
 mod server;
+mod storage;
 mod store;
 mod tray;
 
@@ -58,6 +59,7 @@ fn prepare_linux_webview() {
 pub fn run() {
     #[cfg(target_os = "linux")]
     prepare_linux_webview();
+    storage::clear_pending_web_cache();
     tauri::Builder::default()
         .manage(TokioMutex::new(rutracker::RutrackerState::new()))
         .manage(imdb::ImdbState::default())
@@ -100,6 +102,11 @@ pub fn run() {
             commands::torrent_list,
             commands::torrent_pause,
             commands::torrent_resume,
+            commands::torrent_set_upload,
+            storage::storage_report,
+            storage::storage_clear_part,
+            storage::storage_drop_cached,
+            storage::storage_free_download,
             commands::torrent_delete,
             commands::torrent_select_files,
             commands::torrent_hold,

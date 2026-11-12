@@ -34,6 +34,7 @@ export interface TorrentView {
   uploadSpeed: number;
   peers: number;
   files: TorrentFile[];
+  uploadEnabled: boolean;
 }
 
 export interface AppInfo {
@@ -189,12 +190,44 @@ export interface DownloadPolicy {
   maxActiveDownloads: number;
   seedRatio: number;
   cacheLimitGb: number;
+  uploadOffByDefault: boolean;
 }
 
 export interface StorageInfo {
   freeBytes: number;
   totalBytes: number;
   cacheBytes: number;
+}
+
+export interface StorageDisk {
+  path: string;
+  freeBytes: number;
+  totalBytes: number;
+}
+
+export interface CacheEntry {
+  infoHash: string;
+  name: string;
+  bytes: number;
+  lastPlayed: number;
+  inUse: boolean;
+}
+
+export type StoragePartId = "library" | "ffmpeg" | "imdb" | "fingerprints" | "logs" | "mpv" | "webCache" | "webData";
+
+export interface StoragePart {
+  id: StoragePartId;
+  bytes: number;
+  clearable: boolean;
+  later: boolean;
+}
+
+export interface StorageReport {
+  downloadsDisk: StorageDisk | null;
+  dataDisk: StorageDisk | null;
+  cache: CacheEntry[];
+  parts: StoragePart[];
+  webCachePending: boolean;
 }
 
 export interface AudioTrackInfo {
@@ -227,6 +260,7 @@ export const backend = {
     call<void>("torrent_add", { infoHash, files, downloadDir }),
   listTorrents: () => call<TorrentView[]>("torrent_list"),
   pause: (infoHash: string) => call<void>("torrent_pause", { infoHash }),
+  setUpload: (infoHash: string, enabled: boolean) => call<void>("torrent_set_upload", { infoHash, enabled }),
   resume: (infoHash: string) => call<void>("torrent_resume", { infoHash }),
   remove: (infoHash: string, deleteFiles: boolean) =>
     call<void>("torrent_delete", { infoHash, deleteFiles }),
@@ -270,6 +304,10 @@ export const backend = {
   logWrite: (level: "info" | "warn" | "error", message: string) => call<void>("log_write", { level, message }),
   openLogs: () => call<void>("logs_open"),
   clearStreamCache: () => call<number>("stream_cache_clear"),
+  storageReport: (downloadDir: string | null) => call<StorageReport>("storage_report", { downloadDir }),
+  clearStoragePart: (id: StoragePartId) => call<number>("storage_clear_part", { id }),
+  dropCached: (infoHash: string) => call<number>("storage_drop_cached", { infoHash }),
+  freeDownload: (infoHash: string) => call<number>("storage_free_download", { infoHash }),
   takeLaunchRequest: () => call<LaunchRequest | null>("take_launch_request"),
   associationStatus: () => call<AssociationStatus>("associations_status"),
   setAssociations: (enabled: boolean) => call<AssociationStatus>("associations_set", { enabled }),
@@ -310,6 +348,8 @@ const errorMessages: Record<string, MessageKey> = {
   report_failed: "report.failed",
   report_unconfigured: "report.unconfigured",
   report_empty: "report.empty",
+  storage_in_use: "storage.inUse",
+  storage_clear_failed: "storage.failed",
 };
 
 export function describeError(error: unknown): string {

@@ -808,6 +808,15 @@ impl TorrentStateLive {
         );
     }
 
+    pub(crate) fn announce_choking(&self, choke: bool) {
+        for entry in self.peers.states.iter() {
+            if let Some(live) = entry.value().get_live() {
+                let message = if choke { Message::Choke } else { Message::Unchoke };
+                let _ = live.tx.send(WriterRequest::Message(message));
+            }
+        }
+    }
+
     fn pex_flags(&self, addr: SocketAddr) -> u8 {
         self.peers
             .with_live(addr, |live| {
@@ -1346,6 +1355,10 @@ impl PeerConnectionHandler for &'_ PeerHandler {
         self.state.get_approx_have_bytes() > 0
     }
 
+    fn should_unchoke(&self) -> bool {
+        self.state.shared.uploads()
+    }
+
     fn should_transmit_have(&self, id: ValidPieceIndex) -> bool {
         if self.state.shared.options.disable_upload() {
             return false;
@@ -1610,6 +1623,10 @@ impl PeerHandler {
     fn on_download_request(&self, request: Request) -> anyhow::Result<()> {
         if self.state.torrent().options.disable_upload() {
             anyhow::bail!("upload disabled, but peer requested a piece")
+        }
+        if !self.state.shared.uploads() {
+            trace!("upload is off for this torrent, ignoring a request");
+            return Ok(());
         }
 
         let piece_index = match self.state.lengths.validate_piece_index(request.index) {

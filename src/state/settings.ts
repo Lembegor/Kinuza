@@ -49,6 +49,7 @@ export interface Settings {
   uploadLimit: number;
   maxActiveDownloads: number;
   seedRatio: number;
+  uploadByDefault: boolean;
   cacheLimitGb: number;
   autoDeleteWatched: boolean;
   closeToTray: boolean;
@@ -90,6 +91,7 @@ const defaults: Settings = {
   uploadLimit: 0,
   maxActiveDownloads: 0,
   seedRatio: 0,
+  uploadByDefault: true,
   cacheLimitGb: 20,
   autoDeleteWatched: false,
   closeToTray: !isLinux,
@@ -120,7 +122,7 @@ function upgrade(stored: Partial<Settings>): Partial<Settings> {
 }
 
 const bytesPerKilobyte = 1024;
-const policyKeys = ["downloadLimit", "uploadLimit", "maxActiveDownloads", "seedRatio", "cacheLimitGb"] as const;
+const policyKeys = ["downloadLimit", "uploadLimit", "maxActiveDownloads", "seedRatio", "cacheLimitGb", "uploadByDefault"] as const;
 
 function applyDownloadPolicy(settings: Settings): void {
   backend
@@ -130,6 +132,7 @@ function applyDownloadPolicy(settings: Settings): void {
       maxActiveDownloads: settings.maxActiveDownloads,
       seedRatio: settings.seedRatio,
       cacheLimitGb: settings.cacheLimitGb,
+      uploadOffByDefault: !settings.uploadByDefault,
     })
     .catch((error) => report("downloads", "journal.settings.policy", error));
 }

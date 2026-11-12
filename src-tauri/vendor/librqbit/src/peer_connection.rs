@@ -44,6 +44,9 @@ pub trait PeerConnectionHandler {
     ) -> anyhow::Result<()>;
     async fn on_received_message(&self, msg: Message<'_>) -> anyhow::Result<()>;
     fn should_transmit_have(&self, id: ValidPieceIndex) -> bool;
+    fn should_unchoke(&self) -> bool {
+        true
+    }
     fn on_uploaded_bytes(&self, bytes: u32);
     fn read_chunk(&self, chunk: &ChunkInfo, buf: &mut [u8]) -> anyhow::Result<()>;
     fn update_my_extended_handshake(
@@ -349,14 +352,16 @@ impl<H: PeerConnectionHandler> PeerConnection<H> {
                 trace!("sent bitfield");
             }
 
-            let len = Message::Unchoke.serialize(&mut *write_buf, &Default::default)?;
-            with_timeout(
-                "writing",
-                rwtimeout,
-                write.write_all(&write_buf[..len]).map_err(Error::Write),
-            )
-            .await?;
-            trace!("sent unchoke");
+            if self.handler.should_unchoke() {
+                let len = Message::Unchoke.serialize(&mut *write_buf, &Default::default)?;
+                with_timeout(
+                    "writing",
+                    rwtimeout,
+                    write.write_all(&write_buf[..len]).map_err(Error::Write),
+                )
+                .await?;
+                trace!("sent unchoke");
+            }
 
             let mut broadcast_closed = false;
 

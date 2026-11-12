@@ -5,9 +5,10 @@ import { EmptyState } from "../components/Cards";
 import { backend, describeError, isDesktop, type TorrentView } from "../lib/backend";
 import { formatBytes, formatEta, formatSpeed } from "../lib/format";
 import { t, useT, type MessageKey } from "../lib/i18n";
-import { useLibrary, type Progress, type Source } from "../state/library";
+import { useLibrary } from "../state/library";
 import { etaSeconds, isDownload, torrentProgress, useTorrents } from "../state/torrents";
 import { useUi } from "../state/ui";
+import { useTorrentTitles, type TorrentTitle } from "../state/torrentTitles";
 
 const stateLabels: Record<string, MessageKey> = {
   initializing: "downloads.state.initializing",
@@ -31,47 +32,11 @@ function statusText(torrent: TorrentView): string {
   return eta ? t("downloads.status.remaining", { time: eta }) : t("downloads.status.searching");
 }
 
-interface TorrentTitle {
-  path: string;
-  label: string;
-  series: string | null;
-  seasons: number[];
-}
-
 function seasonsLabel(seasons: number[]): string {
   if (seasons.length === 0) return "";
   const sorted = [...seasons].sort((a, b) => a - b);
   if (sorted.length === 1) return t("common.season", { season: sorted[0] });
   return t("downloads.group.seasons", { from: sorted[0], to: sorted[sorted.length - 1] });
-}
-
-function useTorrentTitles(): Record<string, TorrentTitle> {
-  const sources = useLibrary((state) => state.sources);
-  const tracked = useLibrary((state) => state.tracked);
-  const progress = useLibrary((state) => state.progress);
-  const { t } = useT();
-
-  return useMemo(() => {
-    const names = new Map<string, string>();
-    for (const [key, title] of Object.entries(tracked)) names.set(key, title.title);
-    for (const item of Object.values<Progress>(progress)) names.set(`${item.title.type}:${item.title.id}`, item.title.title);
-
-    const result: Record<string, TorrentTitle> = {};
-    for (const [unit, list] of Object.entries<Source[]>(sources)) {
-      const [type, id, season] = unit.split(":");
-      for (const source of list) {
-        const known = (result[source.infoHash] ??= {
-          path: `/title/${type}/${id}`,
-          label: names.get(`${type}:${id}`) ?? t("common.openPage"),
-          series: type === "tv" ? `tv:${id}` : null,
-          seasons: [],
-        });
-        const number = Number(season);
-        if (type === "tv" && Number.isFinite(number) && number > 0 && !known.seasons.includes(number)) known.seasons.push(number);
-      }
-    }
-    return result;
-  }, [sources, tracked, progress]);
 }
 
 async function run(action: Promise<void>): Promise<void> {
@@ -175,6 +140,16 @@ function TorrentCard({ torrent, link, badge }: { torrent: TorrentView; link?: { 
       </div>
       <div className="torrent__percent">{Math.floor(progress * 100)}%</div>
       <div className="torrent__actions">
+        <button
+          className={`torrent__upload ${torrent.uploadEnabled ? "is-on" : ""}`}
+          aria-pressed={torrent.uploadEnabled}
+          aria-label={t(torrent.uploadEnabled ? "downloads.upload.on" : "downloads.upload.off")}
+          title={t(torrent.uploadEnabled ? "downloads.upload.onNote" : "downloads.upload.offNote")}
+          onClick={() => void run(backend.setUpload(torrent.infoHash, !torrent.uploadEnabled))}
+        >
+          <ArrowUp size={14} />
+          <span>{t(torrent.uploadEnabled ? "downloads.upload.on" : "downloads.upload.off")}</span>
+        </button>
         <button
           className="icon-button"
           aria-label={paused ? t("downloads.resume") : t("downloads.pause")}

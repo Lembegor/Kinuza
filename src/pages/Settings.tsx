@@ -15,9 +15,9 @@ import { useAsync } from "../lib/useAsync";
 import { useLibrary } from "../state/library";
 import { useSettings, type AudioMode, type SpoilerMode, type SubtitleBackground, type SubtitleColor, type SubtitleFont, type VideoQuality } from "../state/settings";
 import { accentColors } from "../lib/appearance";
-import { isDownload, useTorrents } from "../state/torrents";
 import { useUi } from "../state/ui";
 import { hasHistory, openHistory } from "../components/WhatsNew";
+import { StorageBar, useStorageReport, useStorageTotals } from "../components/StorageBar";
 import { useUpdater, type UpdateStatus } from "../state/updater";
 
 const updateLabels: Record<UpdateStatus, MessageKey | null> = {
@@ -88,6 +88,8 @@ export default function Settings() {
   const navigate = useNavigate();
   const toast = useUi((state) => state.toast);
   const storage = useAsync(() => backend.storageInfo(settings.downloadDir || null), [settings.downloadDir]);
+  const storageReport = useStorageReport(storage.data?.cacheBytes ?? 0);
+  const storageTotals = useStorageTotals(storageReport.data);
   const [clearingCache, setClearingCache] = useState(false);
   const clearCache = async () => {
     setClearingCache(true);
@@ -102,9 +104,6 @@ export default function Settings() {
       setClearingCache(false);
     }
   };
-  const downloadedBytes = useTorrents((state) =>
-    state.list.filter(isDownload).reduce((sum, torrent) => sum + torrent.files.reduce((files, file) => files + file.downloaded, 0), 0),
-  );
   const languageLabel = (code: string) => {
     const name = languageName(code, locale);
     return name.charAt(0).toUpperCase() + name.slice(1);
@@ -540,18 +539,18 @@ export default function Settings() {
             </button>
           </div>
         </div>
-        <div className="setting">
-          <div>
-            <strong>{t("settings.storage")}</strong>
-            <p>
-              {storage.data
-                ? t("settings.storage.value", {
-                    free: formatBytes(storage.data.freeBytes),
-                    total: formatBytes(storage.data.totalBytes),
-                    used: formatBytes(downloadedBytes),
-                  })
-                : "…"}
-            </p>
+        <div className="setting setting--storage">
+          <div className="setting__wide">
+            <div className="setting__wide-head">
+              <div>
+                <strong>{t("settings.storage")}</strong>
+                <p>{t("settings.storage.note")}</p>
+              </div>
+              <button className="button" onClick={() => navigate("/storage")}>
+                {t("settings.storage.manage")}
+              </button>
+            </div>
+            {storageTotals ? <StorageBar totals={storageTotals} /> : <p>…</p>}
           </div>
         </div>
         <div className="setting">
@@ -601,6 +600,13 @@ export default function Settings() {
           <div className="setting__actions">
             <NumberSetting label={t("settings.limits.download")} value={settings.downloadLimit} step={100} unit={t("settings.limits.unit")} onChange={(value) => settings.patch({ downloadLimit: value })} />
           </div>
+        </div>
+        <div className="setting">
+          <div>
+            <strong>{t("settings.uploadByDefault")}</strong>
+            <p>{t("settings.uploadByDefault.note")}</p>
+          </div>
+          <Toggle label={t("settings.uploadByDefault")} checked={settings.uploadByDefault} onChange={(value) => settings.patch({ uploadByDefault: value })} />
         </div>
         <div className="setting">
           <div>

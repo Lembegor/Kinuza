@@ -53,7 +53,7 @@ function tick(): TorrentView[] {
       progressBytes: progress,
       finished,
       downloadSpeed: finished || torrent.state === "paused" ? 0 : 9e6 + Math.sin(elapsed) * 2e6,
-      uploadSpeed: 4e5,
+      uploadSpeed: torrent.uploadEnabled ? 4e5 : 0,
       peers: finished ? 3 : 24,
       files: torrent.files.map((file) => ({
         ...file,
@@ -172,11 +172,41 @@ export async function mockInvoke(command: string, args: Record<string, unknown> 
         uploadSpeed: 0,
         peers: 0,
         files,
+        uploadEnabled: true,
       });
       return null;
     }
     case "torrent_list":
       return tick();
+    case "storage_report":
+      return {
+        downloadsDisk: { path: "C:\Users\you\Videos\Kinuza", freeBytes: 182 * GiB, totalBytes: 931 * GiB },
+        dataDisk: { path: "C:\Users\you\AppData\Roaming\com.lembegor.kinuza", freeBytes: 182 * GiB, totalBytes: 931 * GiB },
+        cache: [
+          { infoHash: "7100004", name: "Stardust Crusaders [BDRip 1080p]", bytes: 6.4 * GiB, lastPlayed: Date.now() - 2 * 864e5, inUse: false },
+          { infoHash: "cccccccccccccccccccccccccccccccccccccccc", name: "Demo Film 2026 BDRip 1080p", bytes: 3.1 * GiB, lastPlayed: Date.now() - 9 * 864e5, inUse: false },
+        ],
+        parts: [
+          { id: "library", bytes: 17e6, clearable: false, later: false },
+          { id: "ffmpeg", bytes: 153e6, clearable: true, later: false },
+          { id: "imdb", bytes: 15e6, clearable: true, later: false },
+          { id: "fingerprints", bytes: 7e4, clearable: true, later: false },
+          { id: "logs", bytes: 2.8e5, clearable: true, later: false },
+          { id: "webCache", bytes: 240e6, clearable: true, later: true },
+          { id: "webData", bytes: 83e6, clearable: false, later: false },
+        ],
+        webCachePending: false,
+      };
+    case "storage_clear_part":
+      return 12e6;
+    case "storage_drop_cached":
+    case "storage_free_download":
+      return 2 * GiB;
+    case "torrent_set_upload": {
+      const torrent = torrents.find((t) => t.infoHash === args.infoHash);
+      if (torrent) torrent.uploadEnabled = Boolean(args.enabled);
+      return null;
+    }
     case "torrent_pause":
     case "torrent_resume": {
       const torrent = torrents.find((t) => t.infoHash === args.infoHash);

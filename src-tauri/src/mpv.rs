@@ -150,6 +150,10 @@ pub struct MpvStatus {
     total_bytes: u64,
 }
 
+pub fn has_bundled(app: &AppHandle) -> bool {
+    bundled(app).is_some()
+}
+
 fn bundled(app: &AppHandle) -> Option<PathBuf> {
     let path = app.path().resource_dir().ok()?.join(FOLDER_NAME).join(EXECUTABLE_NAME);
     path.is_file().then_some(path)

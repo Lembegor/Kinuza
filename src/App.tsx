@@ -23,6 +23,7 @@ import Library from "./pages/Library";
 import PersonPage from "./pages/Person";
 import Search from "./pages/Search";
 import Settings from "./pages/Settings";
+import Storage from "./pages/Storage";
 import TitlePage from "./pages/Title";
 import { useInbox } from "./state/inbox";
 import { useLibrary } from "./state/library";
@@ -157,6 +158,7 @@ const pageRoutes = (
     <Route path="/calendar" element={<CalendarPage />} />
     <Route path="/downloads" element={<Downloads />} />
     <Route path="/settings" element={<Settings />} />
+    <Route path="/storage" element={<Storage />} />
     <Route path="/diagnostics" element={<Diagnostics />} />
   </>
 );

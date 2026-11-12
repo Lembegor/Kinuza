@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use bytes::Bytes;
 use librqbit::{
     api::TorrentIdOrHash, dht::Id20, AddTorrent, AddTorrentOptions, AddTorrentResponse,
@@ -56,6 +56,17 @@ pub struct TorrentView {
     pub upload_speed: f64,
     pub peers: u64,
     pub files: Vec<TorrentFileView>,
+    pub upload_enabled: bool,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheItem {
+    pub info_hash: String,
+    pub name: String,
+    pub bytes: u64,
+    pub last_played: u64,
+    pub in_use: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -81,6 +92,7 @@ const CACHE_INDEX_NAME: &str = "cache.json";
 const QUEUE_INDEX_NAME: &str = "queue.json";
 const ORDER_INDEX_NAME: &str = "order.json";
 const POLICY_FILE_NAME: &str = "policy.json";
+const UPLOAD_CHOICES_NAME: &str = "upload-choices.json";
 const PROMOTED_INDEX_NAME: &str = "promoted.json";
 const NETWORK_FILE_NAME: &str = "network.json";
 const LISTEN_PORT_FIRST: u16 = 20000;
@@ -122,6 +134,8 @@ pub struct DownloadPolicy {
     pub seed_ratio: f32,
     #[serde(default)]
     pub cache_limit_gb: f32,
+    #[serde(default)]
+    pub upload_off_by_default: bool,
 }
 
 const POLICY_CHECK_INTERVAL: Duration = Duration::from_secs(5);
@@ -197,6 +211,7 @@ pub struct Engine {
     announced: Mutex<HashSet<String>>,
     order: Mutex<HashMap<String, u64>>,
     promoted: Mutex<HashMap<String, Promotion>>,
+    upload_choices: Mutex<HashMap<String, bool>>,
     migrating: tokio::sync::Mutex<()>,
     session_reset: bool,
     listen_port: u16,
@@ -334,6 +349,7 @@ impl Engine {
         let queued: Vec<String> = read_json(&cache_dir.join(QUEUE_INDEX_NAME));
         let order = read_json(&cache_dir.join(ORDER_INDEX_NAME));
         let promoted = read_json(&cache_dir.join(PROMOTED_INDEX_NAME));
+        let upload_choices = read_json(&cache_dir.join(UPLOAD_CHOICES_NAME));
         let saved_policy: Option<DownloadPolicy> = std::fs::read_to_string(cache_dir.join(POLICY_FILE_NAME))
             .ok()
             .and_then(|text| serde_json::from_str(&text).ok());
@@ -353,6 +369,7 @@ impl Engine {
             announced: Mutex::new(HashSet::new()),
             order: Mutex::new(order),
             promoted: Mutex::new(promoted),
+            upload_choices: Mutex::new(upload_choices),
             migrating: tokio::sync::Mutex::new(()),
             session_reset,
             listen_port,
@@ -414,6 +431,37 @@ impl Engine {
     pub fn set_policy(&self, policy: DownloadPolicy) {
         self.apply_policy(policy);
         write_json(&self.cache_dir.join(POLICY_FILE_NAME), &policy);
+        self.apply_upload_choices();
+    }
+
+    fn uploads(&self, info_hash: &str) -> bool {
+        let uploads_by_default = !self.policy.lock().unwrap().upload_off_by_default;
+        self.upload_choices.lock().unwrap().get(info_hash).copied().unwrap_or(uploads_by_default)
+    }
+
+    fn apply_upload_choices(&self) {
+        let handles: Vec<TorrentHandle> = self.session.with_torrents(|torrents| torrents.map(|(_, handle)| handle.clone()).collect());
+        for handle in handles {
+            handle.set_upload_enabled(self.uploads(&handle.info_hash().as_string()));
+        }
+    }
+
+    pub fn set_upload(&self, info_hash: &str, enabled: bool) -> Result<()> {
+        let uploads_by_default = !self.policy.lock().unwrap().upload_off_by_default;
+        {
+            let mut choices = self.upload_choices.lock().unwrap();
+            if enabled == uploads_by_default {
+                choices.remove(info_hash);
+            } else {
+                choices.insert(info_hash.to_owned(), enabled);
+            }
+            write_json(&self.cache_dir.join(UPLOAD_CHOICES_NAME), &*choices);
+        }
+        if let Ok(handle) = self.find(info_hash) {
+            handle.set_upload_enabled(enabled);
+        }
+        tracing::info!("engine: {} upload {}", &info_hash[..info_hash.len().min(8)], if enabled { "on" } else { "off" });
+        Ok(())
     }
 
     fn save_queue(&self) {
@@ -456,6 +504,7 @@ impl Engine {
     }
 
     async fn enforce_policy(&self) {
+        self.apply_upload_choices();
         let policy = *self.policy.lock().unwrap();
         let mut torrents: Vec<TorrentHandle> = self.session.with_torrents(|torrents| {
             torrents.map(|(_, handle)| handle.clone()).filter(|handle| !self.is_online_only(handle)).collect()
@@ -687,6 +736,83 @@ impl Engine {
         self.evict_cache(0, true, 0).await
     }
 
+    fn park(&self, handle: &TorrentHandle) -> Result<()> {
+        let info_hash = handle.info_hash().as_string();
+        let torrent_bytes = handle.with_metadata(|metadata| metadata.torrent_bytes.clone())?;
+        crate::store::write_atomic(&self.torrent_file(&info_hash), &torrent_bytes)?;
+        let files = file_views(handle, &[])
+            .into_iter()
+            .map(|file| ParkedFile { path: file.path, length: file.length })
+            .collect();
+        let parked = ParkedTorrent { name: display_name(handle), files, peers: live_peers(handle), trackers: torrent_trackers(handle) };
+        self.parked.lock().unwrap().insert(info_hash, parked);
+        self.save_parked();
+        Ok(())
+    }
+
+    pub fn cache_items(&self) -> Vec<CacheItem> {
+        let handles: Vec<TorrentHandle> = self.session.with_torrents(|torrents| {
+            torrents.map(|(_, handle)| handle.clone()).filter(|handle| self.is_streaming_cache(handle)).collect()
+        });
+        handles
+            .iter()
+            .map(|handle| {
+                let info_hash = handle.info_hash().as_string();
+                CacheItem {
+                    name: display_name(handle),
+                    bytes: allocated_bytes(&self.cache_data_folder(&info_hash)),
+                    last_played: self.last_played.lock().unwrap().get(&info_hash).copied().unwrap_or(0),
+                    in_use: self.is_in_use(&info_hash),
+                    info_hash,
+                }
+            })
+            .filter(|item| item.bytes > 0)
+            .collect()
+    }
+
+    pub async fn drop_cached(&self, info_hash: &str) -> Result<u64> {
+        let _parking = self.parking.lock().await;
+        let handle = self.find(info_hash)?;
+        if !self.is_streaming_cache(&handle) {
+            bail!("not_cached");
+        }
+        if self.is_playing(info_hash) {
+            bail!("storage_in_use");
+        }
+        let size = allocated_bytes(&self.cache_data_folder(info_hash));
+        self.park(&handle)?;
+        self.forget_cached(info_hash);
+        self.session.delete(TorrentIdOrHash::Hash(handle.info_hash()), true).await?;
+        let _ = std::fs::remove_dir_all(self.cache_data_folder(info_hash));
+        tracing::info!("engine: {} removed from the stream cache ({} MB)", &info_hash[..info_hash.len().min(8)], size >> 20);
+        Ok(size)
+    }
+
+    pub async fn free_download(&self, info_hash: &str) -> Result<u64> {
+        let _parking = self.parking.lock().await;
+        let handle = self.find(info_hash)?;
+        if self.is_online_only(&handle) {
+            bail!("not_downloaded");
+        }
+        if self.is_playing(info_hash) {
+            bail!("storage_in_use");
+        }
+        let stats = handle.stats();
+        let size: u64 = stats.file_progress.iter().sum();
+        let multi_file = handle.with_metadata(|metadata| metadata.file_infos.len() > 1).unwrap_or(false);
+        let folder = handle.output_folder().to_path_buf();
+        let named_folder = folder.join(sanitize_folder_name(&display_name(&handle)));
+        self.park(&handle)?;
+        self.forget_download(info_hash);
+        self.queued.lock().unwrap().remove(info_hash);
+        self.session.delete(TorrentIdOrHash::Hash(handle.info_hash()), true).await?;
+        if multi_file {
+            remove_empty_folders(&named_folder);
+        }
+        tracing::info!("engine: {} files deleted, kept for watching online ({} MB)", &info_hash[..info_hash.len().min(8)], size >> 20);
+        Ok(size)
+    }
+
     async fn evict_cache(&self, limit: u64, with_lingering: bool, shortage: u64) -> u64 {
         let _parking = self.parking.lock().await;
         let now = unix_millis(SystemTime::now());
@@ -725,6 +851,9 @@ impl Engine {
                 continue;
             }
             let info_hash = handle.info_hash().as_string();
+            if let Err(error) = self.park(&handle) {
+                tracing::warn!("engine: could not keep {info_hash} for later: {error:#}");
+            }
             match self.session.delete(TorrentIdOrHash::Hash(handle.info_hash()), true).await {
                 Ok(()) => {
                     let _ = std::fs::remove_dir_all(self.cache_data_folder(&info_hash));
@@ -929,6 +1058,7 @@ impl Engine {
             torrents
                 .map(|(_, handle)| {
                     let mut view = torrent_view(handle);
+                    view.upload_enabled = self.uploads(&view.info_hash);
                     if self.is_streaming_cache(handle) {
                         if !self.is_playing(&view.info_hash) {
                             view.state = STATE_PARKED;
@@ -969,6 +1099,7 @@ impl Engine {
                 download_speed: 0.0,
                 upload_speed: 0.0,
                 peers: 0,
+                upload_enabled: self.uploads(info_hash),
                 files: parked
                     .files
                     .iter()
@@ -1527,7 +1658,19 @@ fn unix_millis(time: SystemTime) -> u64 {
     time.duration_since(UNIX_EPOCH).map(|elapsed| elapsed.as_millis() as u64).unwrap_or(0)
 }
 
-fn allocated_bytes(path: &Path) -> u64 {
+fn remove_empty_folders(folder: &Path) {
+    let Ok(entries) = std::fs::read_dir(folder) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            remove_empty_folders(&entry.path());
+        }
+    }
+    let _ = std::fs::remove_dir(folder);
+}
+
+pub fn allocated_bytes(path: &Path) -> u64 {
     let Ok(metadata) = std::fs::symlink_metadata(path) else {
         return 0;
     };
@@ -1628,6 +1771,7 @@ fn torrent_view(handle: &TorrentHandle) -> TorrentView {
         upload_speed,
         peers,
         files: file_views(handle, &stats.file_progress),
+        upload_enabled: handle.upload_enabled(),
     }
 }
 

@@ -195,11 +195,17 @@ pub struct ManagedTorrentShared {
     pub(crate) magnet_name: Option<String>,
 
     pub(crate) client_name_and_version: String,
+
+    pub(crate) upload_off: std::sync::atomic::AtomicBool,
 }
 
 impl ManagedTorrentShared {
     pub(crate) fn client_name_and_version(&self) -> &str {
         &self.client_name_and_version
+    }
+
+    pub(crate) fn uploads(&self) -> bool {
+        !self.upload_off.load(Ordering::Relaxed)
     }
 }
 
@@ -278,6 +284,20 @@ impl ManagedTorrent {
     }
 
     /// Get the live state if the torrent is live.
+    pub fn upload_enabled(&self) -> bool {
+        self.shared.uploads()
+    }
+
+    pub fn set_upload_enabled(&self, enabled: bool) {
+        let was_enabled = !self.shared.upload_off.swap(!enabled, Ordering::Relaxed);
+        if was_enabled == enabled {
+            return;
+        }
+        if let Some(live) = self.live() {
+            live.announce_choking(!enabled);
+        }
+    }
+
     pub fn live(&self) -> Option<Arc<TorrentStateLive>> {
         let g = self.locked.read();
         match &g.state {

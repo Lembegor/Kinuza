@@ -17,7 +17,7 @@ const ARCHIVE_TORRENT_PREFIX: &str = "https://archive.org/download/";
 
 type CommandResult<T> = Result<T, String>;
 
-fn to_message(error: anyhow::Error) -> String {
+pub(crate) fn to_message(error: anyhow::Error) -> String {
     error.to_string()
 }
 
@@ -111,6 +111,11 @@ pub async fn torrent_pause(state: State<'_, AppState>, info_hash: String) -> Com
 }
 
 #[tauri::command]
+pub fn torrent_set_upload(state: State<'_, AppState>, info_hash: String, enabled: bool) -> CommandResult<()> {
+    state.engine.set_upload(&info_hash, enabled).map_err(to_message)
+}
+
+#[tauri::command]
 pub async fn torrent_resume(state: State<'_, AppState>, info_hash: String) -> CommandResult<()> {
     state.engine.resume(&info_hash).await.map_err(to_message)
 }
@@ -183,6 +188,10 @@ pub fn storage_info(state: State<'_, AppState>, download_dir: Option<String>) ->
 #[tauri::command]
 pub async fn stream_cache_clear(state: State<'_, AppState>) -> CommandResult<u64> {
     Ok(state.engine.clear_cache().await)
+}
+
+pub(crate) fn disk_totals(folder: &std::path::Path) -> Option<(u64, u64)> {
+    disk_space(folder).map(|info| (info.free_bytes, info.total_bytes))
 }
 
 pub(crate) fn free_space(folder: &std::path::Path) -> Option<u64> {

@@ -5,6 +5,26 @@ export type ChangelogLine = string | { heading: string };
 export type Changelog = Record<AppLanguage, ChangelogLine[]>;
 
 export const changelog: Record<string, Changelog> = {
+  "0.4.4": {
+    ru: [
+      "Добавлена страница «Место на диске»: видно, сколько занимают скачанные фильмы, кэш онлайн-просмотра и само приложение, и всё можно удобно почистить.",
+      "Скачанное можно удалить с диска, не убирая из библиотеки - смотреть онлайн можно будет и дальше.",
+      "Серии и фильмы больше не пропадают из онлайн-просмотра после очистки кэша.",
+      "Добавлена возможность выключить раздачу: для всех загрузок в настройках или отдельно для каждой в «Загрузках».",
+    ],
+    en: [
+      "New Disk space page: see how much your downloads, the online viewing cache and the app take up, and clean any of it up easily.",
+      "Downloads can be removed from the disk without leaving your library - you can keep watching them online.",
+      "Episodes and movies no longer drop out of online viewing after the cache is cleared.",
+      "You can now turn off sharing: for all downloads in the settings or for each one separately in Downloads.",
+    ],
+    uk: [
+      "Додано сторінку «Місце на диску»: видно, скільки займають завантажені фільми, кеш онлайн-перегляду та сам застосунок, і все можна зручно почистити.",
+      "Завантажене можна видалити з диска, не прибираючи з бібліотеки - дивитися онлайн можна буде й далі.",
+      "Серії та фільми більше не зникають з онлайн-перегляду після очищення кешу.",
+      "Додано можливість вимкнути роздачу: для всіх завантажень у налаштуваннях або окремо для кожного в «Завантаженнях».",
+    ],
+  },
   "0.4.3": {
     ru: [
       { heading: "Улучшение поиска сериалов:" },
