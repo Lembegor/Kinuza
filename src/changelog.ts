@@ -5,6 +5,32 @@ export type ChangelogLine = string | { heading: string };
 export type Changelog = Record<AppLanguage, ChangelogLine[]>;
 
 export const changelog: Record<string, Changelog> = {
+  "0.5.0": {
+    ru: [
+      "Улучшен поиск по жанрам в аниме.",
+      "Поиск стал точнее.",
+      "Поиск раздач ищет по всем названиям тайтла и показывает всё одним списком.",
+      "У сезонов теперь свои постеры.",
+      "В настройках появился раздел «Аккаунты».",
+      "Много разных мелких исправлений и добавлений.",
+    ],
+    en: [
+      "Better genre search for anime.",
+      "Search is more accurate.",
+      "Release search looks up every name of a title and shows everything in one list.",
+      "Seasons now have their own posters.",
+      "New Accounts section in Settings.",
+      "Lots of small fixes and additions.",
+    ],
+    uk: [
+      "Покращено пошук за жанрами в аніме.",
+      "Пошук став точнішим.",
+      "Пошук роздач шукає за всіма назвами тайтлу і показує все одним списком.",
+      "У сезонів тепер свої постери.",
+      "У налаштуваннях з'явився розділ «Акаунти».",
+      "Багато різних дрібних виправлень і доповнень.",
+    ],
+  },
   "0.4.4": {
     ru: [
       "Добавлена страница «Место на диске»: видно, сколько занимают скачанные фильмы, кэш онлайн-просмотра и само приложение, и всё можно удобно почистить.",

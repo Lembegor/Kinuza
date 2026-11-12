@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { FolderOpen, RefreshCw } from "lucide-react";
 import { HotkeyList } from "../components/HotkeyList";
 import { ImportSetting } from "../components/ImportSetting";
+import { TrackerAccount } from "../components/TrackerAccount";
 import { LanguageSelect } from "../components/LanguagePicker";
 import { backend, describeError, getAppInfo, isDesktop, isLinux } from "../lib/backend";
 import { mpv } from "../lib/mpv";
@@ -210,24 +211,29 @@ export default function Settings() {
     if (typeof picked === "string") settings.patch({ downloadDir: picked });
   };
 
+  const pageRef = useRef<HTMLDivElement>(null);
+  const showSection = (id: string) =>
+    pageRef.current?.querySelector<HTMLElement>(`[data-section="${id}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+
   const sections: { id: string; label: MessageKey }[] = [
     { id: "settings-viewing", label: "settings.viewing" },
     { id: "settings-look", label: "settings.look" },
     { id: "settings-downloads", label: "settings.downloads" },
     { id: "settings-system", label: "settings.system" },
+    { id: "settings-accounts", label: "settings.accounts" },
     { id: "settings-data", label: "settings.data" },
     { id: "settings-help", label: "settings.help" },
   ];
 
   return (
-    <div className="page page--narrow">
+    <div className="page page--narrow" ref={pageRef}>
       <div className="page__head">
         <h1>{t("settings.title")}</h1>
       </div>
 
       <nav className="settings-nav" aria-label={t("settings.sections")}>
         {sections.map((section) => (
-          <button key={section.id} className="chip" onClick={() => document.getElementById(section.id)?.scrollIntoView({ behavior: "smooth", block: "start" })}>
+          <button key={section.id} className="chip" onClick={() => showSection(section.id)}>
             {t(section.label)}
           </button>
         ))}
@@ -245,7 +251,7 @@ export default function Settings() {
         </div>
       </section>
 
-      <section className="settings-group" id="settings-viewing">
+      <section className="settings-group" data-section="settings-viewing">
         <h2>{t("settings.viewing")}</h2>
         <div className="setting">
           <div>
@@ -454,7 +460,7 @@ export default function Settings() {
         </details>
       </section>
 
-      <section className="settings-group" id="settings-look">
+      <section className="settings-group" data-section="settings-look">
         <h2>{t("settings.look")}</h2>
         <div className="setting">
           <div>
@@ -519,7 +525,7 @@ export default function Settings() {
         </div>
       </section>
 
-      <section className="settings-group" id="settings-downloads">
+      <section className="settings-group" data-section="settings-downloads">
         <h2>{t("settings.downloads")}</h2>
         <div className="setting">
           <div>
@@ -637,7 +643,7 @@ export default function Settings() {
         </div>
       </section>
 
-      <section className="settings-group" id="settings-system">
+      <section className="settings-group" data-section="settings-system">
         <h2>{t("settings.system")}</h2>
         <div className="setting">
           <div>
@@ -712,7 +718,12 @@ export default function Settings() {
         </div>
       </section>
 
-      <section className="settings-group" id="settings-data">
+      <section className="settings-group" data-section="settings-accounts">
+        <h2>{t("settings.accounts")}</h2>
+        <TrackerAccount />
+      </section>
+
+      <section className="settings-group" data-section="settings-data">
         <h2>{t("settings.data")}</h2>
         <div className="setting">
           <div>
@@ -753,7 +764,7 @@ export default function Settings() {
         </p>
       </section>
 
-      <section className="settings-group" id="settings-help">
+      <section className="settings-group" data-section="settings-help">
         <h2>{t("settings.help")}</h2>
         <div className="setting">
           <div>

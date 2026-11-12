@@ -28,6 +28,7 @@ import { backend, describeError, isDesktop } from "../lib/backend";
 import { formatBytes, formatDate, formatRuntime, formatSpeed } from "../lib/format";
 import { t, useT } from "../lib/i18n";
 import { qualityRank } from "../lib/parse";
+import { localizedTexts, needsLocalizing } from "../lib/localized";
 import { imageUrl, tmdb, type Details, type Episode, type MediaType } from "../lib/tmdb";
 import { useAsync } from "../lib/useAsync";
 import { checkAvailability, checkedOf, useAvailability } from "../state/availability";
@@ -556,12 +557,21 @@ export default function TitlePage() {
   const type = params.type as MediaType;
   const id = Number(params.id);
   const [searchParams, setSearchParams] = useSearchParams();
-  const { t, tn } = useT();
+  const { t, tn, language } = useT();
   const [trailerTitleId, setTrailerTitleId] = useState<number | null>(null);
 
   const details = useAsync(() => tmdb.details(type, id), [type, id]);
   const data = details.data && details.data.id === id ? details.data : null;
   const title = useMemo(() => (data ? toTitleRef(data) : null), [data]);
+  const localized = useAsync(
+    async () => (data && needsLocalizing(data, language) ? { id: data.id, type: data.type, ...(await localizedTexts(data, language)) } : null),
+    [data, language],
+  );
+  const texts = localized.data && data && localized.data.id === data.id && localized.data.type === data.type ? localized.data : null;
+  const shownTitle = texts?.title || data?.title || "";
+  const shownOverview = texts?.overview || data?.overview || "";
+  const shownGenres = texts?.genres ?? data?.genres ?? [];
+  const shownRef = useMemo(() => (title ? { ...title, title: shownTitle || title.title } : null), [title, shownTitle]);
 
   const movieSources = useLibrary((state) => state.sources[unitKey("movie", id)]);
   const resume = useResumeEpisode(data);
@@ -585,12 +595,12 @@ export default function TitlePage() {
   useEffect(() => () => setTrailerTitleId(null), []);
 
   useEffect(() => {
-    if (!data || !title) return;
+    if (!data || !shownRef || localized.loading) return;
     const regularEpisodes = data.seasons
       .filter((item) => item.seasonNumber !== specialsSeason)
       .reduce((sum, item) => sum + item.episodeCount, 0);
-    useLibrary.getState().noteTitleDetails(title, data.type === "tv" ? regularEpisodes : undefined);
-  }, [data, title]);
+    useLibrary.getState().noteTitleDetails(shownRef, data.type === "tv" ? regularEpisodes : undefined);
+  }, [data, shownRef, localized.loading]);
 
   if (details.error) {
     return (
@@ -599,10 +609,12 @@ export default function TitlePage() {
       </div>
     );
   }
-  if (!data || !title || !target) return <div className="page page--flush"><div className="title-hero title-hero--skeleton" /></div>;
+  if (!data || !title || !shownRef || !target) return <div className="page page--flush"><div className="title-hero title-hero--skeleton" /></div>;
 
   const backdrop = imageUrl(data.backdrop, "w1280");
-  const poster = imageUrl(data.poster, "w500");
+  const regularSeasons = data.seasons.filter((item) => item.seasonNumber !== specialsSeason).length;
+  const seasonPoster = type === "tv" && regularSeasons > 1 && season !== specialsSeason ? data.seasons.find((item) => item.seasonNumber === season)?.poster : null;
+  const poster = imageUrl(seasonPoster ?? data.poster, "w500");
   const bestMovieSource = type === "movie" && movieSources?.length ? sortSources(movieSources)[0] : null;
 
   const meta = [
@@ -614,12 +626,12 @@ export default function TitlePage() {
 
   const playResume = () => {
     if (bestMovieSource) {
-      play({ title, unitKey: unitKey("movie", id) });
+      play({ title: shownRef, unitKey: unitKey("movie", id) });
       return;
     }
     if (resume) {
       play({
-        title,
+        title: shownRef,
         unitKey: unitKey("tv", id, resume.season, resume.episode),
         season: resume.season,
         episode: resume.episode,
@@ -640,17 +652,17 @@ export default function TitlePage() {
         <div className="title-hero__body">
           <div className="title-hero__poster">{poster && <img src={poster} alt="" draggable={false} />}</div>
           <div className="title-hero__info">
-            <h1>{data.title}</h1>
-            {data.originalTitle && data.originalTitle !== data.title && <div className="title-hero__original">{data.originalTitle}</div>}
+            <h1>{shownTitle}</h1>
+            {data.originalTitle && data.originalTitle !== shownTitle && <div className="title-hero__original">{data.originalTitle}</div>}
             <div className="title-hero__meta">
               <TitleRating imdbId={data.imdbId} catalogRating={data.rating} />
               {meta.map((item) => (
                 <span key={item}>{item}</span>
               ))}
             </div>
-            {data.genres.length > 0 && (
+            {shownGenres.length > 0 && (
               <div className="title-hero__genres">
-                {data.genres.map((genre) => (
+                {shownGenres.map((genre) => (
                   <span key={genre} className="tag">
                     {genre}
                   </span>
@@ -668,7 +680,7 @@ export default function TitlePage() {
               </div>
             )}
             {data.tagline && <div className="title-hero__tagline">{data.tagline}</div>}
-            <Overview text={data.overview || t("title.noOverview")} />
+            <Overview text={shownOverview || t("title.noOverview")} />
             <div className="title-hero__actions">
               {canPlay ? (
                 <button className="button button--primary button--large" onClick={playResume}>
@@ -681,7 +693,7 @@ export default function TitlePage() {
                   {t("common.addTorrent")}
                 </button>
               )}
-              <StatusMenu title={title} />
+              <StatusMenu title={shownRef} />
               {data.videos.length > 0 && (
                 <button className="button button--large" aria-haspopup="dialog" onClick={() => setTrailerTitleId(id)}>
                   <Clapperboard size={18} />
@@ -690,18 +702,18 @@ export default function TitlePage() {
               )}
             </div>
             {(type === "tv" || !bestMovieSource) && <TrackerHint details={data} onFind={() => openAddSource({ target })} />}
-            <RatingStars title={title} />
+            <RatingStars title={shownRef} />
           </div>
         </div>
       </section>
 
       <div className="page__rows">
         {type === "movie" ? (
-          <MovieSources title={title} target={target} />
+          <MovieSources title={shownRef} target={target} />
         ) : (
           <SeriesEpisodes
             details={data}
-            title={title}
+            title={shownRef}
             season={season}
             target={target}
             onSeasonChange={(next) => setSearchParams({ s: String(next) }, { replace: true })}

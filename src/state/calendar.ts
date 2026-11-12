@@ -10,6 +10,7 @@ const followedStatuses: ReadonlySet<WatchStatus> = new Set<WatchStatus>(["watchi
 
 export interface CalendarEpisode {
   title: TitleRef;
+  poster: string | null;
   season: number;
   episode: number;
   name: string;
@@ -79,7 +80,7 @@ async function seriesEpisodes(title: TitleRef, from: string, to: string): Promis
   return lists
     .flat()
     .filter(inSpan)
-    .map(({ season, episode, name, airDate }) => ({ title, season, episode, name, airDate }));
+    .map(({ season, episode, name, airDate }) => ({ title, poster: airing.seasonPosters[season] ?? title.poster, season, episode, name, airDate }));
 }
 
 export async function episodeSchedule(series: TitleRef[], today: string): Promise<CalendarEpisode[]> {

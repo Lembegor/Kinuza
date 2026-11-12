@@ -222,6 +222,40 @@ export interface StoragePart {
   later: boolean;
 }
 
+export interface TitleLinks {
+  mal: number | null;
+  anilist: number | null;
+  ru: string | null;
+  uk: string | null;
+}
+
+export interface ShikimoriAnime {
+  id: number;
+  russian: string;
+  description: string;
+  names: string[];
+  genres: { name: string; russian: string }[];
+}
+
+export interface ShikimoriFound {
+  id: number;
+  russian: string;
+  name: string;
+  kind: string;
+  year: number | null;
+}
+
+export interface MalLink {
+  mal: number;
+  kind: "movie" | "tv";
+  tmdbId: number;
+}
+
+export interface ShikimoriName {
+  id: number;
+  russian: string;
+}
+
 export interface StorageReport {
   downloadsDisk: StorageDisk | null;
   dataDisk: StorageDisk | null;
@@ -305,6 +339,11 @@ export const backend = {
   openLogs: () => call<void>("logs_open"),
   clearStreamCache: () => call<number>("stream_cache_clear"),
   storageReport: (downloadDir: string | null) => call<StorageReport>("storage_report", { downloadDir }),
+  wikidataLinks: (kind: "movie" | "tv", tmdbId: number) => call<TitleLinks | null>("wikidata_links", { kind, tmdbId }),
+  shikimoriAnime: (id: number) => call<ShikimoriAnime | null>("shikimori_anime", { id }),
+  shikimoriNames: (ids: number[]) => call<ShikimoriName[] | null>("shikimori_names", { ids }),
+  shikimoriSearch: (query: string) => call<ShikimoriFound[] | null>("shikimori_search", { query }),
+  wikidataByMal: (ids: number[]) => call<MalLink[] | null>("wikidata_by_mal", { ids }),
   clearStoragePart: (id: StoragePartId) => call<number>("storage_clear_part", { id }),
   dropCached: (infoHash: string) => call<number>("storage_drop_cached", { infoHash }),
   freeDownload: (infoHash: string) => call<number>("storage_free_download", { infoHash }),

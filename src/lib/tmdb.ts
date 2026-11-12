@@ -28,6 +28,7 @@ export interface MediaItem {
   year: string;
   rating: number;
   voteCount: number;
+  popularity?: number;
   genreIds: number[];
   language: string;
   isAnime: boolean;
@@ -104,6 +105,7 @@ export type DiscoverSort = "popular" | "rating" | "newest";
 export interface DiscoverFilters {
   kind: DiscoverKind;
   genres: number[];
+  keywords: number[];
   yearFrom: number | null;
   yearTo: number | null;
   country: string;
@@ -121,6 +123,42 @@ export interface Genre {
   name: string;
 }
 
+export const animeThemes = [
+  { id: 9840, key: "romance" },
+  { id: 9914, key: "sliceOfLife" },
+  { id: 190116, key: "school" },
+  { id: 6152, key: "supernatural" },
+  { id: 237451, key: "isekai" },
+  { id: 293198, key: "fantasy" },
+  { id: 177895, key: "darkFantasy" },
+  { id: 10046, key: "mecha" },
+  { id: 6075, key: "sports" },
+  { id: 283297, key: "music" },
+  { id: 292887, key: "magicalGirl" },
+  { id: 315058, key: "horror" },
+  { id: 272553, key: "psychological" },
+  { id: 288394, key: "thriller" },
+  { id: 291483, key: "iyashikei" },
+  { id: 4379, key: "timeTravel" },
+  { id: 207826, key: "shounen" },
+  { id: 206437, key: "shoujo" },
+  { id: 195668, key: "seinen" },
+  { id: 229074, key: "josei" },
+  { id: 195669, key: "ecchi" },
+  { id: 9194, key: "harem" },
+  { id: 280003, key: "yuri" },
+  { id: 289844, key: "boysLove" },
+  { id: 198385, key: "hentai", adult: true },
+  { id: 256466, key: "erotica", adult: true },
+] as const;
+
+export const adultThemeIds: ReadonlySet<number> = new Set(animeThemes.filter((theme) => "adult" in theme && theme.adult).map((theme) => theme.id));
+
+export type AnimeThemeKey = (typeof animeThemes)[number]["key"];
+
+const adultVoteFloor = 3;
+const genresHiddenForAnime: ReadonlySet<number> = new Set([animationGenreId, 99, 37, 10763, 10764, 10766, 10767]);
+
 export interface Country {
   code: string;
   name: string;
@@ -129,6 +167,7 @@ export interface Country {
 export interface SeasonInfo {
   seasonNumber: number;
   name: string;
+  poster: string | null;
   episodeCount: number;
   year: string;
   airDate?: string;
@@ -167,6 +206,7 @@ export interface Episode {
 export interface SeriesAiring {
   last: AiringEpisode | null;
   next: AiringEpisode | null;
+  seasonPosters: Record<number, string | null>;
 }
 
 export type AiringEpisode = Pick<Episode, "season" | "episode" | "name" | "airDate">;
@@ -238,6 +278,28 @@ function remember(url: string, pending: Promise<unknown>): void {
 
 type Raw = Record<string, any>;
 
+const genericEpisodeName = /^(episode|ep\.?|эпизод|епізод|серия|серія)\s*\d+$/i;
+const cyrillicLetters = /[Ѐ-ӿ]/;
+
+export function preferredPoster(fallback: string | null, posters: unknown, language: string): string | null {
+  const list: Raw[] = Array.isArray(posters) ? posters.filter((poster: Raw) => typeof poster?.file_path === "string") : [];
+  const byVotes = (a: Raw, b: Raw) => (b.vote_average ?? 0) - (a.vote_average ?? 0) || (b.vote_count ?? 0) - (a.vote_count ?? 0);
+  const local = list.filter((poster) => poster.iso_639_1 === language).sort(byVotes);
+  if (local.some((poster) => poster.file_path === fallback)) return fallback;
+  if (local.length > 0) return local[0].file_path;
+  const textless = list.filter((poster) => poster.iso_639_1 === null).sort(byVotes);
+  return textless[0]?.file_path ?? fallback;
+}
+
+function episodeName(raw: Raw): string {
+  const name = typeof raw.name === "string" ? raw.name.trim() : "";
+  const fallback = t("common.episodeNumber", { episode: raw.episode_number });
+  if (!name || genericEpisodeName.test(name)) return fallback;
+  const language = catalog.language.slice(0, 2);
+  if ((language === "ru" || language === "uk") && !cyrillicLetters.test(name)) return fallback;
+  return name;
+}
+
 async function fetchWithRetry(url: string): Promise<unknown> {
   for (let attempt = 0; ; attempt++) {
     try {
@@ -304,6 +366,7 @@ function toItem(raw: Raw, fallbackType?: MediaType): MediaItem | null {
     year: date.slice(0, 4),
     rating: raw.vote_count > 0 ? raw.vote_average : 0,
     voteCount: raw.vote_count ?? 0,
+    popularity: raw.popularity ?? 0,
     genreIds,
     language: raw.original_language ?? "",
     isAnime: genreIds.includes(animationGenreId) && raw.original_language === "ja",
@@ -389,6 +452,11 @@ function discoverParams(filters: DiscoverFilters, page: number): Record<string, 
     "vote_count.gte": Math.max(discoverVoteFloor[filters.sort][type], filters.minRating > 0 ? ratedVoteFloor[type] : 0),
   };
   if (genres.length > 0) params.with_genres = genres.join(",");
+  if (filters.kind === "anime" && filters.keywords.length > 0) params.with_keywords = filters.keywords.join(",");
+  if (filters.kind === "anime" && filters.keywords.some((id) => adultThemeIds.has(id))) {
+    params.include_adult = "true";
+    params["vote_count.gte"] = Math.min(Number(params["vote_count.gte"]), adultVoteFloor);
+  }
   if (filters.kind === "anime") params.with_original_language = "ja";
   if (filters.country) params.with_origin_country = filters.country;
   if (filters.minRating > 0) params["vote_average.gte"] = filters.minRating;
@@ -470,12 +538,15 @@ export const tmdb = {
   },
 
   async details(type: MediaType, id: number): Promise<Details> {
+    const language = catalog.language.slice(0, 2);
     const raw = await request<Raw>(`/${type}/${id}`, {
-      append_to_response: "credits,recommendations,videos,external_ids",
-      include_video_language: [...new Set([catalog.language.slice(0, 2), "en"])].join(","),
+      append_to_response: "credits,recommendations,videos,external_ids,images",
+      include_video_language: [...new Set([language, "en"])].join(","),
+      include_image_language: `${language},null`,
     });
-    const base = toItem(raw, type);
-    if (!base) throw new Error("tmdb_bad_item");
+    const item = toItem(raw, type);
+    if (!item) throw new Error("tmdb_bad_item");
+    const base = { ...item, poster: preferredPoster(item.poster, raw.images?.posters, language) };
 
     const videos = toVideos(raw.videos?.results);
 
@@ -498,6 +569,7 @@ export const tmdb = {
         .map((season: Raw) => ({
           seasonNumber: season.season_number,
           name: season.name,
+          poster: season.poster_path ?? null,
           episodeCount: season.episode_count,
           year: (season.air_date ?? "").slice(0, 4),
           airDate: season.air_date ?? "",
@@ -567,7 +639,7 @@ export const tmdb = {
   async genres(kind: DiscoverKind): Promise<Genre[]> {
     const raw = await request<Raw>(`/genre/${discoverType(kind)}/list`);
     const genres: Genre[] = (raw.genres ?? []).map((genre: Raw) => ({ id: genre.id, name: genre.name }));
-    return kind === "anime" ? genres.filter((genre) => genre.id !== animationGenreId) : genres;
+    return kind === "anime" ? genres.filter((genre) => !genresHiddenForAnime.has(genre.id)) : genres;
   },
 
   async countries(): Promise<Country[]> {
@@ -645,11 +717,19 @@ export const tmdb = {
         ? {
             season: episode.season_number,
             episode: episode.episode_number,
-            name: episode.name || t("common.episodeNumber", { episode: episode.episode_number }),
+            name: episodeName(episode),
             airDate: episode.air_date ?? "",
           }
         : null;
-    return { last: toEpisode(raw.last_episode_to_air), next: toEpisode(raw.next_episode_to_air) };
+    const seasonPosters: Record<number, string | null> = Object.fromEntries(
+      ((raw.seasons ?? []) as Raw[]).map((season) => [season.season_number as number, (season.poster_path as string | null) ?? null]),
+    );
+    return { last: toEpisode(raw.last_episode_to_air), next: toEpisode(raw.next_episode_to_air), seasonPosters };
+  },
+
+  async movieTitle(movieId: number, language: string): Promise<string> {
+    const raw = await request<Raw>(`/movie/${movieId}`, { language }, seasonMaxAgeMs);
+    return raw.title ?? "";
   },
 
   async showNames(seriesId: number, language: string): Promise<ShowNames> {
@@ -664,7 +744,7 @@ export const tmdb = {
     return (raw.episodes ?? []).map((episode: Raw) => ({
       season: seasonNumber,
       episode: episode.episode_number,
-      name: episode.name || t("common.episodeNumber", { episode: episode.episode_number }),
+      name: episodeName(episode),
       overview: episode.overview ?? "",
       still: episode.still_path ?? null,
       airDate: episode.air_date ?? "",
@@ -672,3 +752,4 @@ export const tmdb = {
     }));
   },
 };
+

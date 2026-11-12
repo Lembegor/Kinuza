@@ -10,6 +10,7 @@ const sideRelations: ReadonlySet<string> = new Set(["SIDE_STORY", "SUMMARY"]);
 
 export interface AnimePart {
   id: number;
+  malId: number | null;
   romaji: string;
   english: string;
   format: AnimeFormat;
@@ -26,6 +27,7 @@ export interface AnimeInfo {
 
 interface RawMedia {
   id: number;
+  idMal?: number | null;
   type?: string;
   format?: string | null;
   episodes?: number | null;
@@ -35,7 +37,7 @@ interface RawMedia {
   relations?: { edges?: { relationType?: string; node?: RawMedia }[] };
 }
 
-const fields = `id type format episodes title { romaji english } startDate { year month day } coverImage { large }`;
+const fields = `id idMal type format episodes title { romaji english } startDate { year month day } coverImage { large }`;
 const withRelations = `${fields} relations { edges { relationType node { ${fields} } } }`;
 
 async function ask<T>(query: string, variables: Record<string, unknown>): Promise<T> {
@@ -54,6 +56,7 @@ function toPart(raw: RawMedia): AnimePart | null {
   const pad = (value: number) => String(value).padStart(2, "0");
   return {
     id: raw.id,
+    malId: raw.idMal ?? null,
     romaji: raw.title?.romaji ?? "",
     english: raw.title?.english ?? "",
     format: raw.format as AnimeFormat,
@@ -84,6 +87,76 @@ async function findEntry({ names, type, year }: AnimeQuery): Promise<RawMedia | 
     if (match) return match;
   }
   return null;
+}
+
+export interface AnimeText {
+  id: number;
+  malId: number | null;
+  english: string;
+  native: string;
+  romaji: string;
+  description: string;
+}
+
+interface RawText {
+  id: number;
+  idMal?: number | null;
+  title?: { english?: string | null; native?: string | null; romaji?: string | null };
+  description?: string | null;
+}
+
+const htmlEntities: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", mdash: "—", ndash: "–", hellip: "…" };
+
+export function cleanAnimeDescription(text: string): string {
+  return text
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (entity, code: string) => {
+      if (code.startsWith("#")) {
+        const point = code[1].toLowerCase() === "x" ? Number.parseInt(code.slice(2), 16) : Number(code.slice(1));
+        return Number.isInteger(point) && point > 0 && point <= 0x10ffff ? String.fromCodePoint(point) : entity;
+      }
+      return htmlEntities[code.toLowerCase()] ?? entity;
+    })
+    .replace(/~!([\s\S]*?)!~/g, "")
+    .replace(/\(\s*(source|written by)[^()]*\)\s*$/i, "")
+    .replace(/\[\s*written by[^\]]*\]\s*$/i, "")
+    .split(/\n{2,}/)
+    .map((paragraph) => paragraph.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+const textCache = new Map<string, Promise<AnimeText | null>>();
+
+export function animeText(by: { id: number } | { malId: number }): Promise<AnimeText | null> {
+  const key = "id" in by ? `id:${by.id}` : `mal:${by.malId}`;
+  const cached = textCache.get(key);
+  if (cached) return cached;
+  const argument = "id" in by ? "id" : "idMal";
+  const value = "id" in by ? by.id : by.malId;
+  const pending = ask<{ Media: RawText | null }>(
+    `query ($value: Int) { Media(${argument}: $value, type: ANIME) { id idMal title { english native romaji } description(asHtml: false) } }`,
+    { value },
+  )
+    .then(({ Media: media }) =>
+      media
+        ? {
+            id: media.id,
+            malId: media.idMal ?? null,
+            english: media.title?.english?.trim() ?? "",
+            native: media.title?.native?.trim() ?? "",
+            romaji: media.title?.romaji?.trim() ?? "",
+            description: cleanAnimeDescription(media.description ?? ""),
+          }
+        : null,
+    )
+    .catch(() => {
+      textCache.delete(key);
+      return null;
+    });
+  textCache.set(key, pending);
+  return pending;
 }
 
 const cache = new Map<string, Promise<AnimeInfo | null>>();

@@ -371,6 +371,40 @@
   overflow: auto;
 }
 
+.update-notice__changes {
+  max-height: 180px;
+  margin: 8px 0 14px;
+  padding-right: 4px;
+  overflow-y: auto;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.update-notice__version + .update-notice__version {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.update-notice__version h3 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.update-notice__changes .whats-new__heading {
+  margin-bottom: 6px;
+  color: var(--text);
+}
+
+.update-notice__changes .whats-new__list {
+  gap: 6px;
+  padding-left: 18px;
+  line-height: 1.4;
+}
+
 .drop-overlay {
   position: fixed;
   inset: 12px;

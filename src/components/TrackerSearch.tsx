@@ -17,7 +17,8 @@ import {
 } from "../lib/parse";
 import { rutracker, rutrackerErrors, type RutrackerItem, type VideoSize } from "../lib/rutracker";
 import { buildProfiles, matchSeasons, seasonQueries, taskKey, type SearchTask, type SeasonMatch, type SeasonProfile } from "../lib/seasonSearch";
-import { tmdb } from "../lib/tmdb";
+import { animeTrackerNames } from "../lib/localized";
+import { tmdb, type ShowNames } from "../lib/tmdb";
 import { useAsync } from "../lib/useAsync";
 import { useSettings, type TrackerSort } from "../state/settings";
 import { useUi, type AddSourceTarget } from "../state/ui";
@@ -25,6 +26,7 @@ import { LanguageFlags } from "./LanguageFlags";
 
 const pageLookupLimit = 20;
 const anySeason = 0;
+const slowSearchMs = 9000;
 const mainQueryPages = 4;
 const extraQueryPages = 2;
 const seasonQueryLimit = 14;
@@ -111,13 +113,23 @@ function matchLabel(match: SeasonMatch | null, scope: ReleaseScope | null, anime
   return [seasonText, episodes].filter(Boolean).join(" · ");
 }
 
+function releaseKey(item: RutrackerItem): string {
+  return `${item.title.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim()}|${item.size.replace(/\s+/g, "").toLowerCase()}`;
+}
+
 function mergeItems(known: RutrackerItem[], found: RutrackerItem[]): RutrackerItem[] {
   const byId = new Map(known.map((item) => [item.id, item]));
   for (const item of found) {
     const kept = byId.get(item.id);
     if (!kept || item.seeds > kept.seeds) byId.set(item.id, item);
   }
-  return [...byId.values()].sort((a, b) => b.seeds - a.seeds);
+  const byRelease = new Map<string, RutrackerItem>();
+  for (const item of byId.values()) {
+    const key = releaseKey(item);
+    const kept = byRelease.get(key);
+    if (!kept || item.seeds > kept.seeds) byRelease.set(key, item);
+  }
+  return [...byRelease.values()].sort((a, b) => b.seeds - a.seeds);
 }
 
 function readable(name: string | undefined): string {
@@ -198,6 +210,8 @@ export function TrackerSearch({
   const [authBusy, setAuthBusy] = useState(false);
   const [resolvingId, setResolvingId] = useState<string | null>(null);
   const [extraLeft, setExtraLeft] = useState(0);
+  const [slow, setSlow] = useState(false);
+  const [alternativesQueued, setAlternativesQueued] = useState(false);
   const [othersShown, setOthersShown] = useState(false);
 
   const prefs = useSettings((state) => state.trackerPrefs);
@@ -221,16 +235,39 @@ export function TrackerSearch({
     () =>
       target.title.type === "tv"
         ? Promise.all(["ru-RU", "en-US"].map((code) => tmdb.showNames(target.title.id, code).catch(() => null)))
+        : Promise.all(
+            ["ru-RU", "en-US"].map((code) =>
+              tmdb
+                .movieTitle(target.title.id, code)
+                .then((name): ShowNames => ({ name, seasons: {} }))
+                .catch(() => null),
+            ),
+          ),
+    [target.title.type, target.title.id],
+  );
+  const siteNames = useAsync(
+    () =>
+      isAnime
+        ? animeTrackerNames({
+            type: target.title.type,
+            id: target.title.id,
+            title: target.title.title,
+            originalTitle: target.originalTitle ?? "",
+            year: target.title.year,
+          }).catch(() => [])
         : Promise.resolve([]),
     [target.title.type, target.title.id],
   );
-  const namesReady = !anime.loading && !otherLanguages.loading;
+  const namesReady = !anime.loading && !otherLanguages.loading && !siteNames.loading;
 
   const showNames = useMemo(() => {
     const localized = (otherLanguages.data ?? []).map((names) => names?.name ?? "");
     const animeNames = anime.data ? [anime.data.current.romaji, anime.data.current.english, anime.data.parts[0]?.romaji ?? ""] : [];
-    return [...new Set([initialQuery, ...animeNames, ...localized, target.title.title, readable(target.originalTitle)].map((name) => name.replace(/\s*\([^()]*\)\s*$/, "").trim()).filter(Boolean))];
-  }, [initialQuery, anime.data, otherLanguages.data, target.title.title, target.originalTitle]);
+    const fromSites = (siteNames.data ?? []).map(readable);
+    const names = [initialQuery, ...fromSites.slice(0, 2), ...animeNames, ...fromSites.slice(2), ...localized, target.title.title, readable(target.originalTitle)];
+    const cleaned = names.map((name) => name.replace(/\s*\([^()]*\)\s*$/, "").trim()).filter(Boolean);
+    return cleaned.filter((name, index) => cleaned.findIndex((other) => other.toLowerCase() === name.toLowerCase()) === index);
+  }, [initialQuery, anime.data, otherLanguages.data, siteNames.data, target.title.title, target.originalTitle]);
 
   const profiles = useMemo<SeasonProfile[]>(() => {
     if (target.title.type !== "tv" || seasonNumbers.length === 0) return [];
@@ -264,7 +301,7 @@ export function TrackerSearch({
           const found = await rutracker.search(task.query, task.quiet, task.page);
           if (task.generation !== state.generation) continue;
           setItems((known) => mergeItems(known, found));
-          const pages = task.season === null && !task.quiet ? mainQueryPages : extraQueryPages;
+          const pages = task.season === null ? mainQueryPages : extraQueryPages;
           if (found.length >= rutracker.pageSize && task.page + 1 < pages) {
             state.queue.unshift({ ...task, page: task.page + 1, quiet: true });
           }
@@ -301,8 +338,26 @@ export function TrackerSearch({
     setError(null);
     setNeedsAuth(false);
     setOthersShown(false);
-    enqueue([{ query: activeQuery.trim(), page: 0, quiet: false, season: null }]);
+    setAlternativesQueued(false);
+    const generation = state.generation;
+    const query = activeQuery.trim();
+    void rutracker.maybeSignedIn().then((signedIn) => {
+      if (state.generation !== generation) return;
+      if (signedIn === false) {
+        setNeedsAuth(true);
+        setLoading(false);
+        return;
+      }
+      enqueue([{ query, page: 0, quiet: false, season: null }]);
+    });
   };
+
+  useEffect(() => {
+    setSlow(false);
+    if (!loading || needsAuth) return;
+    const timer = setTimeout(() => setSlow(true), slowSearchMs);
+    return () => clearTimeout(timer);
+  }, [loading, needsAuth]);
 
   useEffect(() => {
     startSearch();
@@ -323,7 +378,10 @@ export function TrackerSearch({
     const alternatives: SearchTask[] = showNames.slice(1).map((query) => ({ query, page: 0, quiet: true, season: null }));
     const ordered = [...profiles].sort((a, b) => Number(b.number === season) - Number(a.number === season));
     const bySeason = ordered.flatMap((profile) => seasonQueries(showNames, profile)).slice(0, seasonQueryLimit);
-    enqueue([...bySeason.filter((task) => task.season === season), ...alternatives, ...bySeason.filter((task) => task.season !== season)]);
+    const chosenSeason = bySeason.filter((task) => task.season === season);
+    const otherSeasons = bySeason.filter((task) => task.season !== season);
+    enqueue(items.length === 0 ? [...alternatives, ...chosenSeason, ...otherSeasons] : [...chosenSeason, ...alternatives, ...otherSeasons]);
+    setAlternativesQueued(true);
   }, [automatic, namesReady, loading, needsAuth, error, profiles, showNames]);
 
   const releases = useMemo(() => new Map(items.map((item) => [item.id, parseTrackerRelease(item.title)])), [items]);
@@ -598,9 +656,21 @@ export function TrackerSearch({
           </div>
 
           {loading ? (
-            <p className="archive__note">{t("tracker.searching", { query: activeQuery })}</p>
+            <>
+              <p className="archive__note">{t("tracker.searching", { query: activeQuery })}</p>
+              {slow && (
+                <div className="tracker-slow">
+                  <p className="archive__note">{t("tracker.slow.note")}</p>
+                  <button type="button" className="button" onClick={() => void rutracker.showWindow()}>
+                    {t("tracker.slow.show")}
+                  </button>
+                </div>
+              )}
+            </>
           ) : error ? (
             <p className="archive__note">{error}</p>
+          ) : items.length === 0 && (extraLeft > 0 || (automatic && !alternativesQueued)) ? (
+            <p className="archive__note">{t("tracker.searchingMore")}</p>
           ) : items.length === 0 ? (
             <p className="archive__note">{t("tracker.empty", { query: activeQuery })}</p>
           ) : visible.length === 0 && otherSeasonCount === 0 ? (

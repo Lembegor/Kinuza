@@ -62,7 +62,7 @@ function EpisodeCard({ entry, today, progress }: { entry: Entry; today: string; 
   const { t, tn } = useT();
   const navigate = useNavigate();
   const { title, episodes } = entry;
-  const poster = imageUrl(title.poster, "w185");
+  const poster = imageUrl(episodes[0].poster ?? title.poster, "w185");
   const unwatched = episodes.filter((episode) => !isEpisodeWatched(episode, progress)).length;
   const aired = episodes[0].airDate <= today;
   const named = episodes.length === 1 && hasOwnName(episodes[0]);

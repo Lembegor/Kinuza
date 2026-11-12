@@ -23,6 +23,7 @@ const QUEUE_WAIT: Duration = Duration::from_secs(5 * 60);
 const ERROR_BUSY: &str = "tracker_busy";
 
 static WINDOW_SHOWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static REVEAL_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 struct ShownWindow;
 
@@ -355,10 +356,17 @@ impl Worker {
         let mut challenge_since: Option<Instant> = None;
         let mut probe_timer = tokio::time::interval(PROBE_INTERVAL);
         probe_timer.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        REVEAL_REQUESTED.store(false, std::sync::atomic::Ordering::Relaxed);
 
         loop {
             tokio::select! {
                 _ = probe_timer.tick() => {
+                    if REVEAL_REQUESTED.swap(false, std::sync::atomic::Ordering::Relaxed) && !visible {
+                        self.reveal();
+                        visible = true;
+                        shown_deadline = Instant::now() + SHOWN_PAGE_TIMEOUT;
+                        shown = Some(ShownWindow::mark());
+                    }
                     let now = Instant::now();
                     if (!visible && now >= hidden_deadline) || (visible && now >= shown_deadline) {
                         let _ = self.window.destroy();
@@ -506,6 +514,148 @@ fn parse_search_page(data: Value) -> Result<Vec<RutrackerItem>, String> {
     Ok(items)
 }
 
+const CLOUDFLARE_COOKIE_PREFIXES: &[&str] = &["cf_", "__cf"];
+const SESSION_COOKIE: &str = "bb_session";
+
+fn is_cloudflare_cookie(name: &str) -> bool {
+    CLOUDFLARE_COOKIE_PREFIXES.iter().any(|prefix| name.starts_with(prefix))
+}
+
+fn has_forum_cookies<'a>(names: impl IntoIterator<Item = &'a str>) -> bool {
+    names.into_iter().any(|name| !is_cloudflare_cookie(name))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RutrackerAccount {
+    signed_in: bool,
+}
+
+#[tauri::command]
+pub async fn rutracker_account(app: AppHandle) -> Result<RutrackerAccount, String> {
+    let main = app.get_webview_window(MAIN_WINDOW_LABEL).ok_or_else(|| ERROR_UNEXPECTED_PAGE.to_owned())?;
+    let cookies = main.cookies_for_url(forum_url("index.php")).map_err(|error| error.to_string())?;
+    Ok(RutrackerAccount { signed_in: cookies.iter().any(|cookie| cookie.name() == SESSION_COOKIE && !cookie.value().is_empty()) })
+}
+
+const COOKIE_DELETE_TIMEOUT: Duration = Duration::from_secs(5);
+const COOKIE_SETTLE_STEP: Duration = Duration::from_millis(200);
+const COOKIE_SETTLE_STEPS: u32 = 10;
+
+#[derive(Clone)]
+struct ForumCookie {
+    name: String,
+    domain: String,
+    path: String,
+}
+
+#[cfg(windows)]
+async fn delete_forum_cookies(main: &WebviewWindow, cookies: Vec<ForumCookie>) -> Result<(), String> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let uris = [forum_url("").to_string(), format!("https://{FORUM_HOST}/")];
+    main.with_webview(move |webview| {
+        let deleted = (|| -> windows_core::Result<()> {
+            use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_2;
+            use windows_core::{Interface, HSTRING};
+            let manager = unsafe { webview.controller().CoreWebView2()?.cast::<ICoreWebView2_2>()?.CookieManager()? };
+            for cookie in &cookies {
+                let name = HSTRING::from(cookie.name.as_str());
+                for uri in &uris {
+                    unsafe { manager.DeleteCookies(&name, &HSTRING::from(uri.as_str()))? };
+                }
+                let bare = cookie.domain.trim_start_matches('.');
+                for domain in [bare.to_owned(), format!(".{bare}")] {
+                    for path in [cookie.path.as_str(), "/", "/forum/", "/forum"] {
+                        unsafe { manager.DeleteCookiesWithDomainAndPath(&name, &HSTRING::from(domain.as_str()), &HSTRING::from(path))? };
+                    }
+                }
+            }
+            Ok(())
+        })();
+        let _ = sender.send(deleted.map_err(|error| error.to_string()));
+    })
+    .map_err(|error| error.to_string())?;
+    tokio::time::timeout(COOKIE_DELETE_TIMEOUT, receiver)
+        .await
+        .map_err(|_| ERROR_TIMEOUT.to_owned())?
+        .map_err(|_| ERROR_CANCELLED.to_owned())?
+}
+
+#[cfg(not(windows))]
+async fn delete_forum_cookies(main: &WebviewWindow, targets: Vec<ForumCookie>) -> Result<(), String> {
+    let cookies = main.cookies_for_url(forum_url("index.php")).map_err(|error| error.to_string())?;
+    for cookie in cookies.into_iter().filter(|cookie| targets.iter().any(|target| target.name == cookie.name())) {
+        main.delete_cookie(cookie).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn rutracker_sign_out(app: AppHandle, state: tauri::State<'_, Mutex<RutrackerState>>) -> Result<(), String> {
+    let _turn = take_turn(&state, false).await?;
+    let main = app.get_webview_window(MAIN_WINDOW_LABEL).ok_or_else(|| ERROR_UNEXPECTED_PAGE.to_owned())?;
+    let cookies = main.cookies_for_url(forum_url("index.php")).map_err(|error| error.to_string())?;
+    let targets: Vec<ForumCookie> = cookies
+        .iter()
+        .filter(|cookie| !is_cloudflare_cookie(cookie.name()))
+        .map(|cookie| ForumCookie {
+            name: cookie.name().to_owned(),
+            domain: cookie.domain().unwrap_or(FORUM_HOST).to_owned(),
+            path: cookie.path().unwrap_or("/").to_owned(),
+        })
+        .collect();
+    for target in &targets {
+        tracing::info!("rutracker: sign out removes {} (domain {}, path {})", target.name, target.domain, target.path);
+    }
+    if let Err(error) = delete_forum_cookies(&main, targets).await {
+        tracing::warn!("rutracker: sign out failed: {error}");
+        return Err(error);
+    }
+    for _ in 0..COOKIE_SETTLE_STEPS {
+        tokio::time::sleep(COOKIE_SETTLE_STEP).await;
+        let left = main.cookies_for_url(forum_url("index.php")).map_err(|error| error.to_string())?;
+        if !left.iter().any(|cookie| cookie.name() == SESSION_COOKIE) {
+            tracing::info!("rutracker: signed out");
+            return Ok(());
+        }
+    }
+    let left = main.cookies_for_url(forum_url("index.php")).map_err(|error| error.to_string())?;
+    for cookie in left.iter().filter(|cookie| cookie.name() == SESSION_COOKIE) {
+        tracing::warn!(
+            "rutracker: session cookie stayed (domain {:?}, path {:?}, http only {:?}, secure {:?})",
+            cookie.domain(),
+            cookie.path(),
+            cookie.http_only(),
+            cookie.secure()
+        );
+    }
+    Err(ERROR_UNEXPECTED_PAGE.to_owned())
+}
+
+#[tauri::command]
+pub async fn rutracker_maybe_signed_in(app: AppHandle) -> Result<Option<bool>, String> {
+    let Some(main) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        return Ok(None);
+    };
+    match main.cookies_for_url(forum_url("index.php")) {
+        Ok(cookies) => Ok(Some(has_forum_cookies(cookies.iter().map(|cookie| cookie.name())))),
+        Err(error) => {
+            tracing::warn!("rutracker: cookies unavailable: {error}");
+            Ok(None)
+        }
+    }
+}
+
+#[tauri::command]
+pub fn rutracker_show_window(app: AppHandle) {
+    REVEAL_REQUESTED.store(true, std::sync::atomic::Ordering::Relaxed);
+    if let Some(window) = app.get_webview_window(WORKER_WINDOW_LABEL) {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
 #[tauri::command]
 pub async fn rutracker_login_window(
     app: AppHandle,
@@ -645,4 +795,16 @@ pub async fn rutracker_video_sizes(
             }
         })
         .await
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+
+    #[test]
+    fn only_cloudflare_cookies_mean_no_session() {
+        assert!(!has_forum_cookies([]));
+        assert!(!has_forum_cookies(["cf_clearance", "__cf_bm"]));
+        assert!(has_forum_cookies(["cf_clearance", "bb_session"]));
+    }
 }

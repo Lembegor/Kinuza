@@ -1798,7 +1798,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
       session.episode !== undefined
         ? `${t("common.seasonEpisode", { season: session.season ?? "", episode: session.episode })}${session.episodeName ? ` — ${session.episodeName}` : ""}`
         : session.title.year,
-    cover: session.title.poster ? imageUrl(session.title.poster, "w500") : null,
+    cover: imageUrl(titleDetails.data?.seasons.find((item) => item.seasonNumber === session.season)?.poster ?? session.title.poster, "w500"),
     duration,
     playing,
     position: filmTime,

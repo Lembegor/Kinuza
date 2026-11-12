@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { ChevronDown, RotateCcw, SearchX } from "lucide-react";
 import { CatalogError, PosterCard } from "../components/Cards";
 import { useT, type MessageKey } from "../lib/i18n";
-import { tmdb, type Country, type DiscoverFilters, type DiscoverKind, type DiscoverSort, type MediaItem } from "../lib/tmdb";
+import { animeThemes, tmdb, type Country, type DiscoverFilters, type DiscoverKind, type DiscoverSort, type MediaItem } from "../lib/tmdb";
 import { useAsync } from "../lib/useAsync";
 import { useBrowse } from "../state/browse";
 
@@ -22,6 +22,7 @@ const sorts: { id: DiscoverSort; label: MessageKey }[] = [
 const defaultFilters: DiscoverFilters = {
   kind: "movie",
   genres: [],
+  keywords: [],
   yearFrom: null,
   yearTo: null,
   country: "",
@@ -56,6 +57,10 @@ function readFilters(params: URLSearchParams): DiscoverFilters {
       .split(",")
       .map(Number)
       .filter((id) => Number.isInteger(id) && id > 0),
+    keywords: (params.get("themes") ?? "")
+      .split(",")
+      .map(Number)
+      .filter((id) => animeThemes.some((theme) => theme.id === id)),
     yearFrom,
     yearTo,
     country: countryCodePattern.test(country) ? country : "",
@@ -73,6 +78,7 @@ function toSearch(filters: DiscoverFilters, pageCount = 1): URLSearchParams {
   const params = new URLSearchParams();
   if (filters.kind !== defaultFilters.kind) params.set("kind", filters.kind);
   if (filters.genres.length > 0) params.set("genres", filters.genres.join(","));
+  if (filters.kind === "anime" && filters.keywords.length > 0) params.set("themes", filters.keywords.join(","));
   if (filters.yearFrom) params.set("from", String(filters.yearFrom));
   if (filters.yearTo) params.set("to", String(filters.yearTo));
   if (filters.country) params.set("country", filters.country);
@@ -172,8 +178,10 @@ export default function Browse() {
   const activeGenres = query?.genres ?? filters.genres;
   const toggleGenre = (id: number) =>
     update({ genres: activeGenres.includes(id) ? activeGenres.filter((genreId) => genreId !== id) : [...activeGenres, id] });
+  const toggleTheme = (id: number) =>
+    update({ keywords: filters.keywords.includes(id) ? filters.keywords.filter((themeId) => themeId !== id) : [...filters.keywords, id] });
 
-  const isNarrowed = toSearch({ ...filters, kind: defaultFilters.kind }).size > 0;
+  const isNarrowed = toSearch({ ...filters, kind: defaultFilters.kind }).size > 0 || (filters.kind === "anime" && filters.keywords.length > 0);
   const years = Array.from({ length: latestYear() - earliestYear + 1 }, (_, index) => latestYear() - index);
   const failed = Boolean(results.error || genreList.error);
   const retry = () => {
@@ -187,7 +195,7 @@ export default function Browse() {
         <h1>{t("browse.title")}</h1>
         <div className="chips">
           {kinds.map((kind) => (
-            <button key={kind.id} className={`chip ${filters.kind === kind.id ? "is-active" : ""}`} onClick={() => update({ kind: kind.id })}>
+            <button key={kind.id} className={`chip ${filters.kind === kind.id ? "is-active" : ""}`} onClick={() => update({ kind: kind.id, keywords: kind.id === "anime" ? filters.keywords : [] })}>
               {t(kind.label)}
             </button>
           ))}
@@ -268,6 +276,17 @@ export default function Browse() {
             {genre.name}
           </button>
         ))}
+        {filters.kind === "anime" &&
+          animeThemes.map((theme) => (
+            <button
+              key={`theme-${theme.id}`}
+              className={`chip chip--compact ${filters.keywords.includes(theme.id) ? "is-active" : ""}`}
+              aria-pressed={filters.keywords.includes(theme.id)}
+              onClick={() => toggleTheme(theme.id)}
+            >
+              {t(`browse.theme.${theme.key}`)}
+            </button>
+          ))}
       </div>
 
       {failed ? (

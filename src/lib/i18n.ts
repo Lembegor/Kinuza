@@ -27,7 +27,7 @@ function fill(template: string, params?: MessageParams): string {
 }
 
 function translate(language: AppLanguage, key: MessageKey, params?: MessageParams): string {
-  return fill(dictionaries[language][key] ?? ru[key] ?? key, params);
+  return fill(dictionaries[language][key] ?? en[key] ?? ru[key] ?? key, params);
 }
 
 export function t(key: MessageKey, params?: MessageParams): string {
@@ -38,7 +38,8 @@ export function tn(key: string, count: number, params?: MessageParams): string {
   const language = currentLanguage();
   const form = new Intl.PluralRules(locales[language]).select(count);
   const dictionary = dictionaries[language] as Record<string, string>;
-  const template = dictionary[`${key}.${form}`] ?? dictionary[`${key}.other`] ?? key;
+  const english = en as Record<string, string>;
+  const template = dictionary[`${key}.${form}`] ?? dictionary[`${key}.other`] ?? english[`${key}.other`] ?? key;
   return fill(template, { count, ...params });
 }
 

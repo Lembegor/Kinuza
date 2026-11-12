@@ -159,7 +159,7 @@ jobs:
           git fetch --force --no-tags origin "refs/tags/$tag:refs/tags/$tag"
           export RELEASE_NOTES="$(git tag -l --format='%(contents)' "$tag")"
           gh release download "$tag" --pattern '*.sig' --dir "$folder"
-          node scripts/make-update-manifest.cjs "$folder" "$version" "https://github.com/$GITHUB_REPOSITORY/releases/download/$tag" "$folder/latest.json"
+          node --experimental-strip-types scripts/make-update-manifest.cjs "$folder" "$version" "https://github.com/$GITHUB_REPOSITORY/releases/download/$tag" "$folder/latest.json"
           installers=$(node scripts/check-update-manifest.cjs "$folder/latest.json" "$version")
           assets=$(gh release view "$tag" --json assets --jq '.assets[].name')
           while IFS= read -r installer; do

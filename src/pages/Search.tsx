@@ -6,6 +6,8 @@ import { useT, type MessageKey } from "../lib/i18n";
 import { imageUrl, tmdb, type FoundPerson, type MediaItem } from "../lib/tmdb";
 import { isWatched, titleKey, unitKey, useLibrary } from "../state/library";
 import { useAsync } from "../lib/useAsync";
+import { animeByName } from "../lib/localized";
+import { bestPersonTier, bestTitleTier, rankTitles } from "../lib/searchRank";
 
 type Filter = "all" | "movie" | "tv" | "anime" | "people";
 
@@ -85,6 +87,9 @@ export default function Search() {
     `search:${query}:${pages}`,
   );
 
+  const extras = useAsync(async () => ({ query, matches: query ? await animeByName(query).catch(() => []) : [] }), [query]);
+  const extraMatches = extras.data?.query === query ? extras.data.matches : [];
+
   const change = (next: { type?: Filter; pages?: number; hideWatched?: boolean }) => {
     const search = new URLSearchParams();
     if (query) search.set("q", query);
@@ -103,10 +108,29 @@ export default function Search() {
       if (entry?.status === "completed") return true;
       return item.type === "movie" && isWatched(progress[unitKey("movie", item.id)]);
     };
-    return (results.data?.items ?? []).filter((item) => matches(item, filter) && !(hideWatched && seen(item)));
-  }, [results.data, filter, hideWatched, tracked, progress]);
+    const items = rankTitles(query, results.data?.items ?? []);
+    const known = new Set(items.map((item) => `${item.type}:${item.id}`));
+    const added = extraMatches.filter((match) => !known.has(`${match.item.type}:${match.item.id}`));
+    const first = added.filter((match) => match.exact).map((match) => match.item);
+    const last = added.filter((match) => !match.exact).map((match) => match.item);
+    return [...first, ...items, ...last].filter((item) => matches(item, filter) && !(hideWatched && seen(item)));
+  }, [query, results.data, extraMatches, filter, hideWatched, tracked, progress]);
   const people = filter === "people" ? (results.data?.people ?? []) : filter === "all" ? (results.data?.people ?? []).slice(0, peopleInAll) : [];
   const nothing = visible.length === 0 && people.length === 0;
+  const peopleFirst = filter === "people" || (() => {
+    const personTier = bestPersonTier(query, people);
+    return personTier <= 1 && extraMatches.length === 0 && bestTitleTier(query, visible) >= 3;
+  })();
+  const peopleSection = people.length > 0 && (
+    <section className={`section ${peopleFirst ? "section--first" : ""}`}>
+      {filter === "all" && (
+        <div className="section__head">
+          <h2>{t("search.people")}</h2>
+        </div>
+      )}
+      <PeopleRow people={people} />
+    </section>
+  );
 
   return (
     <div className="page">
@@ -142,18 +166,9 @@ export default function Search() {
         />
       ) : (
         <>
-          {people.length > 0 && (
-            <section className="section section--first">
-              {filter === "all" && (
-                <div className="section__head">
-                  <h2>{t("search.people")}</h2>
-                </div>
-              )}
-              <PeopleRow people={people} />
-            </section>
-          )}
+          {peopleFirst && peopleSection}
           {visible.length > 0 && (
-            <section className={`section ${people.length === 0 ? "section--first" : ""}`}>
+            <section className={`section ${people.length === 0 || !peopleFirst ? "section--first" : ""}`}>
               {filter === "all" && people.length > 0 && (
                 <div className="section__head">
                   <h2>{t("search.titles")}</h2>
@@ -162,6 +177,7 @@ export default function Search() {
               <PosterGrid items={visible} />
             </section>
           )}
+          {!peopleFirst && peopleSection}
           {results.data?.hasMore && (
             <div className="browse-more">
               <button className="button button--large" disabled={results.loading} onClick={() => change({ pages: pages + 1 })}>

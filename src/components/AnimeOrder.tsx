@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { animeInfo, type AnimeFormat, type AnimePart } from "../lib/anilist";
 import { useT, type MessageKey } from "../lib/i18n";
+import { shikimoriNames } from "../lib/localized";
 import { useAsync } from "../lib/useAsync";
 import { Row } from "./Cards";
 
@@ -16,11 +17,12 @@ const formatLabels: Record<AnimeFormat, MessageKey> = {
   SPECIAL: "anime.format.special",
 };
 
-function AnimeCard({ part, current }: { part: AnimePart; current: boolean }) {
+function AnimeCard({ part, current, localName }: { part: AnimePart; current: boolean; localName: string | null }) {
   const { t, tn } = useT();
   const navigate = useNavigate();
   const cardRef = useRef<HTMLButtonElement>(null);
-  const name = part.english || part.romaji;
+  const searchName = part.english || part.romaji;
+  const name = localName || searchName;
 
   useEffect(() => {
     const card = cardRef.current;
@@ -35,7 +37,7 @@ function AnimeCard({ part, current }: { part: AnimePart; current: boolean }) {
       aria-current={current ? "page" : undefined}
       disabled={current}
       title={part.romaji}
-      onClick={() => navigate(`/search?q=${encodeURIComponent(name)}`)}
+      onClick={() => navigate(`/search?q=${encodeURIComponent(searchName)}`)}
     >
       <div className="poster-card__art">
         {part.cover ? <img src={part.cover} alt="" loading="lazy" draggable={false} /> : <div className="poster-card__blank">{name}</div>}
@@ -52,14 +54,16 @@ function AnimeCard({ part, current }: { part: AnimePart; current: boolean }) {
 }
 
 export function AnimeOrder({ names, type, year }: { names: string[]; type: "movie" | "tv"; year: number | null }) {
-  const { t } = useT();
+  const { t, language } = useT();
   const loaded = useAsync(() => animeInfo({ names, type, year }), [names.join("|"), type, year]);
   const info = loaded.data;
+  const malIds = language === "ru" && info ? info.parts.map((part) => part.malId).filter((id): id is number => id !== null) : [];
+  const localNames = useAsync(() => shikimoriNames(malIds).catch(() => new Map<number, string>()), [malIds.join(",")]);
   if (!info || info.parts.length < minParts) return null;
   return (
     <Row title={t("anime.order.title")}>
       {info.parts.map((part) => (
-        <AnimeCard key={part.id} part={part} current={part.id === info.current.id} />
+        <AnimeCard key={part.id} part={part} current={part.id === info.current.id} localName={(part.malId !== null && localNames.data?.get(part.malId)) || null} />
       ))}
     </Row>
   );

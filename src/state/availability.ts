@@ -88,6 +88,10 @@ async function run(): Promise<void> {
   if (running) return;
   running = true;
   try {
+    if ((await rutracker.maybeSignedIn()) === false) {
+      queue = [];
+      return;
+    }
     while (queue.length > 0 && !stoppedForSession) {
       if (useUi.getState().addSource) {
         await sleep(busyWaitMs);

@@ -903,3 +903,10 @@ label.file-row,
   padding-left: 20px;
   line-height: 1.5;
 }
+
+.tracker-slow {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+  margin-top: 4px;
+}

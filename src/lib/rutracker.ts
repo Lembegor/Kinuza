@@ -35,6 +35,10 @@ export const rutracker = {
   search: (query: string, quiet = false, page = 0) => call<RutrackerItem[]>("rutracker_search", { query, quiet, page }),
   pageSize: 50,
   login: () => call<void>("rutracker_login_window"),
+  maybeSignedIn: () => call<boolean | null>("rutracker_maybe_signed_in").catch(() => null),
+  showWindow: () => call<void>("rutracker_show_window").catch(() => undefined),
+  account: () => call<{ signedIn: boolean } | null>("rutracker_account"),
+  signOut: () => call<void>("rutracker_sign_out"),
   getMagnet: (id: string, quiet = false) => call<string>("rutracker_magnet", { id, quiet }),
   inspectRelease: async (id: string, quiet = false): Promise<TorrentPreview> => {
     try {

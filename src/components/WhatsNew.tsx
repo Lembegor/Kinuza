@@ -55,6 +55,25 @@ function groupsOf(lines: ChangelogLine[]): Group[] {
   return groups;
 }
 
+export function ChangelogGroups({ lines }: { lines: ChangelogLine[] }) {
+  return (
+    <>
+      {groupsOf(lines).map((group, index) => (
+        <div key={`${group.heading ?? ""}${index}`} className="whats-new__group">
+          {group.heading && <p className="whats-new__heading">{group.heading}</p>}
+          <ul className="whats-new__list">
+            {group.items.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      ))}
+    </>
+  );
+}
+
+let announcedThisRun = false;
+
 export const useWhatsNew = create<WhatsNewState>((set) => ({
   versions: [],
   mode: "update",
@@ -79,13 +98,12 @@ export function WhatsNew({ ready }: { ready: boolean }) {
   const mode = useWhatsNew((state) => state.mode);
   const close = useWhatsNew((state) => state.close);
   const dialogRef = useRef<HTMLDivElement>(null);
-  const checked = useRef(false);
   const shown = versions.length > 0;
   useDialogFocus(dialogRef, shown);
 
   useEffect(() => {
-    if (!ready || checked.current || !isDesktop) return;
-    checked.current = true;
+    if (!ready || announcedThisRun || !isDesktop) return;
+    announcedThisRun = true;
     void getAppInfo().then((info) => {
       if (info.updatedFrom === null || info.updatedFrom === info.version) return;
       const missed = versionsSince(info.updatedFrom, info.version);
@@ -127,16 +145,7 @@ export function WhatsNew({ ready }: { ready: boolean }) {
             return (
               <section key={version} className="whats-new__version">
                 {!single && <h3>{t("whatsNew.version", { version })}</h3>}
-                {groupsOf(lines).map((group, index) => (
-                  <div key={`${group.heading ?? ""}${index}`} className="whats-new__group">
-                    {group.heading && <p className="whats-new__heading">{group.heading}</p>}
-                    <ul className="whats-new__list">
-                      {group.items.map((item) => (
-                        <li key={item}>{item}</li>
-                      ))}
-                    </ul>
-                  </div>
-                ))}
+                <ChangelogGroups lines={lines} />
               </section>
             );
           })}

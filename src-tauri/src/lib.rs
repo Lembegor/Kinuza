@@ -15,6 +15,7 @@ mod imdb;
 mod launch;
 mod logging;
 mod media_keys;
+mod metadata;
 mod mpv;
 mod online_subtitles;
 mod report;
@@ -134,6 +135,11 @@ pub fn run() {
             imdb::imdb_rating,
             tray::tray_configure,
             online_subtitles::online_subtitles_search,
+            metadata::wikidata_links,
+            metadata::shikimori_anime,
+            metadata::shikimori_names,
+            metadata::shikimori_search,
+            metadata::wikidata_by_mal,
             online_subtitles::online_subtitles_download,
             ffmpeg::ffmpeg_status,
             ffmpeg::ffmpeg_install,
@@ -158,6 +164,10 @@ pub fn run() {
             media_keys::media_session_state,
             media_keys::media_session_stop,
             rutracker::rutracker_login_window,
+            rutracker::rutracker_maybe_signed_in,
+            rutracker::rutracker_show_window,
+            rutracker::rutracker_account,
+            rutracker::rutracker_sign_out,
             rutracker::rutracker_search,
             rutracker::rutracker_magnet,
             rutracker::rutracker_video_sizes,

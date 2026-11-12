@@ -105,6 +105,9 @@ function demoWords(text: string): string[] {
 export async function mockInvoke(command: string, args: Record<string, unknown> = {}): Promise<unknown> {
   switch (command) {
     case "online_subtitles_search":
+    case "shikimori_names":
+    case "shikimori_search":
+    case "wikidata_by_mal":
       return [];
     case "tray_configure":
     case "log_write":

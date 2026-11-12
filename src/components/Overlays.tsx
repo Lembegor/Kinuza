@@ -5,6 +5,7 @@ import { isTopDialog, useDialogFocus } from "../lib/useDialogFocus";
 import { useUi, type Toast } from "../state/ui";
 import { useUpdater } from "../state/updater";
 import { HotkeyList } from "./HotkeyList";
+import { ChangelogGroups } from "./WhatsNew";
 
 const toastIcons = { info: Info, success: CircleCheck, error: CircleAlert };
 const toastLifetimeMs = 5000;
@@ -147,8 +148,11 @@ export function ConfirmDialog() {
 }
 
 export function UpdateNotice() {
-  const { status, version, notes, progress, dismissed, install, dismiss } = useUpdater();
-  const { t } = useT();
+  const { status, version, notes, changes, progress, dismissed, install, dismiss } = useUpdater();
+  const { t, language } = useT();
+  const shownChanges = changes
+    .map((change) => ({ version: change.version, lines: change.lines[language] ?? change.lines.en ?? [] }))
+    .filter((change) => change.lines.length > 0);
   const visible = (status === "available" && !dismissed) || status === "downloading" || status === "installing";
   if (!visible) return null;
 
@@ -165,7 +169,18 @@ export function UpdateNotice() {
       </div>
       {status === "available" && (
         <>
-          <p>{notes.trim() || t("shell.update.available")}</p>
+          {shownChanges.length > 0 ? (
+            <div className="update-notice__changes">
+              {shownChanges.map((change) => (
+                <section key={change.version} className="update-notice__version">
+                  {shownChanges.length > 1 && <h3>{t("whatsNew.version", { version: change.version })}</h3>}
+                  <ChangelogGroups lines={change.lines} />
+                </section>
+              ))}
+            </div>
+          ) : (
+            <p>{notes.trim() || t("shell.update.available")}</p>
+          )}
           <button className="button button--primary button--block" onClick={() => void install()}>
             {t("shell.update.install")}
           </button>
