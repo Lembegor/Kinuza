@@ -27,6 +27,8 @@ import { useUi } from "./ui";
 const storeName = "library";
 const progressStoreName = "progress";
 const quarantineStoreName = "library-damaged";
+const pendingStoreName = "library-pending";
+const shrinkRefused = "store_shrink_refused";
 const beforeRestoreStoreName = "library-before-restore";
 const libraryFileVersion = 3;
 const saveDelayMs = 500;
@@ -281,12 +283,18 @@ function isEmpty(record: Record<string, unknown>): boolean {
 
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
 let progressTimer: ReturnType<typeof setTimeout> | undefined;
-let unsaved: LibraryData | null = null;
-let unsavedProgress: Record<string, Progress> | null = null;
+let libraryDirty = false;
+let progressDirty = false;
 let savingBlocked = false;
 let progressStored = false;
 let saveFailureShown = false;
 let legacyPending = false;
+let libraryShrinkAllowed = false;
+let progressShrinkAllowed = false;
+
+function currentData(): LibraryData {
+  return useLibrary.getState();
+}
 
 function blockSaving(error: unknown): void {
   savingBlocked = true;
@@ -294,7 +302,22 @@ function blockSaving(error: unknown): void {
   useUi.getState().toast(t("library.loadFailed"), "error");
 }
 
+function keepPending(): void {
+  const state = currentData();
+  void backend
+    .storeSet(pendingStoreName, JSON.stringify({ version: libraryFileVersion, savedAt: Date.now(), ...state, progress: state.progress }))
+    .catch(() => undefined);
+}
+
 function saveFailed(error: unknown): void {
+  const refused = String(error).includes(shrinkRefused);
+  if (refused) {
+    savingBlocked = true;
+    report("library", "journal.library.shrinkRefused", error);
+    keepPending();
+    useUi.getState().toast(t("library.shrinkRefused"), "error");
+    return;
+  }
   report("library", "journal.library.save", error);
   if (saveFailureShown) return;
   saveFailureShown = true;
@@ -316,17 +339,29 @@ function libraryDocument(state: LibraryData): string {
   });
 }
 
-async function writeProgress(progress: Record<string, Progress>): Promise<void> {
-  if (savingBlocked) return;
-  await backend.storeSet(progressStoreName, JSON.stringify({ version: libraryFileVersion, progress }));
+async function writeProgress(): Promise<void> {
+  if (savingBlocked) {
+    keepPending();
+    return;
+  }
+  const allowShrink = progressShrinkAllowed;
+  progressShrinkAllowed = false;
+  progressDirty = false;
+  await backend.storeSet(progressStoreName, JSON.stringify({ version: libraryFileVersion, progress: currentData().progress }), allowShrink);
   progressStored = true;
 }
 
-async function write(state: LibraryData): Promise<void> {
-  if (savingBlocked) return;
+async function writeLibrary(): Promise<void> {
+  if (savingBlocked) {
+    keepPending();
+    return;
+  }
   try {
-    if (!progressStored) await writeProgress(state.progress);
-    await backend.storeSet(storeName, libraryDocument(state));
+    if (!progressStored) await writeProgress();
+    const allowShrink = libraryShrinkAllowed;
+    libraryShrinkAllowed = false;
+    libraryDirty = false;
+    await backend.storeSet(storeName, libraryDocument(currentData()), allowShrink);
     saveFailureShown = false;
     if (legacyPending) {
       legacyPending = false;
@@ -337,14 +372,14 @@ async function write(state: LibraryData): Promise<void> {
   }
 }
 
-function scheduleSave(state: LibraryData): void {
-  unsaved = state;
+function scheduleSave(): void {
+  libraryDirty = true;
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => void flushLibrary(), saveDelayMs);
 }
 
-function scheduleProgressSave(progress: Record<string, Progress>): void {
-  unsavedProgress = progress;
+function scheduleProgressSave(): void {
+  progressDirty = true;
   if (progressTimer !== undefined) return;
   progressTimer = setTimeout(() => {
     progressTimer = undefined;
@@ -355,18 +390,15 @@ function scheduleProgressSave(progress: Record<string, Progress>): void {
 function flushProgress(): Promise<void> {
   clearTimeout(progressTimer);
   progressTimer = undefined;
-  const pending = unsavedProgress;
-  unsavedProgress = null;
-  if (!pending) return Promise.resolve();
-  return writeProgress(pending).catch(saveFailed);
+  if (!progressDirty) return Promise.resolve();
+  return writeProgress().catch(saveFailed);
 }
 
 export async function flushLibrary(): Promise<void> {
   clearTimeout(saveTimer);
-  const pending = unsaved;
-  unsaved = null;
+  if (!useLibrary.getState().loaded) return;
   await flushProgress();
-  if (pending) await write(pending);
+  if (libraryDirty) await writeLibrary();
 }
 
 const libraryKeys: (keyof LibraryData)[] = [
@@ -383,11 +415,15 @@ const libraryKeys: (keyof LibraryData)[] = [
 export const useLibrary = create<LibraryState>((set, get) => {
   const update = (change: (state: LibraryData) => Partial<LibraryData>) => {
     const before = get();
+    if (!before.loaded) {
+      report("library", "journal.library.early", "a change came before the library was read and was not saved");
+      return;
+    }
     set((state) => change(state));
     const after = get();
-    if (after.progress !== before.progress) scheduleProgressSave(after.progress);
-    if (!progressStored && after.progress !== before.progress) scheduleSave(after);
-    if (libraryKeys.some((key) => after[key] !== before[key])) scheduleSave(after);
+    if (after.progress !== before.progress) scheduleProgressSave();
+    if (!progressStored && after.progress !== before.progress) scheduleSave();
+    if (libraryKeys.some((key) => after[key] !== before[key])) scheduleSave();
   };
 
   const patchEntry = (title: TitleRef, change: Partial<Pick<TrackEntry, TrackedField>>) =>
@@ -464,7 +500,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
         }
         if (document?.recovered) useUi.getState().toast(t("library.recovered"), "info");
         if (!progressStored || legacyPending || (isRecord(raw) && raw.version !== libraryFileVersion && document)) {
-          scheduleSave(get());
+          scheduleSave();
         }
       } catch (error) {
         blockSaving(error);
@@ -571,6 +607,10 @@ export const useLibrary = create<LibraryState>((set, get) => {
 
     setManyWatched(entries, watched) {
       if (entries.length === 0) return;
+      if (!watched) {
+        libraryShrinkAllowed = true;
+        progressShrinkAllowed = true;
+      }
       update((state) => {
         const progress = { ...state.progress };
         const removed = { ...state.removed };
@@ -702,6 +742,8 @@ export const useLibrary = create<LibraryState>((set, get) => {
       }
       savingBlocked = false;
       progressStored = false;
+      libraryShrinkAllowed = true;
+      progressShrinkAllowed = true;
       update(() => replaceWith(other, false));
       set({ unreadable: false, firstRun: false });
       await flushLibrary();

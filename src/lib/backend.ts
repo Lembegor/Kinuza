@@ -251,7 +251,7 @@ export const backend = {
   openDefaultAppsSettings: () => call<void>("open_default_apps_settings"),
   imdbRating: (imdbId: string) => call<ImdbRating | null>("imdb_rating", { imdbId }),
   storeGet: (name: string) => call<StoredDocument | null>("store_get", { name }),
-  storeSet: (name: string, value: string) => call<void>("store_set", { name, value }),
+  storeSet: (name: string, value: string, allowShrink = false) => call<void>("store_set", { name, value, allowShrink }),
 };
 
 export async function onLaunchRequest(handler: (request: LaunchRequest) => void): Promise<() => void> {

@@ -13,8 +13,52 @@ use crate::AppState;
 const STORE_FOLDER_NAME: &str = "store";
 const BACKUP_FOLDER_NAME: &str = "backups";
 const MAX_STORE_NAME_LENGTH: usize = 40;
-const DAILY_BACKUPS_KEPT: usize = 7;
+const DAILY_BACKUPS_KEPT: usize = 14;
 const BACKED_UP_STORES: &[&str] = &["library", "progress", "settings"];
+const GUARDED_STORES: &[&str] = &["library", "progress"];
+const COUNTED_SECTIONS: &[&str] = &["tracked", "progress"];
+const SHRINK_TOLERANCE: usize = 3;
+const REJECTED_FOLDER_NAME: &str = "rejected";
+const REJECTED_KEPT: usize = 30;
+const VERSION_FILE_NAME: &str = "app-version.txt";
+const ERROR_SHRINK_REFUSED: &str = "store_shrink_refused";
+
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+struct Counts {
+    tracked: Option<usize>,
+    progress: Option<usize>,
+}
+
+impl Counts {
+    fn of(text: &str) -> Option<Self> {
+        let value: serde_json::Value = serde_json::from_str(text).ok()?;
+        let section = |name: &str| value.get(name).and_then(|section| section.as_object()).map(|section| section.len());
+        Some(Self { tracked: section(COUNTED_SECTIONS[0]), progress: section(COUNTED_SECTIONS[1]) })
+    }
+
+    fn describe(&self) -> String {
+        let part = |label: &str, count: Option<usize>| count.map(|count| format!("{label} {count}"));
+        [part("titles", self.tracked), part("progress", self.progress)]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+fn lost(before: Option<usize>, after: Option<usize>) -> usize {
+    match (before, after) {
+        (Some(before), Some(after)) => before.saturating_sub(after),
+        (Some(before), None) => before,
+        _ => 0,
+    }
+}
+
+fn shrinks_too_much(name: &str, before: Counts, after: Counts) -> bool {
+    let progress_moved_out = name == "library" && after.progress.is_none();
+    let progress_lost = if progress_moved_out { 0 } else { lost(before.progress, after.progress) };
+    lost(before.tracked, after.tracked) > SHRINK_TOLERANCE || progress_lost > SHRINK_TOLERANCE
+}
 const SECONDS_PER_DAY: u64 = 86_400;
 
 #[derive(Serialize)]
@@ -30,11 +74,96 @@ pub fn store_get(state: State<'_, AppState>, name: String) -> Result<Option<Stor
 }
 
 #[tauri::command]
-pub fn store_set(state: State<'_, AppState>, name: String, value: String) -> Result<(), String> {
-    write_document(&state.data_dir.join(STORE_FOLDER_NAME), &name, &value).map_err(|error| {
+pub fn store_set(state: State<'_, AppState>, name: String, value: String, allow_shrink: Option<bool>) -> Result<(), String> {
+    save_document(&state.data_dir.join(STORE_FOLDER_NAME), &name, &value, allow_shrink.unwrap_or(false))
+}
+
+fn save_document(folder: &Path, name: &str, value: &str, allow_shrink: bool) -> Result<(), String> {
+    let guarded = GUARDED_STORES.contains(&name);
+    let before = if guarded {
+        document_path(folder, name).ok().and_then(|path| fs::read_to_string(path).ok()).and_then(|text| Counts::of(&text))
+    } else {
+        None
+    };
+    let after = if guarded { Counts::of(value) } else { None };
+    if guarded && after.is_none() {
+        tracing::error!("store: refused to save {name}: the new document is not valid JSON");
+        return Err("store_invalid".to_owned());
+    }
+    if let (Some(before), Some(after)) = (before, after) {
+        if shrinks_too_much(name, before, after) {
+            if allow_shrink {
+                tracing::warn!("store: {name} shrinks on purpose: {} -> {}", before.describe(), after.describe());
+            } else {
+                let kept = keep_rejected(folder, name, value);
+                tracing::error!(
+                    "store: refused to save {name}: it would drop from {} to {}; the rejected version is kept at {}",
+                    before.describe(),
+                    after.describe(),
+                    kept.as_deref().map(|path| path.display().to_string()).unwrap_or_else(|| "nowhere".to_owned()),
+                );
+                return Err(ERROR_SHRINK_REFUSED.to_owned());
+            }
+        }
+    }
+    write_document(folder, name, value).map_err(|error| {
         tracing::warn!("store: could not save {name}: {error}");
         "store_unwritable".to_owned()
-    })
+    })?;
+    if let (Some(before), Some(after)) = (before, after) {
+        if before != after {
+            tracing::info!("store: saved {name}: {} -> {}", before.describe(), after.describe());
+        }
+    } else if let Some(after) = after {
+        tracing::info!("store: saved {name} for the first time: {}", after.describe());
+    }
+    Ok(())
+}
+
+fn keep_rejected(folder: &Path, name: &str, value: &str) -> Option<PathBuf> {
+    let rejected = folder.join(REJECTED_FOLDER_NAME);
+    let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map(|elapsed| elapsed.as_millis()).unwrap_or(0);
+    let path = rejected.join(format!("{name}-{stamp}.json"));
+    write_atomic(&path, value.as_bytes()).ok()?;
+    let mut old: Vec<PathBuf> = fs::read_dir(&rejected)
+        .map(|entries| entries.filter_map(Result::ok).map(|entry| entry.path()).collect())
+        .unwrap_or_default();
+    old.sort();
+    for stale in old.iter().take(old.len().saturating_sub(REJECTED_KEPT)) {
+        let _ = fs::remove_file(stale);
+    }
+    Some(path)
+}
+
+pub fn snapshot_on_version_change(data_dir: &Path, version: &str) {
+    let folder = data_dir.join(STORE_FOLDER_NAME);
+    let marker = folder.join(VERSION_FILE_NAME);
+    let previous = fs::read_to_string(&marker).map(|text| text.trim().to_owned()).unwrap_or_default();
+    if previous == version {
+        return;
+    }
+    let label = if previous.is_empty() { "unknown".to_owned() } else { previous.clone() };
+    let backups = folder.join(BACKUP_FOLDER_NAME);
+    for name in BACKED_UP_STORES {
+        let Ok(path) = document_path(&folder, name) else { continue };
+        let Ok(text) = fs::read_to_string(&path) else { continue };
+        if !is_json(&text) {
+            continue;
+        }
+        let target = backups.join(format!("{name}-before-{version}-from-{label}.json"));
+        match write_atomic(&target, text.as_bytes()) {
+            Ok(()) => tracing::info!(
+                "store: kept {name} as it was before {version} ({})",
+                Counts::of(&text).map(|counts| counts.describe()).unwrap_or_default()
+            ),
+            Err(error) => tracing::warn!("store: could not keep {name} before {version}: {error}"),
+        }
+    }
+    if let Err(error) = write_atomic(&marker, version.as_bytes()) {
+        tracing::warn!("store: could not note the app version: {error}");
+    } else {
+        tracing::info!("store: app version {label} -> {version}");
+    }
 }
 
 fn read_document(folder: &Path, name: &str) -> Result<Option<StoredDocument>, String> {
@@ -47,6 +176,10 @@ fn read_document(folder: &Path, name: &str) -> Result<Option<StoredDocument>, St
                 let recovered = index > 1 || (index == 1 && !main_missing);
                 if index > 0 {
                     tracing::warn!("store: {name} was read from {}", candidate.display());
+                }
+                if GUARDED_STORES.contains(&name) {
+                    let counts = Counts::of(&text).map(|counts| counts.describe()).unwrap_or_default();
+                    tracing::info!("store: read {name} from {} ({counts})", candidate.file_name().map(|file| file.to_string_lossy()).unwrap_or_default());
                 }
                 return Ok(Some(StoredDocument { text, recovered }));
             }
@@ -293,6 +426,65 @@ mod tests {
         let dir = folder("broken");
         fs::write(dir.join("library.json"), "garbage").unwrap();
         assert!(read_document(&dir, "library").is_err());
+    }
+
+    #[test]
+    fn a_sudden_shrink_is_refused_and_kept_aside() {
+        let folder = folder("shrink");
+        let full = r#"{"tracked":{"a":1,"b":1,"c":1,"d":1,"e":1,"f":1},"progress":{"x":1}}"#;
+        save_document(&folder, "library", full, false).unwrap();
+        let small = r#"{"tracked":{"a":1},"progress":{"x":1}}"#;
+        assert_eq!(save_document(&folder, "library", small, false), Err(ERROR_SHRINK_REFUSED.to_owned()));
+        assert_eq!(fs::read_to_string(folder.join("library.json")).unwrap(), full);
+        assert_eq!(fs::read_dir(folder.join(REJECTED_FOLDER_NAME)).unwrap().count(), 1);
+        save_document(&folder, "library", small, true).unwrap();
+        assert_eq!(fs::read_to_string(folder.join("library.json")).unwrap(), small);
+    }
+
+    #[test]
+    fn small_changes_and_growth_are_saved() {
+        let folder = folder("growth");
+        save_document(&folder, "library", r#"{"tracked":{"a":1,"b":1,"c":1,"d":1},"progress":{}}"#, false).unwrap();
+        save_document(&folder, "library", r#"{"tracked":{"a":1,"b":1},"progress":{}}"#, false).unwrap();
+        save_document(&folder, "library", r#"{"tracked":{"a":1,"b":1,"c":1,"d":1,"e":1,"f":1,"g":1},"progress":{}}"#, false).unwrap();
+        save_document(&folder, "progress", r#"{"version":3,"progress":{}}"#, false).unwrap();
+        assert!(save_document(&folder, "library", "not json", false).is_err());
+        save_document(&folder, "settings", r#"{}"#, false).unwrap();
+    }
+
+    #[test]
+    fn progress_may_move_out_of_the_library() {
+        let folder = folder("moved");
+        save_document(&folder, "library", r#"{"tracked":{"a":1},"progress":{"1":1,"2":1,"3":1,"4":1,"5":1}}"#, false).unwrap();
+        save_document(&folder, "library", r#"{"version":3,"tracked":{"a":1}}"#, false).unwrap();
+        save_document(&folder, "progress", r#"{"version":3,"progress":{"1":1,"2":1,"3":1,"4":1,"5":1}}"#, false).unwrap();
+        assert!(save_document(&folder, "progress", r#"{"version":3,"progress":{}}"#, false).is_err());
+    }
+
+    #[test]
+    fn missing_section_counts_as_lost() {
+        let folder = folder("missing");
+        save_document(&folder, "library", r#"{"tracked":{"a":1,"b":1,"c":1,"d":1,"e":1},"progress":{}}"#, false).unwrap();
+        assert!(save_document(&folder, "library", r#"{"progress":{}}"#, false).is_err());
+    }
+
+    #[test]
+    fn a_new_version_keeps_the_old_files() {
+        let folder = folder("version");
+        let store = folder.join(STORE_FOLDER_NAME);
+        save_document(&store, "library", r#"{"tracked":{"a":1},"progress":{}}"#, false).unwrap();
+        snapshot_on_version_change(&folder, "1.0.0");
+        snapshot_on_version_change(&folder, "1.0.0");
+        snapshot_on_version_change(&folder, "1.1.0");
+        let names: Vec<String> = fs::read_dir(store.join(BACKUP_FOLDER_NAME))
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains("-before-"))
+            .collect();
+        assert!(names.contains(&"library-before-1.0.0-from-unknown.json".to_owned()));
+        assert!(names.contains(&"library-before-1.1.0-from-1.0.0.json".to_owned()));
+        assert_eq!(names.len(), 2);
     }
 
     #[test]
