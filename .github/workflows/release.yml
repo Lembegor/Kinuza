@@ -9,25 +9,28 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  windows:
-    runs-on: windows-latest
+  draft:
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     outputs:
-      release_id: ${{ steps.build.outputs.releaseId }}
+      release_id: ${{ steps.draft.outputs.release_id }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check the tag, the secrets, and read the release notes
-        id: meta
+      - name: Check the tag and the secrets, then open a draft release
+        id: draft
         shell: bash
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TMDB_KEY: ${{ secrets.VITE_TMDB_API_KEY }}
         run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
           version=$(node -p "require('./package.json').version")
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME does not match version $version in package.json. Release with scripts/publish.ps1, it keeps them in step."
+          if [ "v$version" != "$tag" ]; then
+            echo "::error::Tag $tag does not match version $version in package.json. Release with scripts/publish.ps1, it keeps them in step."
             exit 1
           fi
           if [ -z "$SIGNING_KEY" ]; then
@@ -38,13 +41,25 @@ jobs:
             echo "::error::Secret VITE_TMDB_API_KEY is not set: the catalog would be empty in this build."
             exit 1
           fi
-          git fetch --force --no-tags origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
-          notes=$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME")
-          {
-            echo "notes<<KINUZA_NOTES_END"
-            echo "${notes:-Новая версия Kinuza.}"
-            echo "KINUZA_NOTES_END"
-          } >> "$GITHUB_OUTPUT"
+          git fetch --force --no-tags origin "refs/tags/$tag:refs/tags/$tag"
+          notes_file=$(mktemp)
+          git tag -l --format='%(contents)' "$tag" > "$notes_file"
+          [ -s "$notes_file" ] || echo "Kinuza $version" > "$notes_file"
+          id=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq ".[] | select(.tag_name == \"$tag\") | .id" | head -n 1)
+          if [ -z "$id" ]; then
+            gh release create "$tag" --draft --verify-tag --title "Kinuza $version" --notes-file "$notes_file"
+            id=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq ".[] | select(.tag_name == \"$tag\") | .id" | head -n 1)
+          fi
+          [ -n "$id" ] || { echo "::error::Could not open the draft release."; exit 1; }
+          echo "release_id=$id" >> "$GITHUB_OUTPUT"
+
+  windows:
+    needs: draft
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
@@ -60,7 +75,6 @@ jobs:
       - run: npm ci
 
       - uses: tauri-apps/tauri-action@v0
-        id: build
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -68,15 +82,11 @@ jobs:
           VITE_TMDB_API_KEY: ${{ secrets.VITE_TMDB_API_KEY }}
           VITE_OPENSUBTITLES_API_KEY: ${{ secrets.VITE_OPENSUBTITLES_API_KEY }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "Kinuza __VERSION__"
-          releaseBody: ${{ steps.meta.outputs.notes }}
-          releaseDraft: true
-          prerelease: false
-          includeUpdaterJson: true
+          releaseId: ${{ needs.draft.outputs.release_id }}
+          includeUpdaterJson: false
 
   linux:
-    needs: windows
+    needs: draft
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -113,11 +123,11 @@ jobs:
           VITE_TMDB_API_KEY: ${{ secrets.VITE_TMDB_API_KEY }}
           VITE_OPENSUBTITLES_API_KEY: ${{ secrets.VITE_OPENSUBTITLES_API_KEY }}
         with:
-          releaseId: ${{ needs.windows.outputs.release_id }}
-          includeUpdaterJson: true
+          releaseId: ${{ needs.draft.outputs.release_id }}
+          includeUpdaterJson: false
 
   publish:
-    needs: [windows, linux]
+    needs: [draft, windows, linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -128,16 +138,20 @@ jobs:
         with:
           node-version: 22
 
-      - name: Check the draft and publish it
+      - name: Build the update manifest, check the draft and publish it
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           tag="$GITHUB_REF_NAME"
+          version="${tag#v}"
           folder=$(mktemp -d)
-          gh release download "$tag" --pattern latest.json --dir "$folder"
-          installers=$(node scripts/check-update-manifest.cjs "$folder/latest.json" "${tag#v}")
+          git fetch --force --no-tags origin "refs/tags/$tag:refs/tags/$tag"
+          export RELEASE_NOTES="$(git tag -l --format='%(contents)' "$tag")"
+          gh release download "$tag" --pattern '*.sig' --dir "$folder"
+          node scripts/make-update-manifest.cjs "$folder" "$version" "https://github.com/$GITHUB_REPOSITORY/releases/download/$tag" "$folder/latest.json"
+          installers=$(node scripts/check-update-manifest.cjs "$folder/latest.json" "$version")
           assets=$(gh release view "$tag" --json assets --jq '.assets[].name')
           while IFS= read -r installer; do
             for wanted in "$installer" "$installer.sig"; do
@@ -147,6 +161,7 @@ jobs:
               fi
             done
           done <<< "$installers"
+          gh release upload "$tag" "$folder/latest.json" --clobber
           gh release edit "$tag" --draft=false --latest
           echo "Published $tag. Updates point to:"
           echo "$installers"
