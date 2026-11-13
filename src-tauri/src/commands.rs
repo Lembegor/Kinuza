@@ -152,6 +152,16 @@ pub async fn torrent_select_files(
 }
 
 #[tauri::command]
+pub fn torrent_warm(state: State<'_, AppState>, info_hash: String, file_index: usize, full: bool) {
+    let engine = state.engine.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = engine.warm(&info_hash, file_index, full).await {
+            tracing::debug!("engine: could not warm up {info_hash}: {error:#}");
+        }
+    });
+}
+
+#[tauri::command]
 pub fn torrent_hold(state: State<'_, AppState>, info_hash: String) {
     state.engine.hold_online(&info_hash);
 }

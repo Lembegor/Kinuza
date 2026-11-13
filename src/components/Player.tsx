@@ -62,9 +62,10 @@ import {
 } from "../lib/subtitles";
 import { imageUrl, tmdb, type Episode } from "../lib/tmdb";
 import { useAsync } from "../lib/useAsync";
-import { sortSources } from "../pages/Title";
+import { pickInitialSource, sortSources } from "../lib/sources";
 import { useSoundSegments } from "./useSoundSegments";
 import { PlayerEpisodes } from "./PlayerEpisodes";
+import { episodeLayout, inLayout } from "../lib/episodeLayout";
 import { isWatched, titleKey, unitKey, useLibrary, type Source } from "../state/library";
 import { useSettings, type SubtitleBackground, type SubtitleColor, type SubtitleFont, type VideoQuality } from "../state/settings";
 import { fileProgress, useTorrents } from "../state/torrents";
@@ -80,6 +81,8 @@ import { useAudioEffects } from "./player/audioEffects";
 import { useMediaSession } from "./player/mediaSession";
 import { StatsPanel } from "./player/StatsPanel";
 import { isLinux } from "../lib/platform";
+import { recordActivity, titleOf } from "../state/activity";
+import { warmFile } from "../state/warmup";
 
 const controlsHideDelayMs = 3000;
 const progressSaveIntervalMs = 5000;
@@ -129,6 +132,8 @@ const convertedVideoCodecs = new Set(["mpeg4", "msmpeg4v2", "msmpeg4v3", "mpeg2v
 const delayStepSeconds = 0.1;
 const longestDelaySeconds = 10;
 const skipOfferEndsSeconds = 2;
+const skipOfferShownMs = 6000;
+const activityMinSeconds = 10;
 
 const skippableChapters: { kind: "intro" | "credits" | "recap"; pattern: RegExp }[] = [
   { kind: "intro", pattern: /\b(intro|opening|op)\b|заставк|опенинг/i },
@@ -206,6 +211,9 @@ const upNextTailSeconds = 40;
 const upNextCountdownSeconds = 10;
 const upNextMinDurationSeconds = 5 * 60;
 const upNextPreloadBytes = 16 * 1024 * 1024;
+const upNextTailBytes = 4 * 1024 * 1024;
+const nextWarmEveryMs = 100_000;
+const indexAtEnd = /\.(mp4|m4v|mov)$/i;
 const silentAudioCheckDelayMs = 5000;
 const settingsSaveDelayMs = 400;
 const maxTorrentSubtitles = 12;
@@ -257,21 +265,6 @@ interface SubtitleOption extends SubtitleLabel {
   file: TorrentFile;
 }
 
-function pickInitialSource(sources: Source[], preferredId: string | undefined, maxQuality: number): Source | undefined {
-  const preferred = sources.find((source) => source.id === preferredId);
-  if (preferred || sources.length === 0) return preferred;
-  const { byHash } = useTorrents.getState();
-  const isReady = (source: Source) => fileProgress(byHash[source.infoHash], source.fileIndex) >= 1;
-
-  if (maxQuality > 0) {
-    const within = sources.filter((source) => qualityRank(source.quality) <= maxQuality);
-    const pool = within.length > 0 ? within : sources.slice(-1);
-    const top = qualityRank(pool[0].quality);
-    const sameQuality = pool.filter((source) => qualityRank(source.quality) === top);
-    return sameQuality.find(isReady) ?? sameQuality[0];
-  }
-  return sources.find(isReady) ?? sources[0];
-}
 
 function readAudioOptions(video: VideoWithExtras): { options: AudioOption[]; selected: number } {
   const tracks = video.audioTracks;
@@ -615,6 +608,18 @@ function PlayerView({ session }: { session: PlayerSession }) {
         .sort((a, b) => a - b),
     [titleDetails.data],
   );
+  const playerLayout = useAsync(
+    () =>
+      titleDetails.data ? episodeLayout(session.title.id, titleDetails.data.seasons, titleDetails.data.isAnime) : Promise.resolve(null),
+    [session.title.id, titleDetails.data],
+  );
+  const episodeText = useCallback(
+    (season: number | undefined, episode: number | undefined) =>
+      playerLayout.data && season !== undefined && inLayout(playerLayout.data, season)
+        ? t("tracker.long.single", { episode: episode ?? "" })
+        : t("common.seasonEpisode", { season: season ?? "", episode: episode ?? "" }),
+    [playerLayout.data],
+  );
   const seasonPlace = session.season === undefined ? -1 : regularSeasons.indexOf(session.season);
   const seasonAfter = seasonPlace >= 0 ? regularSeasons[seasonPlace + 1] : undefined;
   const seasonBefore = seasonPlace > 0 ? regularSeasons[seasonPlace - 1] : undefined;
@@ -864,6 +869,40 @@ function PlayerView({ session }: { session: PlayerSession }) {
 
   useEffect(() => beforeAppClose(saveProgress), [saveProgress]);
 
+  const activitySource = useRef(source);
+  activitySource.current = source;
+  useEffect(() => {
+    const startedAt = Date.now();
+    const startPlayed = playedSeconds.current;
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      const seconds = Math.round(playedSeconds.current - startPlayed);
+      if (seconds < activityMinSeconds) return;
+      const saved = useLibrary.getState().progress[session.unitKey];
+      recordActivity(
+        "play",
+        {
+          unit: session.unitKey,
+          title: titleOf(session.title),
+          ...(session.season !== undefined ? { season: session.season, episode: session.episode } : {}),
+          startedAt,
+          seconds,
+          position: saved ? Math.round(saved.position) : undefined,
+          duration: saved && saved.duration > 1 ? Math.round(saved.duration) : undefined,
+          quality: activitySource.current?.quality,
+        },
+        startedAt,
+      );
+    };
+    const remove = beforeAppClose(finish);
+    return () => {
+      remove();
+      finish();
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   const playedTorrent = source?.infoHash;
   useEffect(() => {
     if (!playedTorrent) return;
@@ -1008,18 +1047,27 @@ function PlayerView({ session }: { session: PlayerSession }) {
   }, [nextEpisode, allSources, session.title.id, settings.preferredQuality]);
 
   useEffect(() => {
+    if (!nextSource || nextSource.infoHash === source?.infoHash) return;
+    const warm = () => warmFile(nextSource.infoHash, nextSource.fileIndex, false);
+    warm();
+    const timer = setInterval(warm, nextWarmEveryMs);
+    return () => clearInterval(timer);
+  }, [nextSource?.id, source?.infoHash]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
     if (!upNextVisible || !nextSource || buffering) return;
     const abort = new AbortController();
+    const ranges = [`bytes=0-${upNextPreloadBytes - 1}`, ...(indexAtEnd.test(nextSource.fileName) ? [`bytes=-${upNextTailBytes}`] : [])];
     void (async () => {
       try {
-        const response = await fetch(await streamUrl(nextSource.infoHash, nextSource.fileIndex), {
-          headers: { Range: `bytes=0-${upNextPreloadBytes - 1}` },
-          signal: abort.signal,
-        });
-        const reader = response.body?.getReader();
-        if (!reader) return;
-        while (!(await reader.read()).done) {
-          if (abort.signal.aborted) return;
+        const url = await streamUrl(nextSource.infoHash, nextSource.fileIndex);
+        for (const range of ranges) {
+          const response = await fetch(url, { headers: { Range: range }, signal: abort.signal });
+          const reader = response.body?.getReader();
+          if (!reader) continue;
+          while (!(await reader.read()).done) {
+            if (abort.signal.aborted) return;
+          }
         }
       } catch {
         return;
@@ -1088,6 +1136,17 @@ function PlayerView({ session }: { session: PlayerSession }) {
   }, [wakeControls]);
 
   const controlsShown = controlsVisible || !playing || menu !== null || failed;
+  const skipKey = skippable ? `${skippable.kind}:${skippable.start}` : null;
+  const [skipFresh, setSkipFresh] = useState(false);
+
+  useEffect(() => {
+    if (!skipKey) return;
+    setSkipFresh(true);
+    const timer = setTimeout(() => setSkipFresh(false), skipOfferShownMs);
+    return () => clearTimeout(timer);
+  }, [skipKey]);
+
+  const skipShown = skipFresh || controlsShown;
 
   const changeZoom = (delta: number) =>
     setZoom((value) => {
@@ -1796,7 +1855,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
     title: session.title.title,
     subtitle:
       session.episode !== undefined
-        ? `${t("common.seasonEpisode", { season: session.season ?? "", episode: session.episode })}${session.episodeName ? ` — ${session.episodeName}` : ""}`
+        ? `${episodeText(session.season, session.episode)}${session.episodeName ? ` — ${session.episodeName}` : ""}`
         : session.title.year,
     cover: imageUrl(titleDetails.data?.seasons.find((item) => item.seasonNumber === session.season)?.poster ?? session.title.poster, "w500"),
     duration,
@@ -1930,7 +1989,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
   const bufferedAhead = downloaded >= 1 ? [] : buffered.filter((range) => range.start <= current + 1 && range.end > current);
   const subtitle =
     session.episode !== undefined
-      ? `${t("common.seasonEpisode", { season: session.season ?? "", episode: session.episode })}${session.episodeName ? ` — ${session.episodeName}` : ""}`
+      ? `${episodeText(session.season, session.episode)}${session.episodeName ? ` — ${session.episodeName}` : ""}`
       : session.title.year;
   const VolumeIcon = muted || volume === 0 ? VolumeX : volume < 0.5 ? Volume1 : Volume2;
   const subtitleStyle = {
@@ -2069,7 +2128,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
             <strong>{t("player.ended")}</strong>
             {nextCandidate && (
               <p>
-                {t("player.upNext.title")}: {t("common.seasonEpisode", { season: nextCandidate.season, episode: nextCandidate.episode })} · {nextCandidate.name}
+                {t("player.upNext.title")}: {episodeText(nextCandidate.season, nextCandidate.episode)} · {nextCandidate.name}
               </p>
             )}
             <div className="player__message-actions">
@@ -2254,7 +2313,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
           <div className="player__up-next-body">
             <span>{t("player.upNext.title")}</span>
             <strong>
-              {t("common.seasonEpisode", { season: nextEpisode.season, episode: nextEpisode.episode })} · {nextEpisode.name}
+              {episodeText(nextEpisode.season, nextEpisode.episode)} · {nextEpisode.name}
             </strong>
             <div className="player__up-next-actions">
               <button className="button button--primary" onClick={playNext}>
@@ -2270,13 +2329,13 @@ function PlayerView({ session }: { session: PlayerSession }) {
       )}
 
       {skippable && !failed && !(upNextVisible && skippable.kind === "credits") && (
-        <div className="player__skips">
-          <button className="player__skip" onClick={() => seekTo(skippable.end)}>
+        <div className={`player__skips ${skipShown ? "" : "is-faded"}`} aria-hidden={!skipShown}>
+          <button className="player__skip" tabIndex={skipShown ? undefined : -1} onClick={() => seekTo(skippable.end)}>
             <SkipForward size={16} />
             {t(skippable.sceneAfter ? "player.skip.toScene" : `player.skip.${skippable.kind}`)}
           </button>
           {skippable.kind === "credits" && skippable.sceneAfter && nextEpisode && (
-            <button className="player__skip" onClick={playNext}>
+            <button className="player__skip" tabIndex={skipShown ? undefined : -1} onClick={playNext}>
               <SkipForward size={16} />
               {t("player.next")}
             </button>
@@ -2288,6 +2347,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
         <PlayerEpisodes
           titleId={session.title.id}
           seasons={titleDetails.data?.seasons ?? []}
+          layout={playerLayout.data ?? null}
           current={{ season: session.season, episode: session.episode }}
           onPlay={playEpisode}
           onFind={findEpisode}

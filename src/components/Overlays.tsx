@@ -82,7 +82,7 @@ export function ConfirmDialog() {
   const dialogRef = useRef<HTMLDivElement>(null);
   useDialogFocus(dialogRef, request !== null);
 
-  useEffect(() => setOptionChecked(false), [request]);
+  useEffect(() => setOptionChecked(request?.optionChecked ?? false), [request]);
 
   useEffect(() => {
     if (!request) return;

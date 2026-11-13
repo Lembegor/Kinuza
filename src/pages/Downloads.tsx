@@ -93,6 +93,7 @@ function TorrentCard({ torrent, link, badge }: { torrent: TorrentView; link?: { 
       message: torrent.name,
       confirmLabel: t("common.delete"),
       optionLabel: t("downloads.remove.files"),
+      optionChecked: true,
       danger: true,
       onConfirm: (deleteFiles) => {
         void run(backend.remove(torrent.infoHash, deleteFiles).then(() => removeFromLibrary(torrent.infoHash)));

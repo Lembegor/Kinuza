@@ -171,6 +171,10 @@ pub trait TorrentStorage: Send + Sync {
     /// E.g. for filesystem backend ensure that the file has a certain length, and grow/shrink as needed.
     fn ensure_file_length(&self, file_id: usize, length: u64) -> anyhow::Result<()>;
 
+    fn discard(&self, _file_id: usize, _offset: u64, _len: u64) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     /// Replace the current storage with a dummy, and return a new one that should be used instead.
     /// This is used to make the underlying object useless when e.g. pausing the torrent.
     fn take(&self) -> anyhow::Result<Box<dyn TorrentStorage>>;
@@ -206,6 +210,10 @@ impl<U: TorrentStorage + ?Sized> TorrentStorage for Box<U> {
 
     fn ensure_file_length(&self, file_id: usize, length: u64) -> anyhow::Result<()> {
         (**self).ensure_file_length(file_id, length)
+    }
+
+    fn discard(&self, file_id: usize, offset: u64, len: u64) -> anyhow::Result<()> {
+        (**self).discard(file_id, offset, len)
     }
 
     fn take(&self) -> anyhow::Result<Box<dyn TorrentStorage>> {

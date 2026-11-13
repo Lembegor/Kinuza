@@ -3,6 +3,7 @@ import { t, tn } from "../lib/i18n";
 import { report } from "../lib/journal";
 import { episodeFiles, planReleaseUpdate, toSource } from "../lib/releaseUpdate";
 import { isServerError, rutracker, rutrackerErrors } from "../lib/rutracker";
+import { episodeLayout } from "../lib/episodeLayout";
 import { tmdb } from "../lib/tmdb";
 import { newEpisodes } from "./calendar";
 import { unitKey, useLibrary, type ReleaseWatch, type Source, type TitleRef } from "./library";
@@ -45,12 +46,13 @@ async function updateFromTopic(watch: ReleaseWatch): Promise<number> {
   }
 
   const details = await tmdb.details("tv", seriesId);
+  const layout = await episodeLayout(seriesId, details.seasons, details.isAnime);
   const library = useLibrary.getState();
   const plan = planReleaseUpdate(
     sourcesFrom(seriesId, watch.infoHash),
     (season, episode) => (library.sources[unitKey("tv", seriesId, season, episode)] ?? []).length > 0,
     preview,
-    episodeFiles(preview, details.seasons, watch.defaultSeason, watch.pinnedSeason),
+    episodeFiles(preview, details.seasons, watch.defaultSeason, watch.pinnedSeason, layout),
   );
   if (plan.added.length === 0) {
     remember();

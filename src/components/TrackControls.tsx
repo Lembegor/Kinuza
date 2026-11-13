@@ -3,6 +3,7 @@ import { Ban, Check, ChevronDown, Clock, Eye, Heart, ListPlus, Pause, Star, Tras
 import { t, useT } from "../lib/i18n";
 import { maxRating, statusLabel, titleKey, useLibrary, watchStatuses, type TitleRef, type WatchStatus } from "../state/library";
 import { useUi } from "../state/ui";
+import { applyStatus } from "../state/titleStatus";
 
 export function removeTrackedWithUndo(key: string): void {
   const { tracked, removeTracked, restoreTracked } = useLibrary.getState();
@@ -47,7 +48,6 @@ export function StatusMenu({ title }: { title: TitleRef }) {
   const key = titleKey(title.type, title.id);
   const entry = useLibrary((state) => state.tracked[key]);
   const { t } = useT();
-  const { setStatus } = useLibrary.getState();
   const [open, setOpen] = useState(false);
   const ref = useDismiss(open, () => setOpen(false));
 
@@ -70,7 +70,7 @@ export function StatusMenu({ title }: { title: TitleRef }) {
                 key={item.id}
                 className={`popover__item ${item.id === status ? "is-active" : ""}`}
                 onClick={() => {
-                  setStatus(title, item.id);
+                  applyStatus(title, item.id);
                   setOpen(false);
                 }}
               >

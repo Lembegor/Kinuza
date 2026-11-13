@@ -27,7 +27,7 @@ import { TrailerOverlay } from "../components/TrailerOverlay";
 import { backend, describeError, isDesktop } from "../lib/backend";
 import { formatBytes, formatDate, formatRuntime, formatSpeed } from "../lib/format";
 import { t, useT } from "../lib/i18n";
-import { qualityRank } from "../lib/parse";
+import { arcOf, episodeLayout, inLayout, type Arc, type EpisodeLayout } from "../lib/episodeLayout";
 import { localizedTexts, needsLocalizing } from "../lib/localized";
 import { imageUrl, tmdb, type Details, type Episode, type MediaType } from "../lib/tmdb";
 import { useAsync } from "../lib/useAsync";
@@ -37,13 +37,14 @@ import { isWatched, toTitleRef, unitKey, useLibrary, type Source, type TitleRef 
 import { useSettings } from "../state/settings";
 import { fileOf, fileProgress, useTorrents } from "../state/torrents";
 import { useUi, type AddSourceTarget } from "../state/ui";
+import { recordActivity, titleOf } from "../state/activity";
+import { sortSources } from "../lib/sources";
+import { useHoverWarm, warmTitleResume } from "../state/warmup";
 
 const specialsSeason = 0;
 const namedDirectorCount = 4;
 
-export function sortSources(sources: Source[]): Source[] {
-  return [...sources].sort((a, b) => qualityRank(b.quality) - qualityRank(a.quality) || b.size - a.size);
-}
+export { sortSources };
 
 async function revealFile(source: Source): Promise<void> {
   try {
@@ -251,8 +252,9 @@ function EpisodeRow({
   const stillGuarded = !watched && !revealed && spoilerStills;
   const playable = sources.length > 0;
   const aired = episode.airDate !== "" && episode.airDate <= localDay(new Date());
-  const findSource = () => openAddSource({ target: { ...target, defaultSeason: episode.season } });
+  const findSource = () => openAddSource({ target: { ...target, defaultSeason: episode.season, defaultEpisode: episode.episode } });
   const still = imageUrl(episode.still, "w300");
+  const hoverWarm = useHoverWarm(playable ? key : null);
   const watchedShare = progress && progress.duration > 0 ? Math.min(1, progress.position / progress.duration) : 0;
 
   const start = (preferredSourceId?: string) =>
@@ -266,43 +268,52 @@ function EpisodeRow({
     });
 
   return (
-    <div className={`episode ${playable ? "is-playable" : ""} ${watched ? "is-watched" : ""} ${!playable && !aired ? "is-upcoming" : ""}`}>
-      <button
-        className="episode__still"
-        disabled={!playable && !aired}
-        onClick={() => (playable ? start() : findSource())}
-        aria-label={playable ? t("title.episode.watch") : t("title.episode.find")}
-      >
-        {still ? (
-          <img src={still} alt="" loading="lazy" draggable={false} className={stillGuarded ? "is-spoiler" : ""} />
-        ) : (
-          <div className="episode__blank" />
+    <div data-episode={episode.episode} className={`episode ${playable ? "is-playable" : ""} ${watched ? "is-watched" : ""} ${!playable && !aired ? "is-upcoming" : ""}`}>
+      <div className="episode__media">
+        <button
+          className="episode__still"
+          {...hoverWarm}
+          disabled={!playable && !aired}
+          onClick={() => (playable ? start() : findSource())}
+          aria-label={playable ? t("title.episode.watch") : t("title.episode.find")}
+        >
+          {still ? (
+            <img src={still} alt="" loading="lazy" draggable={false} className={stillGuarded ? "is-spoiler" : ""} />
+          ) : (
+            <div className="episode__blank" />
+          )}
+          {playable && (
+            <span className="episode__play">
+              <Play size={20} fill="currentColor" />
+            </span>
+          )}
+          {!playable && aired && (
+            <span className="episode__find">
+              <Search size={15} />
+              {t("title.episode.find")}
+            </span>
+          )}
+          {!playable && !aired && (
+            <span className="episode__airs">{episode.airDate ? t("title.episode.airs", { date: formatDate(episode.airDate) }) : t("title.episode.airsUnknown")}</span>
+          )}
+          {watchedShare > 0 && !watched && (
+            <div className="bar bar--thin">
+              <i style={{ width: `${watchedShare * 100}%` }} />
+            </div>
+          )}
+          {watched && (
+            <span className="episode__seen">
+              <Check size={13} />
+            </span>
+          )}
+        </button>
+        {still && stillGuarded && (
+          <button className="episode__unveil" onClick={() => setRevealed(true)}>
+            <Eye size={13} />
+            <span>{t("title.episode.showStill")}</span>
+          </button>
         )}
-        {playable && (
-          <span className="episode__play">
-            <Play size={20} fill="currentColor" />
-          </span>
-        )}
-        {!playable && aired && (
-          <span className="episode__find">
-            <Search size={15} />
-            {t("title.episode.find")}
-          </span>
-        )}
-        {!playable && !aired && (
-          <span className="episode__airs">{episode.airDate ? t("title.episode.airs", { date: formatDate(episode.airDate) }) : t("title.episode.airsUnknown")}</span>
-        )}
-        {watchedShare > 0 && !watched && (
-          <div className="bar bar--thin">
-            <i style={{ width: `${watchedShare * 100}%` }} />
-          </div>
-        )}
-        {watched && (
-          <span className="episode__seen">
-            <Check size={13} />
-          </span>
-        )}
-      </button>
+      </div>
       <div className="episode__body">
         <div className="episode__title">
           <span className="episode__number">{episode.episode}</span>
@@ -322,7 +333,8 @@ function EpisodeRow({
               className={`episode__overview ${guarded ? "is-veiled" : ""}`}
               role={guarded ? "button" : undefined}
               tabIndex={guarded ? 0 : undefined}
-              title={guarded ? t("title.episode.spoiler") : undefined}
+              aria-label={guarded ? t("title.episode.spoiler") : undefined}
+              data-hint={guarded ? t("title.episode.spoilerHint") : undefined}
               onClick={guarded ? () => setRevealed(true) : undefined}
               onKeyDown={
                 guarded
@@ -365,20 +377,73 @@ function EpisodeRow({
   );
 }
 
+function arcLabel(arc: Arc, details: Details): string {
+  const name = arc.chunk ? "" : (details.seasons.find((item) => item.seasonNumber === arc.season)?.name ?? arc.name);
+  return name ? `${name} · ${arc.first}-${arc.last}` : `${arc.first}-${arc.last}`;
+}
+
 function SeriesEpisodes({
   details,
   title,
   season,
+  layout,
+  focusEpisode,
   onSeasonChange,
   target,
 }: {
   details: Details;
   title: TitleRef;
   season: number;
-  onSeasonChange: (season: number) => void;
+  layout: EpisodeLayout | null;
+  focusEpisode: number | null;
+  onSeasonChange: (season: number, episode?: number) => void;
   target: AddSourceTarget;
 }) {
-  const episodes = useAsync(() => tmdb.season(details.id, season), [details.id, season]);
+  const seasonEpisodes = useAsync(() => tmdb.season(details.id, season), [details.id, season]);
+  const sectionRef = useRef<HTMLElement>(null);
+  const [jump, setJump] = useState("");
+  const long = layout !== null && inLayout(layout, season);
+  const seasonArcs = long ? layout!.arcs.filter((arc) => arc.season === season) : [];
+  const [chunkFirst, setChunkFirst] = useState<number | null>(null);
+  const currentArc =
+    seasonArcs.length > 1
+      ? (seasonArcs.find((arc) => arc.first === chunkFirst) ??
+        (focusEpisode !== null ? seasonArcs.find((arc) => focusEpisode >= arc.first && focusEpisode <= arc.last) : undefined) ??
+        seasonArcs[0])
+      : null;
+  const episodes = useMemo(
+    () => ({
+      ...seasonEpisodes,
+      data:
+        seasonEpisodes.data && currentArc
+          ? seasonEpisodes.data.filter((episode) => episode.episode >= currentArc.first && episode.episode <= currentArc.last)
+          : seasonEpisodes.data,
+    }),
+    [seasonEpisodes, currentArc],
+  );
+
+  useEffect(() => {
+    const bar = sectionRef.current?.querySelector<HTMLElement>(".arc-bar__chips");
+    const chip = bar?.querySelector<HTMLElement>(".chip.is-active");
+    if (bar && chip) bar.scrollTo({ left: chip.offsetLeft - bar.clientWidth / 2 + chip.clientWidth / 2, behavior: "smooth" });
+  }, [season, currentArc?.first, layout]);
+
+  useEffect(() => {
+    if (focusEpisode === null || !episodes.data?.some((episode) => episode.episode === focusEpisode)) return;
+    const row = sectionRef.current?.querySelector(`[data-episode="${focusEpisode}"]`);
+    row?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [focusEpisode, episodes.data]);
+
+  const goTo = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!layout) return;
+    const number = Number.parseInt(jump, 10);
+    const arc = Number.isFinite(number) ? arcOf(layout, number) : null;
+    if (!arc) return;
+    setChunkFirst(arc.chunk ? arc.first : null);
+    onSeasonChange(arc.season, number);
+    setJump("");
+  };
   const sources = useLibrary((state) => state.sources);
   const progress = useLibrary((state) => state.progress);
   const openAddSource = useUi((state) => state.openAddSource);
@@ -430,7 +495,7 @@ function SeriesEpisodes({
     );
 
   return (
-    <section className="section">
+    <section className="section" ref={sectionRef}>
       <div className="section__head">
         <h2>{t("title.episodes")}</h2>
         {total > 0 && <span className="section__note">{note}</span>}
@@ -438,7 +503,7 @@ function SeriesEpisodes({
           {total > 0 && (
             <button className="button" onClick={toggleSeasonWatched}>
               <CheckCheck size={16} />
-              {seasonWatched ? t("title.season.unmark") : t("title.season.markWatched")}
+              {seasonWatched ? t("title.season.unmark") : long ? t("title.arc.markWatched") : t("title.season.markWatched")}
             </button>
           )}
           <button className="button" onClick={() => openAddSource({ target })}>
@@ -448,18 +513,68 @@ function SeriesEpisodes({
         </div>
       </div>
 
-      {details.seasons.length > 1 && (
-        <div className="chips chips--scroll">
-          {details.seasons.map((item) => (
-            <button
-              key={item.seasonNumber}
-              className={`chip ${item.seasonNumber === season ? "is-active" : ""}`}
-              onClick={() => onSeasonChange(item.seasonNumber)}
-            >
-              {item.seasonNumber === specialsSeason ? t("common.specials") : t("common.season", { season: item.seasonNumber })}
+      {layout ? (
+        <div className="arc-bar">
+          <form className="arc-bar__jump" onSubmit={goTo}>
+            <input
+              className="input arc-bar__input"
+              inputMode="numeric"
+              aria-label={t("title.arcs.jump")}
+              placeholder={t("title.arcs.jump")}
+              value={jump}
+              onChange={(event) => setJump(event.target.value.replace(/\D/g, "").slice(0, 4))}
+            />
+            <button className="button button--small" type="submit" disabled={!jump}>
+              {t("title.arcs.go")}
             </button>
-          ))}
+          </form>
+          <div className="chips chips--scroll arc-bar__chips" role="tablist" aria-label={t("title.arcs")}>
+            {layout.arcs.map((arc) => {
+              const active = arc.season === season && (!currentArc || currentArc.first === arc.first);
+              return (
+                <button
+                  key={`${arc.season}:${arc.first}`}
+                  role="tab"
+                  aria-selected={active}
+                  className={`chip ${active ? "is-active" : ""}`}
+                  onClick={() => {
+                    setChunkFirst(arc.chunk ? arc.first : null);
+                    onSeasonChange(arc.season);
+                  }}
+                >
+                  {arcLabel(arc, details)}
+                </button>
+              );
+            })}
+            {details.seasons
+              .filter((item) => !inLayout(layout, item.seasonNumber))
+              .map((item) => (
+                <button
+                  key={item.seasonNumber}
+                  role="tab"
+                  aria-selected={item.seasonNumber === season}
+                  className={`chip ${item.seasonNumber === season ? "is-active" : ""}`}
+                  onClick={() => onSeasonChange(item.seasonNumber)}
+                >
+                  {item.seasonNumber === specialsSeason ? t("common.specials") : item.name || t("common.season", { season: item.seasonNumber })}
+                </button>
+              ))}
+          </div>
         </div>
+      ) : (
+        details.seasons.length > 1 && (
+          <div className="chips chips--scroll">
+            {details.seasons.map((item) => (
+              <button
+                key={item.seasonNumber}
+                className={`chip ${item.seasonNumber === season ? "is-active" : ""}`}
+                onClick={() => onSeasonChange(item.seasonNumber)}
+              >
+                {item.seasonNumber === specialsSeason ? t("common.specials") : t("common.season", { season: item.seasonNumber })}
+              </button>
+            ))}
+          </div>
+        )
       )}
 
       {episodes.error ? (
@@ -563,6 +678,10 @@ export default function TitlePage() {
   const details = useAsync(() => tmdb.details(type, id), [type, id]);
   const data = details.data && details.data.id === id ? details.data : null;
   const title = useMemo(() => (data ? toTitleRef(data) : null), [data]);
+
+  useEffect(() => {
+    if (title) recordActivity("title.open", { title: titleOf(title) });
+  }, [title?.type, title?.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const localized = useAsync(
     async () => (data && needsLocalizing(data, language) ? { id: data.id, type: data.type, ...(await localizedTexts(data, language)) } : null),
     [data, language],
@@ -575,6 +694,12 @@ export default function TitlePage() {
 
   const movieSources = useLibrary((state) => state.sources[unitKey("movie", id)]);
   const resume = useResumeEpisode(data);
+  const layoutState = useAsync(
+    () => (data && type === "tv" ? episodeLayout(data.id, data.seasons, data.isAnime) : Promise.resolve(null)),
+    [data?.id, data?.seasons, type],
+  );
+  const layout = layoutState.data ?? null;
+  const [focusEpisode, setFocusEpisode] = useState<number | null>(null);
   const { play, openAddSource, setPageTarget } = useUi.getState();
 
   const firstSeason = data?.seasons.find((season) => season.seasonNumber !== specialsSeason)?.seasonNumber ?? data?.seasons[0]?.seasonNumber ?? 1;
@@ -582,8 +707,18 @@ export default function TitlePage() {
   const season = requestedSeason !== null ? Number(requestedSeason) : (resume?.season ?? firstSeason);
 
   const target = useMemo<AddSourceTarget | null>(
-    () => (data && title ? { title, originalTitle: data.originalTitle, originalLanguage: data.language, seasons: data.seasons, defaultSeason: season } : null),
-    [data, title, season],
+    () =>
+      data && title
+        ? {
+            title,
+            originalTitle: data.originalTitle,
+            originalLanguage: data.language,
+            seasons: data.seasons,
+            defaultSeason: season,
+            ...(layoutState.loading ? {} : { layout }),
+          }
+        : null,
+    [data, title, season, layout, layoutState.loading],
   );
 
   useEffect(() => {
@@ -601,6 +736,13 @@ export default function TitlePage() {
       .reduce((sum, item) => sum + item.episodeCount, 0);
     useLibrary.getState().noteTitleDetails(shownRef, data.type === "tv" ? regularEpisodes : undefined);
   }, [data, shownRef, localized.loading]);
+
+  const heroUnit = type === "movie" ? unitKey("movie", id) : resume ? unitKey("tv", id, resume.season, resume.episode) : null;
+  const heroWarm = useHoverWarm(heroUnit);
+
+  useEffect(() => {
+    if (data) warmTitleResume(type, data.id);
+  }, [type, data?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (details.error) {
     return (
@@ -620,7 +762,13 @@ export default function TitlePage() {
   const meta = [
     data.year,
     typeLabel(data),
-    type === "movie" ? formatRuntime(data.runtimeMinutes) : data.seasons.length > 0 ? tn("title.seasons", data.seasons.filter((s) => s.seasonNumber !== specialsSeason).length || 1) : "",
+    type === "movie"
+      ? formatRuntime(data.runtimeMinutes)
+      : layout
+        ? tn("common.episodes", layout.last)
+        : data.seasons.length > 0
+          ? tn("title.seasons", data.seasons.filter((s) => s.seasonNumber !== specialsSeason).length || 1)
+          : "",
     data.countries.slice(0, 2).join(", "),
   ].filter(Boolean);
 
@@ -641,7 +789,7 @@ export default function TitlePage() {
   };
   const canPlay = Boolean(bestMovieSource || resume);
   const playLabel = resume
-    ? `${resume.resumed ? t("title.resume") : t("title.watch")} · ${t("title.episodeShort", { season: resume.season, episode: resume.episode })}`
+    ? `${resume.resumed ? t("title.resume") : t("title.watch")} · ${layout && inLayout(layout, resume.season) ? t("tracker.long.single", { episode: resume.episode }) : t("title.episodeShort", { season: resume.season, episode: resume.episode })}`
     : t("title.watch");
 
   return (
@@ -683,7 +831,7 @@ export default function TitlePage() {
             <Overview text={shownOverview || t("title.noOverview")} />
             <div className="title-hero__actions">
               {canPlay ? (
-                <button className="button button--primary button--large" onClick={playResume}>
+                <button className="button button--primary button--large" {...heroWarm} onClick={playResume}>
                   <Play size={18} fill="currentColor" />
                   {playLabel}
                 </button>
@@ -715,8 +863,13 @@ export default function TitlePage() {
             details={data}
             title={shownRef}
             season={season}
+            layout={layout}
+            focusEpisode={focusEpisode ?? (resume && resume.season === season ? resume.episode : null)}
             target={target}
-            onSeasonChange={(next) => setSearchParams({ s: String(next) }, { replace: true })}
+            onSeasonChange={(next, episode) => {
+              setFocusEpisode(episode ?? null);
+              setSearchParams({ s: String(next) }, { replace: true });
+            }}
           />
         )}
 

@@ -832,7 +832,7 @@ impl TorrentStateLive {
             .unwrap_or(PEX_FLAG_REACHABLE)
     }
 
-    pub(crate) fn add_peer_if_not_seen(&self, addr: SocketAddr) -> crate::Result<bool> {
+    pub fn add_peer_if_not_seen(&self, addr: SocketAddr) -> crate::Result<bool> {
         match self.peers.add_if_not_seen(addr) {
             Some(handle) => handle,
             None => return Ok(false),
@@ -914,6 +914,88 @@ impl TorrentStateLive {
         Err(res)
     }
 
+    fn whole_pieces_of_file(&self, file_id: usize) -> anyhow::Result<(u64, Vec<ValidPieceIndex>)> {
+        let fi = self
+            .metadata
+            .file_infos
+            .get(file_id)
+            .context("no such file")?;
+        let start = fi.offset_in_torrent;
+        let end = start + fi.len;
+        let pieces = fi
+            .piece_range
+            .clone()
+            .filter_map(|id| self.lengths.validate_piece_index(id))
+            .filter(|piece| {
+                let offset = self.lengths.piece_offset(*piece);
+                offset >= start && offset + self.lengths.piece_length(*piece) as u64 <= end
+            })
+            .collect();
+        Ok((start, pieces))
+    }
+
+    pub(crate) fn forget_file_pieces(
+        &self,
+        file_id: usize,
+        keep: &[std::ops::Range<u64>],
+    ) -> anyhow::Result<Vec<u32>> {
+        let (start, pieces) = self.whole_pieces_of_file(file_id)?;
+        let mut forgotten = Vec::new();
+        {
+            let mut g = self.lock_write("forget_file_pieces");
+            let tracker = g.get_pieces_mut()?;
+            for piece in pieces {
+                let offset = self.lengths.piece_offset(piece) - start;
+                let end = offset + self.lengths.piece_length(piece) as u64;
+                if keep.iter().any(|range| range.start < end && offset < range.end) {
+                    continue;
+                }
+                if tracker.forget_piece(piece, &self.metadata.file_infos) {
+                    forgotten.push(piece.get());
+                }
+            }
+            if !forgotten.is_empty() {
+                tracker.flush_have_pieces(false)?;
+            }
+        }
+        Ok(forgotten)
+    }
+
+    pub(crate) fn discard_file_pieces(&self, file_id: usize, pieces: &[u32]) -> anyhow::Result<u64> {
+        let (start, _) = self.whole_pieces_of_file(file_id)?;
+        let mut ranges: Vec<(u64, u64)> = Vec::new();
+        {
+            let g = self.lock_read("discard_file_pieces");
+            let tracker = g.get_pieces()?;
+            let mut sorted: Vec<u32> = pieces.to_vec();
+            sorted.sort_unstable();
+            for id in sorted {
+                let Some(piece) = self.lengths.validate_piece_index(id) else {
+                    continue;
+                };
+                if !tracker.is_piece_untouched(piece) {
+                    continue;
+                }
+                let offset = self.lengths.piece_offset(piece) - start;
+                let len = self.lengths.piece_length(piece) as u64;
+                match ranges.last_mut() {
+                    Some(last) if last.0 + last.1 == offset => last.1 += len,
+                    _ => ranges.push((offset, len)),
+                }
+            }
+        }
+        let mut discarded = 0;
+        for (offset, len) in ranges {
+            self.files.discard(file_id, offset, len)?;
+            discarded += len;
+        }
+        Ok(discarded)
+    }
+
+    pub(crate) fn wake_idle_peers(&self) {
+        self.new_pieces_notify.notify_waiters();
+    }
+
     pub(crate) fn update_only_files(&self, only_files: &HashSet<usize>) -> anyhow::Result<()> {
         let hns = self
             .lock_write("update_only_files")
@@ -925,6 +1007,7 @@ impl TorrentStateLive {
         if !hns.finished() {
             self.reconnect_all_not_needed_peers();
         }
+        self.wake_idle_peers();
         Ok(())
     }
 
@@ -1659,10 +1742,8 @@ impl PeerHandler {
             .get_chunks()?
             .is_chunk_ready_to_upload(&chunk_info)
         {
-            anyhow::bail!(
-                "got request for a chunk that is not ready to upload. chunk {:?}",
-                chunk_info
-            );
+            trace!(?chunk_info, "ignoring a request for a chunk we no longer keep");
+            return Ok(());
         }
 
         self.state

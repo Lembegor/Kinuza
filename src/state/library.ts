@@ -23,6 +23,7 @@ import { t, type MessageKey } from "../lib/i18n";
 import { report } from "../lib/journal";
 import type { MediaItem, MediaType } from "../lib/tmdb";
 import { useUi } from "./ui";
+import { noteLibraryChange } from "./activity";
 
 const storeName = "library";
 const progressStoreName = "progress";
@@ -414,7 +415,7 @@ const libraryKeys: (keyof LibraryData)[] = [
 ];
 
 export const useLibrary = create<LibraryState>((set, get) => {
-  const update = (change: (state: LibraryData) => Partial<LibraryData>) => {
+  const update = (change: (state: LibraryData) => Partial<LibraryData>, quiet = false) => {
     const before = get();
     if (!before.loaded) {
       report("library", "journal.library.early", "a change came before the library was read and was not saved");
@@ -422,6 +423,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
     }
     set((state) => change(state));
     const after = get();
+    if (!quiet) noteLibraryChange(before, after, isWatched);
     if (after.progress !== before.progress) scheduleProgressSave();
     if (!progressStored && after.progress !== before.progress) scheduleSave();
     if (libraryKeys.some((key) => after[key] !== before[key])) scheduleSave();
@@ -728,7 +730,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
           releaseWatches: merged.releaseWatches ?? get().releaseWatches,
           announcedEpisodes: merged.announcedEpisodes ?? get().announcedEpisodes,
         };
-      });
+      }, true);
       if (get().onboardedAt) set({ firstRun: false });
     },
 
@@ -745,7 +747,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
       progressStored = false;
       libraryShrinkAllowed = true;
       progressShrinkAllowed = true;
-      update(() => replaceWith(other, false));
+      update(() => replaceWith(other, false), true);
       set({ unreadable: false, firstRun: false });
       await flushLibrary();
     },

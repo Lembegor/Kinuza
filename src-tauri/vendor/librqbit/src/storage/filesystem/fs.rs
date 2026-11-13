@@ -98,6 +98,29 @@ impl TorrentStorage for FilesystemStorage {
         Ok(f.lock_read()?.set_len(len)?)
     }
 
+    fn discard(&self, file_id: usize, offset: u64, len: u64) -> anyhow::Result<()> {
+        let of = self.opened_files.get(file_id).context("no such file")?;
+        #[cfg(windows)]
+        {
+            let f = of.try_mark_sparse()?;
+            super::sparse::zero_range(&f, offset, len)?;
+        }
+        #[cfg(target_os = "linux")]
+        {
+            use nix::fcntl::{FallocateFlags, fallocate};
+            let f = of.lock_read()?;
+            fallocate(
+                &*f,
+                FallocateFlags::FALLOC_FL_PUNCH_HOLE | FallocateFlags::FALLOC_FL_KEEP_SIZE,
+                offset as i64,
+                len as i64,
+            )?;
+        }
+        #[cfg(not(any(windows, target_os = "linux")))]
+        let _ = (of, offset, len);
+        Ok(())
+    }
+
     fn take(&self) -> anyhow::Result<Box<dyn TorrentStorage>> {
         Ok(Box::new(Self {
             opened_files: self

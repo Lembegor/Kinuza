@@ -18,11 +18,14 @@ import {
 import { isServerError, rutracker, rutrackerErrors, serverProblemOf, trackerRoute, type RutrackerItem, type ServerProblem, type TrackerRoute, type VideoSize } from "../lib/rutracker";
 import { buildProfiles, matchSeasons, seasonQueries, taskKey, type SearchTask, type SeasonMatch, type SeasonProfile } from "../lib/seasonSearch";
 import { animeTrackerNames } from "../lib/localized";
-import { tmdb, type ShowNames } from "../lib/tmdb";
+import { arcOf, episodeLayout, overlaps, releaseCoverage, type Coverage, type EpisodeLayout, type ReleaseCoverage } from "../lib/episodeLayout";
+import { isWatched, useLibrary } from "../state/library";
+import { tmdb, type SeasonInfo, type ShowNames } from "../lib/tmdb";
 import { useAsync } from "../lib/useAsync";
 import { useSettings, type TrackerSort } from "../state/settings";
 import { useUi, type AddSourceTarget } from "../state/ui";
 import { LanguageFlags } from "./LanguageFlags";
+import { recordActivity, titleOf } from "../state/activity";
 
 const pageLookupLimit = 20;
 const anySeason = 0;
@@ -94,6 +97,27 @@ interface ReleaseRow {
   pageSize: VideoSize | null;
   sizeBytes: number;
   match: SeasonMatch | null;
+  coverage: ReleaseCoverage | null;
+}
+
+type LongGroup = "covers" | "series" | "recut" | "extra" | "unknown" | "other";
+
+function longGroupOf(row: ReleaseRow, wanted: Coverage | null): LongGroup {
+  const coverage = row.coverage;
+  if (!coverage) return "unknown";
+  if (coverage.kind === "series" && coverage.range) return wanted && overlaps(coverage.range, wanted) ? "covers" : "series";
+  return coverage.kind === "series" ? "unknown" : coverage.kind;
+}
+
+function coverageBonus(row: ReleaseRow, wanted: Coverage): number {
+  const range = row.coverage?.range;
+  if (!range) return 0;
+  const startsBefore = range.first <= wanted.first && range.last >= wanted.first ? 2 : 0;
+  return startsBefore + Math.log10(1 + Math.max(0, range.last - wanted.first)) * 0.5;
+}
+
+function episodeRangeText(range: Coverage): string {
+  return range.first === range.last ? t("tracker.long.single", { episode: range.first }) : t("tracker.long.range", { first: range.first, last: range.last });
 }
 
 type SeasonGroup = "season" | "several" | "unknown" | "other";
@@ -197,7 +221,7 @@ export function TrackerSearch({
   onPick,
 }: {
   target: AddSourceTarget;
-  onPick: (release: Promise<TorrentPreview>, topicId: string, season?: number, single?: boolean) => void;
+  onPick: (release: Promise<TorrentPreview>, topicId: string, season?: number, single?: boolean, coverage?: Coverage | null, recut?: boolean) => void;
 }) {
   const initialQuery = useMemo(() => defaultQuery(target), [target]);
   const [queryInput, setQueryInput] = useState(initialQuery);
@@ -225,6 +249,41 @@ export function TrackerSearch({
   const { t, tn, locale, language } = useT();
   const automatic = activeQuery.trim() === initialQuery.trim();
   const isAnime = target.originalLanguage === "ja";
+
+  const layoutState = useAsync(
+    () =>
+      target.layout !== undefined
+        ? Promise.resolve(target.layout)
+        : target.title.type === "tv" && isAnime
+          ? episodeLayout(target.title.id, target.seasons, true)
+          : Promise.resolve(null),
+    [target.title.type, target.title.id, target.layout],
+  );
+  const layout: EpisodeLayout | null = layoutState.data ?? null;
+  const progress = useLibrary((state) => state.progress);
+  const continueFrom = useMemo(() => {
+    if (!layout) return null;
+    const prefix = `tv:${target.title.id}:`;
+    let watchedUpTo = 0;
+    for (const [key, entry] of Object.entries(progress)) {
+      if (!key.startsWith(prefix) || !isWatched(entry)) continue;
+      const [, , seasonPart, episodePart] = key.split(":");
+      const episode = Number(episodePart);
+      if (layout.seasons.includes(Number(seasonPart)) && episode > watchedUpTo) watchedUpTo = episode;
+    }
+    return watchedUpTo > 0 && watchedUpTo < layout.last ? watchedUpTo + 1 : null;
+  }, [layout, progress, target.title.id]);
+  const [wantedRange, setWantedRange] = useState<Coverage | null>(null);
+  const [otherWorksShown, setOtherWorksShown] = useState(false);
+  useEffect(() => {
+    if (!layout || wantedRange) return;
+    setSeason(anySeason);
+    const start = target.defaultEpisode ?? continueFrom;
+    const shownArcs = layout.arcs.filter((arc) => arc.season === target.defaultSeason);
+    const opening = shownArcs.length > 0 && shownArcs[0].first > layout.first ? shownArcs[0] : layout.arcs[0];
+    const fallback = { first: opening.first, last: shownArcs.length > 0 ? shownArcs[shownArcs.length - 1].last : opening.last };
+    setWantedRange(start && start >= layout.first && start <= layout.last ? { first: start, last: start } : fallback);
+  }, [layout]);
 
   const anime = useAsync(
     () =>
@@ -272,7 +331,7 @@ export function TrackerSearch({
   }, [initialQuery, anime.data, otherLanguages.data, siteNames.data, target.title.title, target.originalTitle]);
 
   const profiles = useMemo<SeasonProfile[]>(() => {
-    if (target.title.type !== "tv" || seasonNumbers.length === 0) return [];
+    if (target.title.type !== "tv" || seasonNumbers.length === 0 || layoutState.loading || layout) return [];
     const seasonNames: Record<number, string[]> = {};
     for (const names of otherLanguages.data ?? []) {
       for (const [number, name] of Object.entries(names?.seasons ?? {})) seasonNames[Number(number)] = [...(seasonNames[Number(number)] ?? []), name];
@@ -285,7 +344,7 @@ export function TrackerSearch({
       label: (item) => t("common.season", { season: item.seasonNumber }),
       currentYear: new Date().getFullYear(),
     });
-  }, [target.title.type, target.seasons, showNames, otherLanguages.data, anime.data, seasonNumbers.length, t]);
+  }, [target.title.type, target.seasons, showNames, otherLanguages.data, anime.data, seasonNumbers.length, layout, layoutState.loading, t]);
 
   const runner = useRef({ generation: 0, queue: [] as (SearchTask & { generation: number })[], done: new Set<string>(), busy: false, seasonsQueued: -1 });
 
@@ -373,7 +432,7 @@ export function TrackerSearch({
 
   useEffect(() => {
     const state = runner.current;
-    if (!automatic || !namesReady || loading || needsAuth || serverProblem !== null || error !== null || state.seasonsQueued === state.generation) return;
+    if (!automatic || !namesReady || layoutState.loading || loading || needsAuth || serverProblem !== null || error !== null || state.seasonsQueued === state.generation) return;
     state.seasonsQueued = state.generation;
     const alternatives: SearchTask[] = showNames.slice(1).map((query) => ({ query, page: 0, quiet: true, season: null }));
     const ordered = [...profiles].sort((a, b) => Number(b.number === season) - Number(a.number === season));
@@ -382,7 +441,7 @@ export function TrackerSearch({
     const otherSeasons = bySeason.filter((task) => task.season !== season);
     enqueue(items.length === 0 ? [...alternatives, ...chosenSeason, ...otherSeasons] : [...chosenSeason, ...alternatives, ...otherSeasons]);
     setAlternativesQueued(true);
-  }, [automatic, namesReady, loading, needsAuth, serverProblem, error, profiles, showNames]);
+  }, [automatic, namesReady, layoutState.loading, loading, needsAuth, serverProblem, error, profiles, showNames]);
 
   const releases = useMemo(() => new Map(items.map((item) => [item.id, parseTrackerRelease(item.title)])), [items]);
   const [videoSizes, setVideoSizes] = useState<Record<string, VideoSize>>({});
@@ -439,10 +498,11 @@ export function TrackerSearch({
           resolution: release.resolution || (pageSize ? qualityFromSize(pageSize.width, pageSize.height) : ""),
           pageSize,
           sizeBytes: parseSize(item.size),
-          match: matchSeasons(item.title, profiles, isAnime),
+          match: layout ? null : matchSeasons(item.title, profiles, isAnime),
+          coverage: layout ? releaseCoverage(item.title, layout, Number(target.title.year) || null) : null,
         };
       }),
-    [items, releases, videoSizes, profiles, isAnime],
+    [items, releases, videoSizes, profiles, isAnime, layout, target.title.year],
   );
 
   const passesOtherFilters = (row: ReleaseRow) =>
@@ -487,13 +547,31 @@ export function TrackerSearch({
   }, [beforeResolution, prefs.resolutions, prefs.sort, language, target.originalLanguage]);
 
   const groupOrder: SeasonGroup[] = ["season", "several", "unknown", "other"];
-  const grouped = useMemo(
-    () =>
-      season === anySeason
-        ? visible
-        : groupOrder.flatMap((group) => visible.filter((row) => seasonGroup(row.match, season) === group)),
-    [visible, season],
+  const grouped = useMemo(() => {
+    if (layout) {
+      const byGroup = (group: LongGroup) => visible.filter((row) => longGroupOf(row, wantedRange) === group);
+      const covers = byGroup("covers");
+      const ordered =
+        prefs.sort === "best" && wantedRange
+          ? covers
+              .map((row, index) => ({ row, rank: coverageBonus(row, wantedRange) - index * 0.15 }))
+              .sort((a, b) => b.rank - a.rank)
+              .map((entry) => entry.row)
+          : covers;
+      const parts = [...byGroup("series")].sort((a, b) => (a.coverage?.range?.first ?? 0) - (b.coverage?.range?.first ?? 0));
+      return [...ordered, ...parts, ...byGroup("recut"), ...byGroup("extra"), ...byGroup("unknown"), ...(otherWorksShown ? byGroup("other") : [])];
+    }
+    return season === anySeason ? visible : groupOrder.flatMap((group) => visible.filter((row) => seasonGroup(row.match, season) === group));
+  }, [visible, season, layout, wantedRange, prefs.sort, otherWorksShown]);
+  const otherWorksCount = useMemo(
+    () => (layout ? visible.filter((row) => longGroupOf(row, wantedRange) === "other").length : 0),
+    [visible, layout, wantedRange],
   );
+  const latestEpisode = useMemo(() => {
+    if (!layout) return null;
+    const ends = rows.flatMap((row) => (row.coverage?.kind === "series" && row.coverage.range ? [row.coverage.range.last] : []));
+    return ends.length > 0 ? Math.max(...ends) : null;
+  }, [rows, layout]);
 
   const filtersActive = prefs.resolutions.length > 0 || prefs.voices.length > 0 || season !== anySeason;
   const resetFilters = () => {
@@ -518,9 +596,27 @@ export function TrackerSearch({
   };
 
   const pickItem = (row: ReleaseRow) => {
+    recordActivity("tracker.pick", {
+      title: titleOf(target.title),
+      release: row.item.title,
+      size: row.sizeBytes,
+      seeds: row.item.seeds,
+      quality: row.resolution,
+    });
     setResolvingId(row.item.id);
     const release = rutracker.inspectRelease(row.item.id);
     release.catch(() => undefined).finally(() => setResolvingId(null));
+    if (layout && row.coverage?.kind === "recut") {
+      const arc = row.coverage.range ? arcOf(layout, row.coverage.range.first) : null;
+      onPick(release, row.item.id, arc?.season ?? layout.arcs[0]?.season, false, null, true);
+      return;
+    }
+    const covered = layout && row.coverage?.kind === "series" ? row.coverage.range : null;
+    if (layout && covered) {
+      const arc = arcOf(layout, covered.first);
+      onPick(release, row.item.id, arc?.season, false, covered);
+      return;
+    }
     const seasons = row.match?.seasons ?? [];
     const picked = season !== anySeason && seasons.includes(season) ? season : seasons.length > 0 ? Math.min(...seasons) : undefined;
     onPick(release, row.item.id, picked, seasons.length === 1);
@@ -592,7 +688,16 @@ export function TrackerSearch({
               {t("tracker.search")}
             </button>
           </form>
-          {seasonNumbers.length > 1 && (
+          {layout && wantedRange ? (
+            <LongEpisodePicker
+              layout={layout}
+              seasons={target.seasons}
+              wanted={wantedRange}
+              continueFrom={continueFrom}
+              latest={latestEpisode}
+              onChange={setWantedRange}
+            />
+          ) : seasonNumbers.length > 1 && (
             <div className="tracker-seasons" role="group" aria-label={t("tracker.filter.season")}>
               <button
                 type="button"
@@ -732,13 +837,19 @@ export function TrackerSearch({
             <div className="tracker-list">
               {grouped.map((row, index) => {
                 const group = seasonGroup(row.match, season);
-                const startsGroup = season !== anySeason && group !== "season" && (index === 0 || seasonGroup(grouped[index - 1].match, season) !== group);
+                const long = layout ? longGroupOf(row, wantedRange) : null;
+                const startsGroup = long
+                  ? index === 0 || longGroupOf(grouped[index - 1], wantedRange) !== long
+                  : season !== anySeason && group !== "season" && (index === 0 || seasonGroup(grouped[index - 1].match, season) !== group);
+                const header = long ? t(`tracker.long.group.${long}`) : group === "season" ? "" : t(`tracker.group.${group}`, { season });
                 return (
                   <div key={row.item.id} className="tracker-list__entry">
-                    {startsGroup && <h3 className="tracker-list__group">{t(`tracker.group.${group}`, { season })}</h3>}
+                    {startsGroup && <h3 className="tracker-list__group">{header}</h3>}
                     <TrackerItem
                       row={row}
-                      best={prefs.sort === "best" && index === 0 && row.isVideo && group === "season"}
+                      layout={layout}
+                      wanted={wantedRange}
+                      best={prefs.sort === "best" && index === 0 && row.isVideo && (long ? long === "covers" : group === "season")}
                       anime={isAnime}
                       originalLanguage={target.originalLanguage ?? ""}
                       locale={locale}
@@ -754,6 +865,12 @@ export function TrackerSearch({
                 <button type="button" className="tracker-others" onClick={() => setOthersShown(true)}>
                   <ChevronDown size={15} />
                   {tn("tracker.otherSeasons", otherSeasonCount)}
+                </button>
+              )}
+              {otherWorksCount > 0 && !otherWorksShown && (
+                <button type="button" className="tracker-others" onClick={() => setOtherWorksShown(true)}>
+                  <ChevronDown size={15} />
+                  {t("tracker.long.otherWorks", { count: otherWorksCount })}
                 </button>
               )}
             </div>
@@ -796,8 +913,115 @@ function TrackerResolution({ row, loading }: { row: ReleaseRow; loading: boolean
   );
 }
 
+function CoverageBar({ range, layout, wanted }: { range: Coverage; layout: EpisodeLayout; wanted: Coverage | null }) {
+  const total = Math.max(layout.last, range.last);
+  const left = ((range.first - 1) / total) * 100;
+  const width = Math.max(((range.last - range.first + 1) / total) * 100, 1.2);
+  const marker = wanted ? ((Math.min(wanted.first, total) - 0.5) / total) * 100 : null;
+  return (
+    <div className="coverage-bar" aria-hidden="true">
+      <span style={{ left: `${left}%`, width: `${width}%` }} />
+      {marker !== null && <i style={{ left: `${marker}%` }} />}
+    </div>
+  );
+}
+
+const arcNameLength = 28;
+
+function LongEpisodePicker({
+  layout,
+  seasons,
+  wanted,
+  continueFrom,
+  latest,
+  onChange,
+}: {
+  layout: EpisodeLayout;
+  seasons: SeasonInfo[];
+  wanted: Coverage;
+  continueFrom: number | null;
+  latest: number | null;
+  onChange: (range: Coverage) => void;
+}) {
+  const { t } = useT();
+  const [typed, setTyped] = useState("");
+  const arcsRef = useRef<HTMLDivElement>(null);
+  const same = (a: Coverage, b: Coverage) => a.first === b.first && a.last === b.last;
+  useEffect(() => {
+    const bar = arcsRef.current;
+    const chip = bar?.querySelector<HTMLElement>(".chip.is-active");
+    if (bar && chip) bar.scrollTo({ left: chip.offsetLeft - bar.clientWidth / 2 + chip.clientWidth / 2, behavior: "smooth" });
+  }, [wanted.first, wanted.last]);
+  const opening = { first: layout.arcs[0].first, last: layout.arcs[0].last };
+  const latestRange = latest ? { first: Math.max(layout.first, latest - 11), last: latest } : null;
+  const nameOf = (arc: EpisodeLayout["arcs"][number]) => (arc.chunk ? "" : (seasons.find((item) => item.seasonNumber === arc.season)?.name ?? arc.name));
+  const submit = (event: React.FormEvent) => {
+    event.preventDefault();
+    const episode = Number.parseInt(typed, 10);
+    if (Number.isFinite(episode) && episode >= layout.first && episode <= layout.last) onChange({ first: episode, last: episode });
+  };
+  const shorten = (name: string) => (name.length > arcNameLength ? `${name.slice(0, arcNameLength - 1).trimEnd()}…` : name);
+  return (
+    <div className="long-picker">
+      <div className="long-picker__quick" role="group" aria-label={t("tracker.long.pick")}>
+        <button type="button" className={`chip ${same(wanted, opening) ? "is-active" : ""}`} aria-pressed={same(wanted, opening)} onClick={() => onChange(opening)}>
+          {t("tracker.long.fromStart")}
+        </button>
+        {continueFrom !== null && (
+          <button
+            type="button"
+            className={`chip ${same(wanted, { first: continueFrom, last: continueFrom }) ? "is-active" : ""}`}
+            onClick={() => onChange({ first: continueFrom, last: continueFrom })}
+          >
+            {t("tracker.long.continue", { episode: continueFrom })}
+          </button>
+        )}
+        {latestRange && (
+          <button type="button" className={`chip ${same(wanted, latestRange) ? "is-active" : ""}`} onClick={() => onChange(latestRange)}>
+            {t("tracker.long.latest")}
+          </button>
+        )}
+        <form className="long-picker__jump" onSubmit={submit}>
+          <input
+            className="input long-picker__input"
+            inputMode="numeric"
+            aria-label={t("tracker.long.episodePlaceholder")}
+            placeholder={t("tracker.long.episodePlaceholder")}
+            value={typed}
+            onChange={(event) => setTyped(event.target.value.replace(/\D/g, "").slice(0, 4))}
+          />
+        </form>
+        <span className="long-picker__now">{episodeRangeText(wanted)}</span>
+      </div>
+      <div className="chips chips--scroll long-picker__arcs" role="group" aria-label={t("tracker.long.arcs")} ref={arcsRef}>
+        {layout.arcs.map((arc) => {
+          const name = nameOf(arc);
+          const active = same(wanted, arc) || (wanted.first === wanted.last && wanted.first >= arc.first && wanted.first <= arc.last);
+          return (
+            <button
+              key={`${arc.season}:${arc.first}`}
+              type="button"
+              className={`chip ${active ? "is-active" : ""}`}
+              aria-pressed={active}
+              title={name ? `${name} · ${arc.first}-${arc.last}` : `${arc.first}-${arc.last}`}
+              onClick={() => onChange({ first: arc.first, last: arc.last })}
+            >
+              {name && shorten(name)}
+              <small>
+                {arc.first}-{arc.last}
+              </small>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function TrackerItem({
   row,
+  layout,
+  wanted,
   best,
   anime,
   originalLanguage,
@@ -808,6 +1032,8 @@ function TrackerItem({
   onPick,
 }: {
   row: ReleaseRow;
+  layout: EpisodeLayout | null;
+  wanted: Coverage | null;
   best: boolean;
   anime: boolean;
   originalLanguage: string;
@@ -817,7 +1043,7 @@ function TrackerItem({
   disabled: boolean;
   onPick: () => void;
 }) {
-  const { t } = useT();
+  const { t, tn } = useT();
   const { item, release, isVideo } = row;
   const audioLanguages = release.audioLanguages.map((code) => (code === originalLanguageMark ? originalLanguage : code));
 
@@ -833,10 +1059,20 @@ function TrackerItem({
           )}
           {release.quality && <span className="quality-tag">{release.quality}</span>}
           {(() => {
-            const label = matchLabel(row.match, release.scope, anime);
+            const range = row.coverage?.range ?? null;
+            const recut = row.coverage?.kind === "recut";
+            const label = recut
+              ? range
+                ? t("tracker.long.recutRange", { first: range.first, last: range.last })
+                : t("tracker.long.recut")
+              : range
+              ? `${episodeRangeText(range)} · ${tn("common.episodes", range.last - range.first + 1)}`
+              : layout
+                ? ""
+                : matchLabel(row.match, release.scope, anime);
             return label ? <span className="tracker-item__tag tracker-item__tag--scope">{label}</span> : null;
           })()}
-          {release.tags.map((tag) => (
+          {(layout ? release.tags.filter((tag) => !/^\d{1,4}(\s*[-–]\s*\d{1,4})?(\s*\+\s*\d{1,3})?(\s*(из|of)\s*\S+)?$/i.test(tag.trim())) : release.tags).map((tag) => (
             <span key={tag} className="tracker-item__tag">
               {tag}
             </span>
@@ -856,6 +1092,7 @@ function TrackerItem({
         <strong className={`tracker-item__name ${isVideo ? "" : "tracker-item__name--full"}`} title={item.title}>
           {isVideo ? release.name : item.title}
         </strong>
+        {layout && row.coverage?.range && <CoverageBar range={row.coverage.range} layout={layout} wanted={wanted} />}
         {isVideo && (
           <dl className="tracker-item__tracks">
             <dt>{t("tracker.voiceover")}</dt>

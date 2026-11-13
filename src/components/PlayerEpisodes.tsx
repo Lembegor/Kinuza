@@ -5,6 +5,7 @@ import { imageUrl, tmdb, type Episode, type SeasonInfo } from "../lib/tmdb";
 import { useAsync } from "../lib/useAsync";
 import { isWatched, unitKey, useLibrary } from "../state/library";
 import { useSettings } from "../state/settings";
+import { arcsOfSeason, type EpisodeLayout } from "../lib/episodeLayout";
 
 function today(): string {
   const now = new Date();
@@ -14,6 +15,7 @@ function today(): string {
 export function PlayerEpisodes({
   titleId,
   seasons,
+  layout,
   current,
   onPlay,
   onFind,
@@ -21,12 +23,19 @@ export function PlayerEpisodes({
 }: {
   titleId: number;
   seasons: SeasonInfo[];
+  layout: EpisodeLayout | null;
   current: { season: number; episode: number };
   onPlay: (episode: Episode) => void;
   onFind: (episode: Episode) => void;
   onClose: () => void;
 }) {
   const { t, locale } = useT();
+  const seasonLabel = (item: SeasonInfo) => {
+    const arcs = layout ? arcsOfSeason(layout, item.seasonNumber) : [];
+    if (arcs.length === 0) return t("common.season", { season: item.seasonNumber });
+    const range = `${arcs[0].first}-${arcs[arcs.length - 1].last}`;
+    return item.name ? `${item.name} · ${range}` : range;
+  };
   const shown = seasons.filter((season) => season.episodeCount > 0).sort((a, b) => (a.seasonNumber || Infinity) - (b.seasonNumber || Infinity));
   const [season, setSeason] = useState(current.season);
   const episodes = useAsync(() => tmdb.season(titleId, season), [titleId, season]);
@@ -59,7 +68,7 @@ export function PlayerEpisodes({
               className={`chip ${item.seasonNumber === season ? "is-active" : ""}`}
               onClick={() => setSeason(item.seasonNumber)}
             >
-              {item.seasonNumber === 0 ? t("common.specials") : t("common.season", { season: item.seasonNumber })}
+              {item.seasonNumber === 0 ? t("common.specials") : seasonLabel(item)}
             </button>
           ))}
         </div>

@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { SeasonInfo } from "../lib/tmdb";
 import type { TitleRef } from "./library";
+import type { Coverage, EpisodeLayout } from "../lib/episodeLayout";
 
 export type ToastKind = "info" | "success" | "error";
 
@@ -23,6 +24,10 @@ export interface AddSourceTarget {
   seasons: SeasonInfo[];
   defaultSeason: number;
   pinnedSeason?: number;
+  layout?: EpisodeLayout | null;
+  coverage?: Coverage | null;
+  recut?: boolean;
+  defaultEpisode?: number;
 }
 
 export interface AddSourceRequest {
@@ -37,6 +42,7 @@ export interface ConfirmRequest {
   message: string;
   confirmLabel: string;
   optionLabel?: string;
+  optionChecked?: boolean;
   danger?: boolean;
   secondaryLabel?: string;
   onSecondary?: () => void;

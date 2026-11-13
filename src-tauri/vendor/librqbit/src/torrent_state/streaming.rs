@@ -3,7 +3,7 @@ use std::{
     io::SeekFrom,
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     task::{Poll, Waker},
     time::Instant,
@@ -15,7 +15,6 @@ use dashmap::DashMap;
 use librqbit_core::lengths::{CurrentPiece, Lengths, ValidPieceIndex};
 use tokio::{
     io::{AsyncRead, AsyncSeek},
-    sync::OwnedSemaphorePermit,
 };
 use tracing::{debug, trace};
 
@@ -40,9 +39,9 @@ impl StreamState {
         lengths.compute_current_piece(self.position, self.file_abs_offset)
     }
 
-    fn queue<'a>(&self, lengths: &'a Lengths) -> impl Iterator<Item = ValidPieceIndex> + use<'a> {
+    fn queue<'a>(&self, lengths: &'a Lengths, buffer: u64) -> impl Iterator<Item = ValidPieceIndex> + use<'a> {
         let start = self.file_abs_offset + self.position;
-        let end = (start + PER_STREAM_BUF_DEFAULT).min(self.file_abs_offset + self.file_len);
+        let end = (start + buffer).min(self.file_abs_offset + self.file_len);
         let dpl = lengths.default_piece_length();
         let start_id = (start / dpl as u64).try_into().unwrap();
         let end_id = end.div_ceil(dpl as u64).try_into().unwrap();
@@ -54,9 +53,29 @@ impl StreamState {
 pub(crate) struct TorrentStreams {
     next_stream_id: AtomicUsize,
     streams: DashMap<StreamId, StreamState>,
+    buffer: AtomicU64,
 }
 
 impl TorrentStreams {
+    fn buffer(&self) -> u64 {
+        match self.buffer.load(Ordering::Relaxed) {
+            0 => PER_STREAM_BUF_DEFAULT,
+            bytes => bytes,
+        }
+    }
+
+    pub(crate) fn set_buffer(&self, bytes: u64) {
+        self.buffer.store(bytes, Ordering::Relaxed);
+    }
+
+    pub(crate) fn positions(&self, file_id: usize) -> Vec<u64> {
+        self.streams
+            .iter()
+            .filter(|s| s.value().file_id == file_id)
+            .map(|s| s.value().position)
+            .collect()
+    }
+
     fn next_id(&self) -> usize {
         self.next_stream_id.fetch_add(1, Ordering::Relaxed)
     }
@@ -91,7 +110,8 @@ impl TorrentStreams {
             }
         }
 
-        let mut all: Vec<_> = self.streams.iter().map(|s| s.queue(lengths)).collect();
+        let buffer = self.buffer();
+        let mut all: Vec<_> = self.streams.iter().map(|s| s.queue(lengths, buffer)).collect();
 
         // Shuffle to decrease determinism and make queueing fairer.
         use rand::seq::SliceRandom;
@@ -140,8 +160,6 @@ pub struct FileStream {
     // file params
     file_len: u64,
     file_torrent_abs_offset: u64,
-
-    _blocking_permit: OwnedSemaphorePermit,
 }
 
 macro_rules! map_io_err {
@@ -261,7 +279,11 @@ impl AsyncSeek for FileStream {
             ));
         }
 
+        let moved = new_pos as u64 != self.position;
         self.as_mut().set_position(map_io_err!(new_pos.try_into())?);
+        if moved && let Some(live) = self.torrent.live() {
+            live.wake_idle_peers();
+        }
         debug!(stream_id = self.stream_id, position = self.position, "seek");
         Ok(())
     }
@@ -309,6 +331,29 @@ impl ManagedTorrent {
         })
     }
 
+    pub fn set_stream_buffer(&self, bytes: u64) -> anyhow::Result<()> {
+        self.streams()?.set_buffer(bytes);
+        Ok(())
+    }
+
+    pub fn stream_positions(&self, file_id: usize) -> Vec<u64> {
+        self.streams().map(|s| s.positions(file_id)).unwrap_or_default()
+    }
+
+    pub fn forget_file_pieces(
+        &self,
+        file_id: usize,
+        keep: &[std::ops::Range<u64>],
+    ) -> anyhow::Result<Vec<u32>> {
+        let live = self.live().context("torrent is not live")?;
+        live.forget_file_pieces(file_id, keep)
+    }
+
+    pub fn discard_file_pieces(&self, file_id: usize, pieces: &[u32]) -> anyhow::Result<u64> {
+        let live = self.live().context("torrent is not live")?;
+        live.discard_file_pieces(file_id, pieces)
+    }
+
     fn maybe_reconnect_needed_peers_for_file(&self, file_id: usize) -> bool {
         // If we have the full file, don't bother.
         if self.is_file_finished(file_id) {
@@ -347,7 +392,6 @@ impl ManagedTorrent {
             &metadata,
         )?;
         let streams = self.streams()?;
-        let blocking_permit = self.shared().spawner.semaphore().acquire_owned().await?;
         let s = FileStream {
             stream_id: streams.next_id(),
             streams: streams.clone(),
@@ -356,7 +400,6 @@ impl ManagedTorrent {
 
             file_len: fd_len,
             file_torrent_abs_offset: fd_offset,
-            _blocking_permit: blocking_permit,
             torrent: self,
             metadata,
         };
@@ -372,6 +415,9 @@ impl ManagedTorrent {
             },
         );
 
+        if let Some(live) = s.torrent.live() {
+            live.wake_idle_peers();
+        }
         debug!(stream_id = s.stream_id, file_id, "started stream");
 
         Ok(s)

@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { SearchX, UserRound } from "lucide-react";
 import { CatalogError, EmptyState, PosterGrid } from "../components/Cards";
@@ -9,6 +9,9 @@ import { useAsync } from "../lib/useAsync";
 import { animeByName } from "../lib/localized";
 import { catalogSearch } from "../lib/catalog";
 import { bestPersonTier, bestTitleTier, rankTitles } from "../lib/searchRank";
+import { recordActivity } from "../state/activity";
+
+const searchActivityDelayMs = 1500;
 
 type Filter = "all" | "movie" | "tv" | "anime" | "people";
 
@@ -67,6 +70,12 @@ export default function Search() {
   const hideWatched = params.get("unwatched") === "1";
   const tracked = useLibrary((state) => state.tracked);
   const progress = useLibrary((state) => state.progress);
+
+  useEffect(() => {
+    if (query.length < 2) return;
+    const timer = setTimeout(() => recordActivity("search", { query }), searchActivityDelayMs);
+    return () => clearTimeout(timer);
+  }, [query]);
 
   const results = useAsync(
     async () => {

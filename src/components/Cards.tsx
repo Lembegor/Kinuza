@@ -8,6 +8,7 @@ import { cachedCatalog } from "../lib/persistentCache";
 import { hasApiKey, imageUrl, tmdb, type MediaItem } from "../lib/tmdb";
 import { maxRating, titleKey, unitKey, useLibrary, type TitleRef, type WatchStatus } from "../state/library";
 import { TrackBadge } from "./TrackControls";
+import { applyStatus } from "../state/titleStatus";
 
 type CardItem = TitleRef & Partial<Pick<MediaItem, "rating" | "isAnime">> & { note?: string };
 
@@ -28,11 +29,12 @@ function changeStatus(item: CardItem, status: WatchStatus | null): void {
   const previous = state.tracked[key];
   const movieKey = unitKey("movie", title.id);
   const leavingCompleted = previous?.status === "completed" && status !== "completed";
-  if (status === null && !previous?.rating && !previous?.liked) state.removeTracked(key);
-  else state.setStatus(title, status);
-  if (title.type !== "movie") return;
-  if (status === "completed") state.setWatched(movieKey, true, { title });
-  else if (leavingCompleted && state.progress[movieKey]) state.setWatched(movieKey, false, { title });
+  if (status === null && !previous?.rating && !previous?.liked) {
+    state.removeTracked(key);
+    if (title.type === "movie" && leavingCompleted && state.progress[movieKey]) state.setWatched(movieKey, false, { title });
+    return;
+  }
+  applyStatus(title, status);
 }
 
 export function QuickActions({ item }: { item: CardItem }) {

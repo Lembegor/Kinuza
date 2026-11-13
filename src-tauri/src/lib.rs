@@ -3,6 +3,7 @@ mod associations;
 #[cfg(not(windows))]
 #[path = "associations_linux.rs"]
 mod associations;
+mod activity;
 mod catalog;
 mod commands;
 mod engine;
@@ -115,6 +116,7 @@ pub fn run() {
             commands::torrent_delete,
             commands::torrent_select_files,
             commands::torrent_hold,
+            commands::torrent_warm,
             commands::torrent_release,
             commands::torrent_set_policy,
             commands::storage_info,
@@ -136,6 +138,8 @@ pub fn run() {
             commands::open_default_apps_settings,
             store::store_get,
             store::store_set,
+            activity::activity_append,
+            activity::activity_read,
             imdb::imdb_rating,
             tray::tray_configure,
             online_subtitles::online_subtitles_search,

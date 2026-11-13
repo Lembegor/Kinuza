@@ -8,7 +8,7 @@ import { setApiKeyOverride, setCatalogLanguage } from "../lib/tmdb";
 import { useUi } from "./ui";
 
 const storeName = "settings";
-const currentVersion = 3;
+const currentVersion = 4;
 const fallbackCatalogLanguage = "en";
 
 export type TrackerSort = "best" | "seeds" | "sizeDesc" | "sizeAsc";
@@ -92,7 +92,7 @@ const defaults: Settings = {
   maxActiveDownloads: 0,
   seedRatio: 0,
   uploadByDefault: true,
-  cacheLimitGb: 20,
+  cacheLimitGb: 10,
   autoDeleteWatched: false,
   closeToTray: !isLinux,
   notifyDownloads: true,
@@ -106,7 +106,7 @@ const defaults: Settings = {
   videoQuality: "high",
   autoSimplify: true,
   spoilerDescriptions: "blur",
-  spoilerStills: false,
+  spoilerStills: true,
   gridDensity: "normal",
   accent: "",
   version: currentVersion,
@@ -118,6 +118,8 @@ function upgrade(stored: Partial<Settings>): Partial<Settings> {
   const upgraded: Partial<Settings> = { ...stored, version: currentVersion };
   if (version < 2 && stored.trackerPrefs?.sort === "seeds") upgraded.trackerPrefs = { ...stored.trackerPrefs, sort: "best" };
   if (version < 3) upgraded.closeToTray = !isLinux;
+  if (version < 4) upgraded.spoilerStills = true;
+  if (version < 4 && stored.cacheLimitGb === 20) upgraded.cacheLimitGb = 10;
   return upgraded;
 }
 

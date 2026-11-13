@@ -76,6 +76,10 @@ where
 /// - A piece is only assigned to one peer at a time (unless stolen)
 /// - Pieces are properly requeued when a peer dies
 /// - State transitions maintain invariants
+const URGENT_PIECES: usize = 2;
+const URGENT_STEAL_AFTER: Duration = Duration::from_secs(3);
+const URGENT_STEAL_UNKNOWN_AFTER: Duration = Duration::from_secs(8);
+
 pub struct PieceTracker {
     chunks: ChunkTracker,
     inflight: HashMap<ValidPieceIndex, InflightPiece>,
@@ -129,6 +133,32 @@ impl PieceTracker {
         // 1. Try steal with 10x threshold (very slow peer)
         if let Some(result) = self.try_steal(&req, 10.0) {
             return result;
+        }
+
+        let urgent: Vec<ValidPieceIndex> = (&mut req.priority_pieces).take(URGENT_PIECES).collect();
+        for piece in urgent.iter().copied() {
+            if self.chunks.is_piece_have(piece) || !(req.peer_has_piece)(piece) {
+                continue;
+            }
+            let Some(info) = self.inflight.get(&piece) else {
+                return self.reserve_piece(piece, req.peer);
+            };
+            if info.peer == req.peer {
+                continue;
+            }
+            let patience = match req.peer_avg_time {
+                Some(avg) => URGENT_STEAL_AFTER.max(avg.mul_f64(2.0)),
+                None => URGENT_STEAL_UNKNOWN_AFTER,
+            };
+            if info.started.elapsed() < patience || !(req.can_steal)(piece) {
+                continue;
+            }
+            let from_peer = info.peer;
+            if let Some(info) = self.inflight.get_mut(&piece) {
+                info.peer = req.peer;
+                info.started = Instant::now();
+                return AcquireResult::Stolen { piece, from_peer };
+            }
         }
 
         // 2. Try reserve from priority_pieces then queued pieces
@@ -307,6 +337,14 @@ impl PieceTracker {
     ) -> u64 {
         self.chunks
             .update_file_have_on_piece_completed(piece_id, file_id, file_info)
+    }
+
+    pub(crate) fn forget_piece(&mut self, piece: ValidPieceIndex, file_infos: &crate::type_aliases::FileInfos) -> bool {
+        !self.inflight.contains_key(&piece) && self.chunks.forget_piece(piece, file_infos)
+    }
+
+    pub(crate) fn is_piece_untouched(&self, piece: ValidPieceIndex) -> bool {
+        !self.inflight.contains_key(&piece) && self.chunks.is_piece_untouched(piece)
     }
 
     /// Flush the have pieces bitfield to disk.

@@ -2,6 +2,7 @@ import { backend, type TorrentFile, type TorrentView } from "../lib/backend";
 import { report } from "../lib/journal";
 import { isVideoFile } from "../lib/parse";
 import { missingEpisodes, toSource, type AttachedEpisode } from "../lib/releaseUpdate";
+import { episodeLayout } from "../lib/episodeLayout";
 import { tmdb } from "../lib/tmdb";
 import { unitKey, useLibrary, type Source } from "./library";
 import { useTorrents } from "./torrents";
@@ -29,9 +30,11 @@ function attachedByTorrent(sources: Record<string, Source[]>): Map<string, { tit
 async function repairTorrent(titleId: number, torrent: TorrentView, attached: AttachedEpisode[]): Promise<{ unitKey: string; source: Source }[]> {
   const known = new Set(attached.map((item) => item.fileIndex));
   if (!torrent.files.some((file) => isVideoFile(file.path) && !known.has(file.index))) return [];
-  const { seasons } = await tmdb.details("tv", titleId);
+  const { seasons, isAnime } = await tmdb.details("tv", titleId);
+  const layout = await episodeLayout(titleId, seasons, isAnime);
   const sources = useLibrary.getState().sources;
-  return missingEpisodes(torrent.files, attached, seasons, (season, episode) => (sources[unitKey("tv", titleId, season, episode)] ?? []).length > 0).map(
+  const taken = (season: number, episode: number) => (sources[unitKey("tv", titleId, season, episode)] ?? []).length > 0;
+  return missingEpisodes(torrent.files, attached, seasons, taken, layout).map(
     (found) => ({ unitKey: unitKey("tv", titleId, found.season, found.episode), source: toSource(torrent, found.file as TorrentFile) }),
   );
 }

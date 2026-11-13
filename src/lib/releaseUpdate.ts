@@ -1,4 +1,5 @@
 import type { TorrentFile, TorrentPreview } from "./backend";
+import { inLayout, resolveLongEpisodes, type EpisodeLayout } from "./episodeLayout";
 import { baseName, isVideoFile, parseQuality, parseTags, resolveEpisodes, type EpisodeSlot } from "./parse";
 import type { SeasonInfo } from "./tmdb";
 import type { Source } from "../state/library";
@@ -28,10 +29,18 @@ export interface EpisodeFile {
   file: TorrentFile;
 }
 
-export function episodeFiles(preview: TorrentPreview, seasons: SeasonInfo[], defaultSeason: number, pinnedSeason?: number): EpisodeFile[] {
+export function episodeFiles(
+  preview: TorrentPreview,
+  seasons: SeasonInfo[],
+  defaultSeason: number,
+  pinnedSeason?: number,
+  layout: EpisodeLayout | null = null,
+): EpisodeFile[] {
   const found = new Map<string, EpisodeFile>();
   const videos = preview.files.filter((file) => isVideoFile(file.path)).sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true }));
-  const slots = resolveEpisodes(videos.map((file) => file.path), seasons, defaultSeason, pinnedSeason);
+  const paths = videos.map((file) => file.path);
+  const long = layout && inLayout(layout, defaultSeason) ? resolveLongEpisodes(paths, layout) : null;
+  const slots = long && long.some((slot) => slot !== null) ? long : resolveEpisodes(paths, seasons, defaultSeason, pinnedSeason);
   for (const [index, file] of videos.entries()) {
     const slot = slots[index];
     if (!slot) continue;
@@ -94,6 +103,7 @@ export function missingEpisodes(
   attached: AttachedEpisode[],
   seasons: SeasonInfo[],
   taken: (season: number, episode: number) => boolean,
+  layout: EpisodeLayout | null = null,
 ): EpisodeFile[] {
   const videos = files.filter((file) => isVideoFile(file.path)).sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true }));
   const known = new Set(attached.map((item) => item.fileIndex));
@@ -102,7 +112,9 @@ export function missingEpisodes(
   const attachedSeasons = attached.map((item) => item.season);
   const main = mostCommon(attachedSeasons);
   const pinned = attachedSeasons.every((season) => season === main) ? main : undefined;
-  const slots = resolveEpisodes(videos.map((file) => file.path), seasons, main, pinned);
+  const paths = videos.map((file) => file.path);
+  const long = layout && inLayout(layout, main) ? resolveLongEpisodes(paths, layout) : null;
+  const slots = long && long.some((slot) => slot !== null) ? long : resolveEpisodes(paths, seasons, main, pinned);
   const computed = new Map(videos.map((file, index) => [file.index, slots[index]]));
   const shift = consistentShift(attached, computed);
   if (shift === null) return [];

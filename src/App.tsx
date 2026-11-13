@@ -33,6 +33,9 @@ import { scheduleSourceRepair } from "./state/sourceRepair";
 import { useUi } from "./state/ui";
 import { notify } from "./state/notifications";
 import { useUpdater } from "./state/updater";
+import { warmRecentResume } from "./state/warmup";
+
+const startupWarmDelayMs = 5000;
 
 const updateCheckDelayMs = 4000;
 const mpvWarmDelayMs = 2500;
@@ -182,6 +185,12 @@ export default function App() {
   const { t } = useT();
 
   useEffect(() => applyAppearance(accent, density), [accent, density]);
+
+  useEffect(() => {
+    if (!libraryLoaded || !settingsLoaded) return;
+    const timer = setTimeout(warmRecentResume, startupWarmDelayMs);
+    return () => clearTimeout(timer);
+  }, [libraryLoaded, settingsLoaded]);
 
   useEffect(() => {
     void useSettings.getState().load();

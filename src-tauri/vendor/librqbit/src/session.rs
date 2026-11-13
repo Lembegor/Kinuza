@@ -1806,9 +1806,25 @@ impl tracker_comms::TorrentStatsProvider for PeerRxTorrentInfo {
         use crate::torrent_state::stats::TorrentStatsState as TS;
         use tracker_comms::TrackerCommsStatsState as S;
 
+        let whole = mt
+            .with_metadata(|metadata| {
+                metadata
+                    .file_infos
+                    .iter()
+                    .zip(stats.file_progress.iter())
+                    .filter(|(info, _)| !info.attrs.padding)
+                    .fold((0u64, 0u64), |(total, have), (info, done)| {
+                        (total + info.len, have + (*done).min(info.len))
+                    })
+            })
+            .ok()
+            .filter(|(total, _)| *total > 0);
+        let (total_bytes, downloaded_bytes) =
+            whole.unwrap_or((stats.total_bytes, stats.progress_bytes));
+
         tracker_comms::TrackerCommsStats {
-            downloaded_bytes: stats.progress_bytes,
-            total_bytes: stats.total_bytes,
+            downloaded_bytes,
+            total_bytes,
             uploaded_bytes: stats.uploaded_bytes,
             torrent_state: match stats.state {
                 TS::Initializing { .. } => S::Initializing,

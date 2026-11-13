@@ -11,6 +11,7 @@ import { entryToRef, isWatched, titleKey, useLibrary, type Progress, type TitleR
 import { useSettings } from "../state/settings";
 import { useUi } from "../state/ui";
 import { useUpNext, type UpNextEpisode } from "../state/upNext";
+import { useHoverWarm, warmRecentResume } from "../state/warmup";
 
 const heroRotationMs = 10000;
 const heroItemCount = 6;
@@ -119,6 +120,7 @@ function ContinueCard({ unitKey, progress }: { unitKey: string; progress: Progre
   const navigate = useNavigate();
   const hasSource = useLibrary((state) => (state.sources[unitKey]?.length ?? 0) > 0);
   const { title } = progress;
+  const hoverWarm = useHoverWarm(hasSource ? unitKey : null);
   const art = imageUrl(title.backdrop, "w780") ?? imageUrl(title.poster, "w342");
   const episodeLabel =
     progress.season !== undefined
@@ -159,7 +161,7 @@ function ContinueCard({ unitKey, progress }: { unitKey: string; progress: Progre
 
   return (
     <div className="continue-card">
-      <button className="continue-card__art" aria-label={t("home.continue.resume", { title: title.title })} onClick={resume}>
+      <button className="continue-card__art" {...hoverWarm} aria-label={t("home.continue.resume", { title: title.title })} onClick={resume}>
         {art && <img src={art} alt="" loading="lazy" draggable={false} />}
         <span className="continue-card__play">
           <Play size={22} fill="currentColor" />
@@ -217,6 +219,7 @@ function UpNextCard({ item }: { item: UpNextEpisode }) {
   const navigate = useNavigate();
   const hasSource = useLibrary((state) => (state.sources[item.unitKey]?.length ?? 0) > 0);
   const hideStill = useSettings((state) => state.spoilerStills);
+  const hoverWarm = useHoverWarm(hasSource ? item.unitKey : null);
   const art = (hideStill ? null : imageUrl(item.still, "w500")) ?? imageUrl(item.title.backdrop, "w780") ?? imageUrl(item.title.poster, "w342");
   const openTitle = () => navigate(`/title/tv/${item.title.id}?s=${item.season}`);
   const start = () => {
@@ -231,6 +234,7 @@ function UpNextCard({ item }: { item: UpNextEpisode }) {
     <div className="continue-card">
       <button
         className="continue-card__art"
+        {...hoverWarm}
         aria-label={hasSource ? t("home.upNext.play", { title: item.title.title }) : t("home.upNext.find", { title: item.title.title })}
         onClick={start}
       >
@@ -314,6 +318,10 @@ function dismissRecommendation(title: TitleRef, detail: DismissDetail): void {
 
 export default function Home() {
   const { t } = useT();
+  const libraryLoaded = useLibrary((state) => state.loaded);
+  useEffect(() => {
+    if (libraryLoaded) warmRecentResume();
+  }, [libraryLoaded]);
   const trending = useAsync(tmdb.trending, []);
   const movies = useAsync(tmdb.popularMovies, []);
   const series = useAsync(tmdb.popularSeries, []);

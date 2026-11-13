@@ -19,6 +19,7 @@
         "minWidth": 1040,
         "minHeight": 660,
         "center": true,
+        "maximized": true,
         "decorations": false,
         "shadow": true,
         "transparent": true,

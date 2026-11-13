@@ -15,6 +15,8 @@ import { useTorrents } from "../state/torrents";
 import { useUi, type AddSourceRequest, type AddSourceTarget } from "../state/ui";
 import { typeLabel } from "./Cards";
 import { TrackerSearch } from "./TrackerSearch";
+import { arcsOfSeason, inLayout, isRecut, resolveLongEpisodes, type Coverage } from "../lib/episodeLayout";
+import { warmFile } from "../state/warmup";
 
 const titleSearchDebounceMs = 350;
 const titleSearchLimit = 8;
@@ -42,7 +44,7 @@ function InputStep({
   target: AddSourceTarget | null;
   suggested: AddSourceTarget | null;
   onLink: (link: string) => void;
-  onRelease: (release: Promise<TorrentPreview>, topicId: string, season?: number, single?: boolean) => void;
+  onRelease: (release: Promise<TorrentPreview>, topicId: string, season?: number, single?: boolean, coverage?: Coverage | null, recut?: boolean) => void;
   onFile: (path: string) => void;
   onChooseTitle: (target: AddSourceTarget) => void;
 }) {
@@ -214,9 +216,12 @@ interface EpisodeRowState {
   episode: number | null;
 }
 
-function buildEpisodeRows(preview: TorrentPreview, seasons: SeasonInfo[], defaultSeason: number, pinnedSeason?: number): EpisodeRowState[] {
+function buildEpisodeRows(preview: TorrentPreview, target: AddSourceTarget): EpisodeRowState[] {
+  const { seasons, defaultSeason, pinnedSeason, layout } = target;
   const files = videoFiles(preview);
-  const slots = resolveEpisodes(files.map((file) => file.path), seasons, defaultSeason, pinnedSeason);
+  const paths = files.map((file) => file.path);
+  const long = layout && inLayout(layout, defaultSeason) ? resolveLongEpisodes(paths, layout, target.coverage ?? null) : null;
+  const slots = long && long.some((slot) => slot !== null) ? long : resolveEpisodes(paths, seasons, defaultSeason, pinnedSeason);
   return files.map((file, index) => {
     const slot = slots[index];
     return { file, included: slot !== null, season: slot?.season ?? defaultSeason, episode: slot?.episode ?? null };
@@ -267,6 +272,10 @@ function MovieMapping({ preview, onConfirm }: { preview: TorrentPreview; onConfi
   const [selected, setSelected] = useState(preferred?.index ?? 0);
   const { t } = useT();
 
+  useEffect(() => {
+    if (files.some((file) => file.index === selected)) warmFile(preview.infoHash, selected, true);
+  }, [preview.infoHash, selected, files]);
+
   return (
     <>
       <p className="dialog__text">{t("addSource.movie.pick")}</p>
@@ -296,8 +305,16 @@ function SeriesMapping({
   target: AddSourceTarget;
   onConfirm: (rows: EpisodeRowState[], mode: AddMode) => void;
 }) {
-  const [rows, setRows] = useState(() => buildEpisodeRows(preview, target.seasons, target.defaultSeason, target.pinnedSeason));
+  const [rows, setRows] = useState(() => buildEpisodeRows(preview, target));
   const { t, tn } = useT();
+
+  useEffect(() => {
+    const numbered = rows.filter((row) => row.episode !== null);
+    const wanted =
+      numbered.find((row) => row.season === target.defaultSeason && row.episode === target.defaultEpisode) ??
+      [...numbered].sort((a, b) => a.season - b.season || a.episode! - b.episode!)[0];
+    if (wanted) warmFile(preview.infoHash, wanted.file.index, true);
+  }, [preview.infoHash]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const patchRow = (index: number, change: Partial<EpisodeRowState>) =>
     setRows((current) => current.map((row) => (row.file.index === index ? { ...row, ...change } : row)));
@@ -306,6 +323,16 @@ function SeriesMapping({
   const ready = rows.filter((row) => row.episode !== null);
   const toDownload = ready.filter((row) => row.included);
   const seasonNumbers = target.seasons.length > 0 ? target.seasons.map((season) => season.seasonNumber) : [1];
+  const seasonLabel = (season: number) => {
+    if (season === 0) return t("common.specials");
+    const arcs = target.layout ? arcsOfSeason(target.layout, season) : [];
+    if (arcs.length === 0) return String(season);
+    const name = target.seasons.find((item) => item.seasonNumber === season)?.name;
+    const range = `${arcs[0].first}-${arcs[arcs.length - 1].last}`;
+    return name ? `${name} · ${range}` : range;
+  };
+  const span = target.coverage ? target.coverage.last - target.coverage.first + 1 : 0;
+  const recut = Boolean(target.layout) && (target.recut === true || isRecut(preview.name) || rows.length * 2 < span);
   const allIncluded = rows.length > 0 && rows.every((row) => row.included);
   const someIncluded = rows.some((row) => row.included);
   const included = rows.filter((row) => row.included);
@@ -349,7 +376,7 @@ function SeriesMapping({
               {sharedSeason === null && <option value="">—</option>}
               {seasonNumbers.map((season) => (
                 <option key={season} value={season}>
-                  {season === 0 ? t("common.specials") : season}
+                  {seasonLabel(season)}
                 </option>
               ))}
             </select>
@@ -368,6 +395,7 @@ function SeriesMapping({
         </div>
       </div>
       <p className="mapping-note">{t("addSource.series.online")}</p>
+      {recut && <p className="mapping-warning">{t("addSource.series.recut")}</p>}
       <div className="file-list">
         {rows.map((row) => (
           <div
@@ -393,7 +421,7 @@ function SeriesMapping({
               <select className="select" value={row.season} onChange={(event) => patchRow(row.file.index, { season: Number(event.target.value) })}>
                 {seasonNumbers.map((season) => (
                   <option key={season} value={season}>
-                    {season === 0 ? t("common.specials") : season}
+                    {seasonLabel(season)}
                   </option>
                 ))}
               </select>
@@ -592,11 +620,12 @@ function AddSourceFlow({ request }: { request: AddSourceRequest }) {
               topic.current = null;
               void inspect(backend.inspectLink(link));
             }}
-            onRelease={(release, topicId, season, single) => {
+            onRelease={(release, topicId, season, single, coverage, recut) => {
               topic.current = topicId;
               if (target && target.title.type === "tv") {
-                const { pinnedSeason: _previous, ...rest } = target;
-                setTarget(season === undefined ? rest : { ...rest, defaultSeason: season, ...(single ? { pinnedSeason: season } : {}) });
+                const { pinnedSeason: _previous, coverage: _covered, recut: _recut, ...rest } = target;
+                const covered = { ...(coverage ? { coverage } : {}), ...(recut ? { recut } : {}) };
+                setTarget(season === undefined ? { ...rest, ...covered } : { ...rest, ...covered, defaultSeason: season, ...(single ? { pinnedSeason: season } : {}) });
               }
               void inspect(release);
             }}

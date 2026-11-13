@@ -356,6 +356,9 @@ export const backend = {
   imdbRating: (imdbId: string) => call<ImdbRating | null>("imdb_rating", { imdbId }),
   storeGet: (name: string) => call<StoredDocument | null>("store_get", { name }),
   storeSet: (name: string, value: string, allowShrink = false) => call<void>("store_set", { name, value, allowShrink }),
+  warm: (infoHash: string, fileIndex: number, full: boolean) => call<void>("torrent_warm", { infoHash, fileIndex, full }),
+  activityAppend: (events: object[]) => call<number>("activity_append", { events }),
+  activityRead: (since?: number) => call<object[]>("activity_read", { since: since ?? null }),
 };
 
 export async function onLaunchRequest(handler: (request: LaunchRequest) => void): Promise<() => void> {

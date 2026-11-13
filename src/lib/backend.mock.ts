@@ -195,8 +195,19 @@ export async function mockInvoke(command: string, args: Record<string, unknown> 
       }
       return mockInvoke(command.replace("gateway_", "rutracker_"), args);
     }
-    case "rutracker_search":
+    case "rutracker_search": {
       await new Promise((resolve) => setTimeout(resolve, 500));
+      const sample = (globalThis as { __kinuzaMockTracker?: string[] }).__kinuzaMockTracker;
+      if (sample) {
+        if (Number(args.page ?? 0) > 0) return [];
+        return sample.map((title, index) => ({
+          id: String(7000000 + index),
+          title,
+          size: `${(1 + (index % 9) * 3.7).toFixed(2)} GB`,
+          seeds: 5 + ((index * 37) % 300),
+          pageUrl: "https://rutracker.org/",
+        }));
+      }
       if (demoWords(String(args.query ?? "")).some((word) => word === "джоджо" || word === "jojo")) {
         if (Number(args.page ?? 0) > 0) return [];
         const wanted = demoWords(String(args.query));
@@ -206,6 +217,7 @@ export async function mockInvoke(command: string, args: Record<string, unknown> 
         });
       }
       return [...demoTrackerItems.slice(0, 4), demoTrackerOther, ...demoTrackerItems.slice(4)];
+    }
     case "rutracker_login_window":
       return null;
     case "rutracker_video_sizes":
@@ -310,6 +322,16 @@ export async function mockInvoke(command: string, args: Record<string, unknown> 
     case "store_set":
       localStorage.setItem(storagePrefix + String(args.name), String(args.value));
       return null;
+    case "torrent_warm":
+      return null;
+    case "activity_append": {
+      const saved = JSON.parse(localStorage.getItem(storagePrefix + "activity") ?? "[]") as object[];
+      const events = args.events as object[];
+      localStorage.setItem(storagePrefix + "activity", JSON.stringify([...saved, ...events].slice(-2000)));
+      return events.length;
+    }
+    case "activity_read":
+      return JSON.parse(localStorage.getItem(storagePrefix + "activity") ?? "[]");
     case "take_launch_request":
       return null;
     case "associations_status":

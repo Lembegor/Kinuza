@@ -79,7 +79,7 @@ pub fn storage_report(app: AppHandle, state: State<'_, AppState>, download_dir: 
         .map(PathBuf::from)
         .unwrap_or_else(|| state.default_download_dir.clone());
     let mut parts = vec![
-        Part { id: "library", bytes: size_of(&data_dir.join("store")) + size_of(&data_dir.join("session")), clearable: false, later: false },
+        Part { id: "library", bytes: size_of(&data_dir.join("store")) + size_of(&data_dir.join("session")) + size_of(&data_dir.join("activity")), clearable: false, later: false },
         Part { id: "ffmpeg", bytes: size_of(&data_dir.join("ffmpeg")), clearable: true, later: false },
         Part { id: "imdb", bytes: size_of(&data_dir.join("imdb")), clearable: true, later: false },
         Part { id: "fingerprints", bytes: size_of(&data_dir.join("fingerprints")), clearable: true, later: false },

@@ -94,6 +94,14 @@ const ORDER_INDEX_NAME: &str = "order.json";
 const POLICY_FILE_NAME: &str = "policy.json";
 const UPLOAD_CHOICES_NAME: &str = "upload-choices.json";
 const PROMOTED_INDEX_NAME: &str = "promoted.json";
+const PEERS_INDEX_NAME: &str = "peers.json";
+const PEERS_WAIT: Duration = Duration::from_secs(15);
+const WARM_LIGHT_FOR: Duration = Duration::from_secs(2 * 60);
+const WARM_FULL_FOR: Duration = Duration::from_secs(5 * 60);
+const WARM_LIMIT: usize = 2;
+const WARM_HEAD_BYTES: u64 = 16 * 1024 * 1024;
+const WARM_TAIL_BYTES: u64 = 4 * 1024 * 1024;
+const WARM_READY_WAIT: Duration = Duration::from_secs(30);
 const NETWORK_FILE_NAME: &str = "network.json";
 const LISTEN_PORT_FIRST: u16 = 20000;
 const LISTEN_PORT_SPAN: u16 = 40000;
@@ -123,6 +131,8 @@ struct Promotion {
 #[serde(rename_all = "camelCase")]
 struct NetworkSettings {
     listen_port: u16,
+    #[serde(default)]
+    dht_port: u16,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy, Default)]
@@ -141,12 +151,29 @@ pub struct DownloadPolicy {
 const POLICY_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 const STREAM_READY_TIMEOUT: Duration = Duration::from_secs(60);
 
+struct Warm {
+    file: usize,
+    full: bool,
+    since: Instant,
+    until: Instant,
+    _streams: Vec<Box<dyn std::any::Any + Send + Sync>>,
+}
+
 struct Watch {
     file: usize,
     _keepalive: Box<dyn std::any::Any + Send>,
 }
 
-const ANNOUNCE_SELECTION: Duration = Duration::from_secs(10);
+const ANNOUNCE_SELECTION: Duration = Duration::from_secs(30);
+const GIBIBYTE: u64 = 1024 * 1024 * 1024;
+const MEBIBYTE: u64 = 1024 * 1024;
+const WINDOW_FILE_MIN: u64 = 3 * GIBIBYTE;
+const WINDOW_AHEAD_MIN: u64 = 3 * GIBIBYTE / 2;
+const WINDOW_AHEAD_MAX: u64 = 4 * GIBIBYTE;
+const WINDOW_BEHIND_MIN: u64 = 512 * MEBIBYTE;
+const WINDOW_BEHIND_MAX: u64 = 3 * GIBIBYTE / 2;
+const WINDOW_EDGE: u64 = 32 * MEBIBYTE;
+const WINDOW_SLACK: u64 = 512 * MEBIBYTE;
 const RELEASE_GRACE: Duration = Duration::from_secs(5);
 const TOUCH_EVERY_MILLIS: u64 = 60_000;
 
@@ -213,6 +240,9 @@ pub struct Engine {
     promoted: Mutex<HashMap<String, Promotion>>,
     upload_choices: Mutex<HashMap<String, bool>>,
     migrating: tokio::sync::Mutex<()>,
+    forgotten: Mutex<Vec<(String, usize, Vec<u32>)>>,
+    known_peers: Mutex<HashMap<String, Vec<SocketAddr>>>,
+    warm: Mutex<HashMap<String, Warm>>,
     session_reset: bool,
     listen_port: u16,
 }
@@ -242,20 +272,29 @@ fn random_port() -> u16 {
     LISTEN_PORT_FIRST + (crate::store::random_u64() % u64::from(LISTEN_PORT_SPAN)) as u16
 }
 
-fn choose_listen_port(cache_dir: &Path) -> u16 {
-    let path = cache_dir.join(NETWORK_FILE_NAME);
-    let saved: NetworkSettings = read_json(&path);
-    if saved.listen_port != 0 && port_is_free(saved.listen_port) {
-        return saved.listen_port;
+fn choose_port(saved: u16, avoid: u16, label: &str) -> u16 {
+    if saved != 0 && saved != avoid && port_is_free(saved) {
+        return saved;
     }
-    let chosen = (0..LISTEN_PORT_ATTEMPTS).map(|_| random_port()).find(|port| port_is_free(*port)).unwrap_or(0);
-    if chosen != 0 {
-        if saved.listen_port != 0 {
-            tracing::warn!("session: port {} is taken, moving to {chosen}", saved.listen_port);
-        }
-        write_json(&path, &NetworkSettings { listen_port: chosen });
+    let chosen = (0..LISTEN_PORT_ATTEMPTS)
+        .map(|_| random_port())
+        .find(|port| *port != avoid && port_is_free(*port))
+        .unwrap_or(0);
+    if chosen != 0 && saved != 0 {
+        tracing::warn!("session: {label} port {saved} is taken, moving to {chosen}");
     }
     chosen
+}
+
+fn choose_ports(cache_dir: &Path) -> (u16, u16) {
+    let path = cache_dir.join(NETWORK_FILE_NAME);
+    let saved: NetworkSettings = read_json(&path);
+    let listen_port = choose_port(saved.listen_port, 0, "listen");
+    let dht_port = choose_port(saved.dht_port, listen_port, "DHT");
+    if (listen_port, dht_port) != (saved.listen_port, saved.dht_port) && listen_port != 0 {
+        write_json(&path, &NetworkSettings { listen_port, dht_port });
+    }
+    (listen_port, dht_port)
 }
 
 fn classify_torrent_error(message: &str) -> String {
@@ -287,13 +326,13 @@ impl Engine {
         std::fs::create_dir_all(&persistence_dir).ok();
         std::fs::create_dir_all(&cache_dir).ok();
 
-        let listen_port = choose_listen_port(&cache_dir);
-        let (session, session_reset) = match Self::open_session(&default_output, &persistence_dir, listen_port).await {
+        let (listen_port, dht_port) = choose_ports(&cache_dir);
+        let (session, session_reset) = match Self::open_session(&default_output, &persistence_dir, listen_port, dht_port).await {
             Ok(session) => (session, false),
             Err(error) => {
                 tracing::error!("session: could not start with the saved torrents: {error:#}");
                 let aside = set_aside(&persistence_dir)?;
-                match Self::open_session(&default_output, &persistence_dir, listen_port).await {
+                match Self::open_session(&default_output, &persistence_dir, listen_port, dht_port).await {
                     Ok(session) => {
                         tracing::warn!("session: started fresh, the saved torrents were moved to {}", aside.display());
                         (session, true)
@@ -312,9 +351,10 @@ impl Engine {
         Self::assemble(session, session_reset, cache_dir, listen_port)
     }
 
-    async fn open_session(default_output: &Path, persistence_dir: &Path, listen_port: u16) -> Result<Arc<Session>> {
+    async fn open_session(default_output: &Path, persistence_dir: &Path, listen_port: u16, dht_port: u16) -> Result<Arc<Session>> {
         let options = SessionOptions {
             fastresume: true,
+            dht: Some(librqbit::DhtSessionConfig { port: (dht_port != 0).then_some(dht_port), ..Default::default() }),
             trackers: EXTRA_TRACKERS.iter().filter_map(|tracker| reqwest::Url::parse(tracker).ok()).collect(),
             persistence: Some(SessionPersistenceConfig::Json {
                 folder: Some(persistence_dir.to_path_buf()),
@@ -353,6 +393,7 @@ impl Engine {
         let saved_policy: Option<DownloadPolicy> = std::fs::read_to_string(cache_dir.join(POLICY_FILE_NAME))
             .ok()
             .and_then(|text| serde_json::from_str(&text).ok());
+        let cache_dir_for_peers = cache_dir.clone();
         let engine = Arc::new(Self {
             session,
             pending: Mutex::new(HashMap::new()),
@@ -371,6 +412,9 @@ impl Engine {
             promoted: Mutex::new(promoted),
             upload_choices: Mutex::new(upload_choices),
             migrating: tokio::sync::Mutex::new(()),
+            forgotten: Mutex::new(Vec::new()),
+            known_peers: Mutex::new(read_json(&cache_dir_for_peers.join(PEERS_INDEX_NAME))),
+            warm: Mutex::new(HashMap::new()),
             session_reset,
             listen_port,
         });
@@ -385,12 +429,15 @@ impl Engine {
                 tokio::time::sleep(POLICY_CHECK_INTERVAL).await;
                 keeper.enforce_policy().await;
                 keeper.rest_released().await;
+                keeper.trim_windows();
+                keeper.cool_down().await;
                 keeper.migrate_promoted().await;
                 tick = tick.wrapping_add(1);
                 if tick % SWARM_LOG_EVERY == 0 {
                     keeper.log_swarms();
                 }
                 if tick % CACHE_CHECK_EVERY == 0 {
+                    keeper.remember_busy_peers();
                     keeper.trim_cache().await;
                 }
             }
@@ -435,6 +482,9 @@ impl Engine {
     }
 
     fn uploads(&self, info_hash: &str) -> bool {
+        if self.is_warm(info_hash) && !self.is_playing(info_hash) {
+            return false;
+        }
         let uploads_by_default = !self.policy.lock().unwrap().upload_off_by_default;
         self.upload_choices.lock().unwrap().get(info_hash).copied().unwrap_or(uploads_by_default)
     }
@@ -667,21 +717,79 @@ impl Engine {
         self.usage.lock().unwrap().get(info_hash).is_some_and(Usage::playing)
     }
 
+    fn is_warm(&self, info_hash: &str) -> bool {
+        self.warm.lock().unwrap().contains_key(info_hash)
+    }
+
     fn resting_online(&self, with_lingering: bool) -> Vec<TorrentHandle> {
         self.session.with_torrents(|torrents| {
             torrents
                 .map(|(_, handle)| handle.clone())
                 .filter(|handle| {
                     let info_hash = handle.info_hash().as_string();
-                    let busy = if with_lingering { self.is_playing(&info_hash) } else { self.is_in_use(&info_hash) };
+                    let busy = if with_lingering { self.is_playing(&info_hash) } else { self.is_in_use(&info_hash) || self.is_warm(&info_hash) };
                     self.is_streaming_cache(handle) && !busy
                 })
                 .collect()
         })
     }
 
+    fn remember_peers(&self, handle: &TorrentHandle) -> bool {
+        let fresh = live_peers(handle);
+        if fresh.is_empty() {
+            return false;
+        }
+        let info_hash = handle.info_hash().as_string();
+        let mut known = self.known_peers.lock().unwrap();
+        let entry = known.entry(info_hash).or_default();
+        let mut merged = fresh;
+        merged.extend(entry.iter().copied().filter(|address| !merged.contains(address)).collect::<Vec<_>>());
+        merged.truncate(MAX_REMEMBERED_PEERS);
+        let changed = *entry != merged;
+        *entry = merged;
+        changed
+    }
+
+    fn save_known_peers(&self) {
+        let alive: HashSet<String> = self.session.with_torrents(|torrents| torrents.map(|(_, handle)| handle.info_hash().as_string()).collect());
+        let parked: HashSet<String> = self.parked.lock().unwrap().keys().cloned().collect();
+        let mut known = self.known_peers.lock().unwrap();
+        known.retain(|hash, _| alive.contains(hash) || parked.contains(hash));
+        write_json(&self.cache_dir.join(PEERS_INDEX_NAME), &*known);
+    }
+
+    fn remember_busy_peers(&self) {
+        let hashes: Vec<String> = self.usage.lock().unwrap().keys().cloned().collect();
+        let mut changed = false;
+        for info_hash in hashes {
+            if let Ok(handle) = self.find(&info_hash) {
+                changed |= self.remember_peers(&handle);
+            }
+        }
+        if changed {
+            self.save_known_peers();
+        }
+    }
+
+    fn reconnect_known_peers(&self, handle: &TorrentHandle) {
+        let peers = self.known_peers.lock().unwrap().get(&handle.info_hash().as_string()).cloned().unwrap_or_default();
+        if peers.is_empty() {
+            return;
+        }
+        let handle = handle.clone();
+        tokio::spawn(async move {
+            let _ = tokio::time::timeout(PEERS_WAIT, handle.wait_until_initialized()).await;
+            let Some(live) = handle.live() else { return };
+            let added = peers.iter().filter(|address| live.add_peer_if_not_seen(**address).unwrap_or(false)).count();
+            tracing::info!("engine: {} reconnects to {added} remembered peers", &handle.info_hash().as_string()[..8]);
+        });
+    }
+
     async fn rest(&self, handle: &TorrentHandle) {
         let info_hash = handle.info_hash().as_string();
+        if self.remember_peers(handle) {
+            self.save_known_peers();
+        }
         self.watching.lock().unwrap().remove(&info_hash);
         self.announced.lock().unwrap().remove(&info_hash);
         self.deselect(handle).await;
@@ -744,7 +852,11 @@ impl Engine {
             .into_iter()
             .map(|file| ParkedFile { path: file.path, length: file.length })
             .collect();
-        let parked = ParkedTorrent { name: display_name(handle), files, peers: live_peers(handle), trackers: torrent_trackers(handle) };
+        let mut peers = live_peers(handle);
+        if peers.is_empty() {
+            peers = self.known_peers.lock().unwrap().get(&info_hash).cloned().unwrap_or_default();
+        }
+        let parked = ParkedTorrent { name: display_name(handle), files, peers, trackers: torrent_trackers(handle) };
         self.parked.lock().unwrap().insert(info_hash, parked);
         self.save_parked();
         Ok(())
@@ -1197,7 +1309,143 @@ impl Engine {
         true
     }
 
+    fn anything_playing_but(&self, info_hash: &str) -> bool {
+        self.usage.lock().unwrap().iter().any(|(hash, usage)| hash != info_hash && usage.playing())
+    }
+
+    pub async fn warm(self: &Arc<Self>, info_hash: &str, file: usize, full: bool) -> Result<()> {
+        if self.is_playing(info_hash) {
+            return Ok(());
+        }
+        let full = full && !self.anything_playing_but(info_hash);
+        {
+            let mut warm = self.warm.lock().unwrap();
+            if let Some(entry) = warm.get_mut(info_hash) {
+                if entry.file == file && (entry.full || !full) {
+                    entry.until = Instant::now() + if entry.full { WARM_FULL_FOR } else { WARM_LIGHT_FOR };
+                    return Ok(());
+                }
+            }
+        }
+        let handle = {
+            let _parking = self.parking.lock().await;
+            if self.find(info_hash).is_err() {
+                let pending = self.pending.lock().unwrap().remove(info_hash);
+                if let Some(pending) = pending {
+                    let (bytes, name, count, peers, trackers) =
+                        (pending.torrent_bytes.clone(), pending.name.clone(), pending.file_count, pending.seen_peers.clone(), pending.trackers.clone());
+                    self.pending.lock().unwrap().insert(info_hash.to_owned(), pending);
+                    self.add_from_bytes(info_hash, bytes, &name, count, Vec::new(), Path::new(""), peers, trackers).await?;
+                } else if let Some((torrent_bytes, parked)) = self.parked_torrent(info_hash) {
+                    self.add_from_bytes(info_hash, torrent_bytes, &parked.name, parked.files.len(), Vec::new(), Path::new(""), parked.peers, parked.trackers)
+                        .await?;
+                } else {
+                    return Ok(());
+                }
+            }
+            self.find(info_hash)?
+        };
+        if !self.is_streaming_cache(&handle) {
+            return Ok(());
+        }
+        tokio::time::timeout(WARM_READY_WAIT, handle.wait_until_initialized())
+            .await
+            .map_err(|_| anyhow!("torrent_not_ready"))?
+            .map_err(|error| anyhow!(classify_torrent_error(&format!("{error:#}"))))?;
+        let Some(length) = Self::file_length(&handle, file) else { return Ok(()) };
+        if handle.stats().file_progress.get(file).copied().unwrap_or(0) >= length {
+            return Ok(());
+        }
+        let evicted = {
+            let _parking = self.parking.lock().await;
+            if self.is_playing(info_hash) {
+                return Ok(());
+            }
+            handle.set_upload_enabled(false);
+            if full {
+                let _ = handle.set_stream_buffer(WARM_HEAD_BYTES);
+            }
+            self.resume_handle(&handle).await?;
+            let mut streams: Vec<Box<dyn std::any::Any + Send + Sync>> = Vec::new();
+            let opened = async {
+                use tokio::io::AsyncSeekExt;
+                let mut held = Vec::new();
+                if full {
+                    held.push(handle.clone().stream(file).await?);
+                    if has_index_at_end(&handle, file) && length > WARM_TAIL_BYTES {
+                        let mut tail = handle.clone().stream(file).await?;
+                        tail.seek(std::io::SeekFrom::Start(length - WARM_TAIL_BYTES)).await?;
+                        held.push(tail);
+                    }
+                } else {
+                    let mut idle = handle.clone().stream(file).await?;
+                    idle.seek(std::io::SeekFrom::End(0)).await?;
+                    held.push(idle);
+                }
+                anyhow::Ok(held)
+            };
+            for stream in opened.await? {
+                streams.push(Box::new(stream));
+            }
+            let now = Instant::now();
+            let mut warm = self.warm.lock().unwrap();
+            warm.insert(
+                info_hash.to_owned(),
+                Warm { file, full, since: now, until: now + if full { WARM_FULL_FOR } else { WARM_LIGHT_FOR }, _streams: streams },
+            );
+            let mut evicted = Vec::new();
+            while warm.len() > WARM_LIMIT {
+                let Some(oldest) = warm.iter().min_by_key(|(_, entry)| entry.since).map(|(hash, _)| hash.clone()) else { break };
+                warm.remove(&oldest);
+                evicted.push(oldest);
+            }
+            evicted
+        };
+        tracing::info!("engine: {} warms up file {file} ({})", &info_hash[..8], if full { "start of the video" } else { "peers only" });
+        for hash in evicted {
+            self.settle_warm(&hash).await;
+        }
+        Ok(())
+    }
+
+    fn end_warm(&self, info_hash: &str) {
+        if self.warm.lock().unwrap().remove(info_hash).is_some() {
+            if let Ok(handle) = self.find(info_hash) {
+                handle.set_upload_enabled(self.uploads(info_hash));
+            }
+        }
+    }
+
+    async fn settle_warm(&self, info_hash: &str) {
+        let Ok(handle) = self.find(info_hash) else { return };
+        handle.set_upload_enabled(self.uploads(info_hash));
+        if self.is_in_use(info_hash) || !self.is_streaming_cache(&handle) {
+            return;
+        }
+        let _parking = self.parking.lock().await;
+        if !self.is_in_use(info_hash) && !self.is_warm(info_hash) {
+            self.rest(&handle).await;
+        }
+    }
+
+    async fn cool_down(&self) {
+        let due: Vec<String> = {
+            let mut warm = self.warm.lock().unwrap();
+            let now = Instant::now();
+            let due: Vec<String> = warm.iter().filter(|(_, entry)| entry.until <= now).map(|(hash, _)| hash.clone()).collect();
+            for hash in &due {
+                warm.remove(hash);
+            }
+            due
+        };
+        for info_hash in due {
+            tracing::info!("engine: {} cools down, nothing played it", &info_hash[..8]);
+            self.settle_warm(&info_hash).await;
+        }
+    }
+
     pub async fn prepare_stream(self: &Arc<Self>, info_hash: &str, file: Option<usize>) -> Result<TorrentHandle> {
+        self.end_warm(info_hash);
         let (handle, online, late) = {
             let _parking = self.parking.lock().await;
             if self.find(info_hash).is_err() {
@@ -1237,6 +1485,9 @@ impl Engine {
             (true, Some(file)) => self.select_for_announce(&handle, file).await,
             _ => false,
         };
+        if let (true, Some(file)) = (online, file) {
+            Self::set_read_ahead(&handle, file);
+        }
         if let (true, false, Some(file)) = (online, announcing, file) {
             self.follow_watched(&handle, file).await;
         }
@@ -1259,11 +1510,11 @@ impl Engine {
                     _ => None,
                 };
                 match watched {
-                    Some(file) if engine.has_room_for(&announced, file) => {
+                    Some(file) if !Self::streams_in_window(&announced, file) && engine.has_room_for(&announced, file) => {
                         tracing::info!("engine: {} keeps downloading file {file} ahead of the player", &info_hash[..8]);
                     }
                     _ => {
-                        if watched.is_some() {
+                        if watched.is_some_and(|file| !Self::streams_in_window(&announced, file)) {
                             tracing::info!("engine: {} streams only, the disk has too little free space for the whole file", &info_hash[..8]);
                         }
                         engine.deselect(&announced).await;
@@ -1370,6 +1621,81 @@ impl Engine {
         result
     }
 
+    fn file_length(handle: &TorrentHandle, file: usize) -> Option<u64> {
+        handle.with_metadata(|metadata| metadata.file_infos.get(file).map(|info| info.len)).ok().flatten()
+    }
+
+    fn streams_in_window(handle: &TorrentHandle, file: usize) -> bool {
+        Self::file_length(handle, file).is_some_and(|length| length > WINDOW_FILE_MIN)
+    }
+
+    fn window_ahead(length: u64) -> u64 {
+        (length / 12).clamp(WINDOW_AHEAD_MIN, WINDOW_AHEAD_MAX)
+    }
+
+    fn window_behind(length: u64) -> u64 {
+        (length / 40).clamp(WINDOW_BEHIND_MIN, WINDOW_BEHIND_MAX)
+    }
+
+    fn set_read_ahead(handle: &TorrentHandle, file: usize) {
+        let bytes = match Self::file_length(handle, file) {
+            Some(length) if length > WINDOW_FILE_MIN => Self::window_ahead(length),
+            _ => 0,
+        };
+        if let Err(error) = handle.set_stream_buffer(bytes) {
+            tracing::debug!("engine: could not set the read-ahead of {}: {error:#}", handle.info_hash().as_string());
+        }
+    }
+
+    fn trim_windows(&self) {
+        let due: Vec<(String, usize, Vec<u32>)> = std::mem::take(&mut *self.forgotten.lock().unwrap());
+        for (info_hash, file, pieces) in due {
+            let Ok(handle) = self.find(&info_hash) else { continue };
+            match handle.discard_file_pieces(file, &pieces) {
+                Ok(bytes) if bytes > 0 => {
+                    tracing::info!("engine: {} gave back {} MB of watched video to the disk", &info_hash[..8], bytes >> 20)
+                }
+                Ok(_) => {}
+                Err(error) => tracing::warn!("engine: could not free watched pieces of {info_hash}: {error:#}"),
+            }
+        }
+        let watched: Vec<(String, usize)> = self.watching.lock().unwrap().iter().map(|(hash, watch)| (hash.clone(), watch.file)).collect();
+        for (info_hash, file) in watched {
+            let Ok(handle) = self.find(&info_hash) else { continue };
+            if !self.is_online_only(&handle) || self.is_promoted(&info_hash) {
+                continue;
+            }
+            let Some(length) = Self::file_length(&handle, file).filter(|length| *length > WINDOW_FILE_MIN) else { continue };
+            if handle.only_files().is_some_and(|files| files.contains(&file)) {
+                continue;
+            }
+            let ahead = Self::window_ahead(length);
+            let behind = Self::window_behind(length);
+            let have = handle.stats().file_progress.get(file).copied().unwrap_or(0);
+            if have <= ahead + behind + 2 * WINDOW_EDGE + WINDOW_SLACK {
+                continue;
+            }
+            let positions: Vec<u64> = handle
+                .stream_positions(file)
+                .into_iter()
+                .filter(|position| *position + WINDOW_EDGE < length)
+                .collect();
+            if positions.is_empty() {
+                continue;
+            }
+            let mut keep = vec![0..WINDOW_EDGE, length.saturating_sub(WINDOW_EDGE)..length];
+            keep.extend(positions.iter().map(|position| position.saturating_sub(behind)..position.saturating_add(ahead)));
+            match handle.forget_file_pieces(file, &keep) {
+                Ok(pieces) if !pieces.is_empty() => {
+                    tracing::info!("engine: {} lets go of {} watched pieces of file {file}", &info_hash[..8], pieces.len());
+                    self.forgotten.lock().unwrap().push((info_hash, file, pieces));
+                }
+                Ok(_) => {}
+                Err(error) => tracing::warn!("engine: could not trim the watched part of {info_hash}: {error:#}"),
+            }
+        }
+    }
+
     fn has_room_for(&self, handle: &TorrentHandle, file: usize) -> bool {
         let Ok(Some(length)) = handle.with_metadata(|metadata| metadata.file_infos.get(file).map(|info| info.len)) else {
             return false;
@@ -1385,11 +1711,15 @@ impl Engine {
             return;
         }
         let info_hash = handle.info_hash().as_string();
-        let wanted = if self.has_room_for(handle, file) { HashSet::from([file]) } else { HashSet::new() };
+        let windowed = Self::streams_in_window(handle, file);
+        let wanted = if !windowed && self.has_room_for(handle, file) { HashSet::from([file]) } else { HashSet::new() };
         if wanted == current {
             return;
         }
         match self.session.update_only_files(handle, &wanted).await {
+            Ok(()) if wanted.is_empty() && windowed => {
+                tracing::info!("engine: {} streams file {file} through a window, it is too big to keep whole", &info_hash[..8]);
+            }
             Ok(()) if wanted.is_empty() => {
                 tracing::info!("engine: {} streams only, the disk has too little free space for file {file}", &info_hash[..8]);
             }
@@ -1551,7 +1881,9 @@ impl Engine {
         if !handle.is_paused() {
             return Ok(());
         }
-        self.session.unpause(handle).await
+        self.session.unpause(handle).await?;
+        self.reconnect_known_peers(handle);
+        Ok(())
     }
 }
 
@@ -1611,6 +1943,17 @@ impl FilePieces {
             })
             .collect()
     }
+}
+
+fn has_index_at_end(handle: &TorrentHandle, file: usize) -> bool {
+    handle
+        .with_metadata(|metadata| {
+            metadata.file_infos.get(file).is_some_and(|info| {
+                let name = info.relative_filename.to_string_lossy().to_ascii_lowercase();
+                name.ends_with(".mp4") || name.ends_with(".m4v") || name.ends_with(".mov")
+            })
+        })
+        .unwrap_or(false)
 }
 
 fn live_peers(handle: &TorrentHandle) -> Vec<SocketAddr> {
