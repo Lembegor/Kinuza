@@ -61,11 +61,11 @@ export function ChangelogGroups({ lines }: { lines: ChangelogLine[] }) {
       {groupsOf(lines).map((group, index) => (
         <div key={`${group.heading ?? ""}${index}`} className="whats-new__group">
           {group.heading && <p className="whats-new__heading">{group.heading}</p>}
-          <ul className="whats-new__list">
+          <ol className="whats-new__list">
             {group.items.map((item) => (
               <li key={item}>{item}</li>
             ))}
-          </ul>
+          </ol>
         </div>
       ))}
     </>

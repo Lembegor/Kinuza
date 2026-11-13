@@ -40,6 +40,8 @@ import { useUi, type AddSourceTarget } from "../state/ui";
 import { recordActivity, titleOf } from "../state/activity";
 import { sortSources } from "../lib/sources";
 import { useHoverWarm, warmTitleResume } from "../state/warmup";
+import { PickBar, PickNote, PlayerStage, StageEpisodes, playOnStage, useStagePick, useStageSession } from "../components/PlayerStage";
+import { commitPick, preparePick, type PickTarget } from "../state/autoPick";
 
 const specialsSeason = 0;
 const namedDirectorCount = 4;
@@ -141,7 +143,7 @@ function MovieSources({ title, target }: { title: TitleRef; target: AddSourceTar
   const key = unitKey("movie", title.id);
   const stored = useLibrary((state) => state.sources[key]);
   const sources = useMemo(() => sortSources(stored ?? []), [stored]);
-  const { play, openAddSource } = useUi.getState();
+  const { openAddSource } = useUi.getState();
   const { t } = useT();
 
   return (
@@ -165,7 +167,7 @@ function MovieSources({ title, target }: { title: TitleRef; target: AddSourceTar
         <div className="source-list">
           {sources.map((source) => (
             <div key={source.id} className="source-row">
-              <button className="round-button" aria-label={t("title.watch")} onClick={() => play({ title, unitKey: key, preferredSourceId: source.id })}>
+              <button className="round-button" aria-label={t("title.watch")} onClick={() => playOnStage({ title, unitKey: key, preferredSourceId: source.id })}>
                 <Play size={16} fill="currentColor" />
               </button>
               <div className="source-row__main">
@@ -239,7 +241,6 @@ function EpisodeRow({
   const stored = useLibrary((state) => state.sources[key]);
   const progress = useLibrary((state) => state.progress[key]);
   const { setWatched } = useLibrary.getState();
-  const play = useUi((state) => state.play);
   const openAddSource = useUi((state) => state.openAddSource);
   const spoilerDescriptions = useSettings((state) => state.spoilerDescriptions);
   const spoilerStills = useSettings((state) => state.spoilerStills);
@@ -258,7 +259,7 @@ function EpisodeRow({
   const watchedShare = progress && progress.duration > 0 ? Math.min(1, progress.position / progress.duration) : 0;
 
   const start = (preferredSourceId?: string) =>
-    play({
+    playOnStage({
       title,
       unitKey: key,
       season: episode.season,
@@ -388,6 +389,7 @@ function SeriesEpisodes({
   season,
   layout,
   focusEpisode,
+  scrollToFocus,
   onSeasonChange,
   target,
 }: {
@@ -396,6 +398,7 @@ function SeriesEpisodes({
   season: number;
   layout: EpisodeLayout | null;
   focusEpisode: number | null;
+  scrollToFocus: boolean;
   onSeasonChange: (season: number, episode?: number) => void;
   target: AddSourceTarget;
 }) {
@@ -429,10 +432,10 @@ function SeriesEpisodes({
   }, [season, currentArc?.first, layout]);
 
   useEffect(() => {
-    if (focusEpisode === null || !episodes.data?.some((episode) => episode.episode === focusEpisode)) return;
+    if (!scrollToFocus || focusEpisode === null || !episodes.data?.some((episode) => episode.episode === focusEpisode)) return;
     const row = sectionRef.current?.querySelector(`[data-episode="${focusEpisode}"]`);
     row?.scrollIntoView({ block: "center", behavior: "smooth" });
-  }, [focusEpisode, episodes.data]);
+  }, [focusEpisode, scrollToFocus, episodes.data]);
 
   const goTo = (event: React.FormEvent) => {
     event.preventDefault();
@@ -700,7 +703,7 @@ export default function TitlePage() {
   );
   const layout = layoutState.data ?? null;
   const [focusEpisode, setFocusEpisode] = useState<number | null>(null);
-  const { play, openAddSource, setPageTarget } = useUi.getState();
+  const { openAddSource, setPageTarget } = useUi.getState();
 
   const firstSeason = data?.seasons.find((season) => season.seasonNumber !== specialsSeason)?.seasonNumber ?? data?.seasons[0]?.seasonNumber ?? 1;
   const requestedSeason = searchParams.get("s");
@@ -739,6 +742,26 @@ export default function TitlePage() {
 
   const heroUnit = type === "movie" ? unitKey("movie", id) : resume ? unitKey("tv", id, resume.season, resume.episode) : null;
   const heroWarm = useHoverWarm(heroUnit);
+  const stageSession = useStageSession(title);
+  const stageOnPage = useSettings((state) => state.playerPlacement === "page");
+  const autoPickOn = useSettings((state) => state.autoPick);
+  const libraryProgress = useLibrary((state) => state.progress);
+  const pickSeason = useAsync(
+    () => (data && type === "tv" && !resume ? tmdb.season(data.id, season) : Promise.resolve([])),
+    [data?.id, type, season, resume === null],
+  );
+  const pickTarget = useMemo<PickTarget | null>(() => {
+    if (!data || !shownRef || !stageOnPage || !autoPickOn || layoutState.loading) return null;
+    const base = { title: shownRef, originalTitle: data.originalTitle, originalLanguage: data.language, seasons: data.seasons, anime: data.isAnime };
+    if (type === "movie") return movieSources?.length ? null : { ...base, runtimeMinutes: data.runtimeMinutes };
+    if (resume) return null;
+    const today = localDay(new Date());
+    const aired = (pickSeason.data ?? []).filter((episode) => episode.airDate !== "" && episode.airDate <= today);
+    const next = aired.find((episode) => !isWatched(libraryProgress[unitKey("tv", data.id, episode.season, episode.episode)])) ?? aired[0];
+    return next ? { ...base, season: next.season, episode: next.episode, layout: layoutState.data ?? null } : null;
+  }, [data, shownRef, stageOnPage, autoPickOn, type, movieSources, resume, pickSeason.data, libraryProgress, layoutState.loading, layoutState.data]);
+  const pick = useStagePick(pickTarget);
+  const [pickBusy, setPickBusy] = useState(false);
 
   useEffect(() => {
     if (data) warmTitleResume(type, data.id);
@@ -774,11 +797,11 @@ export default function TitlePage() {
 
   const playResume = () => {
     if (bestMovieSource) {
-      play({ title: shownRef, unitKey: unitKey("movie", id) });
+      playOnStage({ title: shownRef, unitKey: unitKey("movie", id) });
       return;
     }
     if (resume) {
-      play({
+      playOnStage({
         title: shownRef,
         unitKey: unitKey("tv", id, resume.season, resume.episode),
         season: resume.season,
@@ -788,6 +811,29 @@ export default function TitlePage() {
     }
   };
   const canPlay = Boolean(bestMovieSource || resume);
+  const startPick = () => {
+    if (!pick.key || !pickTarget || pickBusy) return;
+    if (pick.entry?.status === "none" || pick.entry?.status === "failed") {
+      openAddSource({ target: pickTarget.season !== undefined ? { ...target, defaultSeason: pickTarget.season, defaultEpisode: pickTarget.episode } : target });
+      return;
+    }
+    setPickBusy(true);
+    commitPick(pick.key)
+      .then((ready) => {
+        if (!ready) {
+          useUi.getState().toast(t("stage.pick.noFile"), "error");
+          return;
+        }
+        playOnStage({
+          title: shownRef,
+          unitKey: unitKey(type, id, pickTarget.season, pickTarget.episode),
+          season: pickTarget.season,
+          episode: pickTarget.episode,
+        });
+      })
+      .catch((error) => useUi.getState().toast(describeError(error), "error"))
+      .finally(() => setPickBusy(false));
+  };
   const playLabel = resume
     ? `${resume.resumed ? t("title.resume") : t("title.watch")} · ${layout && inLayout(layout, resume.season) ? t("tracker.long.single", { episode: resume.episode }) : t("title.episodeShort", { season: resume.season, episode: resume.episode })}`
     : t("title.watch");
@@ -856,6 +902,44 @@ export default function TitlePage() {
       </section>
 
       <div className="page__rows">
+        {stageOnPage && (canPlay || stageSession || pickTarget) && (
+          <PlayerStage
+            title={shownRef}
+            backdrop={data.backdrop}
+            playUnit={canPlay ? heroUnit : null}
+            playLabel={
+              canPlay || !pickTarget || pickTarget.season === undefined
+                ? playLabel
+                : `${t("title.watch")} · ${layout && inLayout(layout, pickTarget.season) ? t("tracker.long.single", { episode: pickTarget.episode ?? "" }) : t("title.episodeShort", { season: pickTarget.season, episode: pickTarget.episode ?? "" })}`
+            }
+            busy={pickBusy}
+            onIntent={!canPlay && pick.key ? () => void preparePick(pick.key!, true).catch(() => undefined) : undefined}
+            note={!canPlay && pickTarget ? <PickNote entry={pick.entry} chosen={pick.chosen} /> : undefined}
+            under={
+              !canPlay && !stageSession && pickTarget && pick.key ? (
+                <PickBar pickKey={pick.key} entry={pick.entry} onManual={() => openAddSource({ target: pickTarget.season !== undefined ? { ...target, defaultSeason: pickTarget.season, defaultEpisode: pickTarget.episode } : target })} />
+              ) : undefined
+            }
+            onPlay={canPlay ? playResume : startPick}
+            side={
+              type === "tv" ? (
+                <StageEpisodes
+                  details={data}
+                  title={shownRef}
+                  season={season}
+                  layout={layout}
+                  pickBase={
+                    autoPickOn && !layoutState.loading
+                      ? { title: shownRef, originalTitle: data.originalTitle, originalLanguage: data.language, seasons: data.seasons, layout, anime: data.isAnime }
+                      : null
+                  }
+                  onSeasonChange={(next) => setSearchParams({ s: String(next) }, { replace: true })}
+                  onFind={(nextSeason, episode) => openAddSource({ target: { ...target, defaultSeason: nextSeason, defaultEpisode: episode } })}
+                />
+              ) : undefined
+            }
+          />
+        )}
         {type === "movie" ? (
           <MovieSources title={shownRef} target={target} />
         ) : (
@@ -865,6 +949,7 @@ export default function TitlePage() {
             season={season}
             layout={layout}
             focusEpisode={focusEpisode ?? (resume && resume.season === season ? resume.episode : null)}
+            scrollToFocus={focusEpisode !== null || !stageOnPage}
             target={target}
             onSeasonChange={(next, episode) => {
               setFocusEpisode(episode ?? null);

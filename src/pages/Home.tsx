@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Check, ChevronLeft, ChevronRight, Info, Play, Star, X } from "lucide-react";
 import { CatalogError, PosterRow, Row, typeLabel, type DismissDetail } from "../components/Cards";
@@ -9,7 +9,7 @@ import { isNewEpisode, useEpisodeCalendar, type CalendarEpisode } from "../state
 import { usePersonalFeed } from "../state/feed";
 import { entryToRef, isWatched, titleKey, useLibrary, type Progress, type TitleRef } from "../state/library";
 import { useSettings } from "../state/settings";
-import { useUi } from "../state/ui";
+import { homeRefreshEvent, useUi } from "../state/ui";
 import { useUpNext, type UpNextEpisode } from "../state/upNext";
 import { useHoverWarm, warmRecentResume } from "../state/warmup";
 
@@ -121,7 +121,16 @@ function ContinueCard({ unitKey, progress }: { unitKey: string; progress: Progre
   const hasSource = useLibrary((state) => (state.sources[unitKey]?.length ?? 0) > 0);
   const { title } = progress;
   const hoverWarm = useHoverWarm(hasSource ? unitKey : null);
-  const art = imageUrl(title.backdrop, "w780") ?? imageUrl(title.poster, "w342");
+  const hideStill = useSettings((state) => state.spoilerStills);
+  const seasonNumber = title.type === "tv" ? progress.season : undefined;
+  const season = useAsync(
+    () => (seasonNumber !== undefined ? tmdb.season(title.id, seasonNumber) : Promise.resolve([])),
+    [title.id, seasonNumber],
+    `continue-season:${title.id}:${seasonNumber ?? "-"}`,
+  );
+  const episodes = (season.data ?? []).filter((episode) => episode.still);
+  const shown = (hideStill ? undefined : episodes.find((episode) => episode.episode === progress.episode)) ?? episodes[0];
+  const art = imageUrl(shown?.still ?? null, "w500") ?? imageUrl(title.backdrop, "w780") ?? imageUrl(title.poster, "w342");
   const episodeLabel =
     progress.season !== undefined
       ? t("common.seasonEpisode", { season: progress.season, episode: progress.episode ?? "" })
@@ -195,14 +204,17 @@ function ContinueCard({ unitKey, progress }: { unitKey: string; progress: Progre
 function ContinueRow() {
   const { t } = useT();
   const progress = useLibrary((state) => state.progress);
-  const entries = useMemo(
-    () =>
-      Object.entries(progress)
-        .filter(([, item]) => item.position >= minResumeSeconds && !isWatched(item))
-        .sort(([, a], [, b]) => b.updatedAt - a.updatedAt)
-        .slice(0, continueRowLimit),
-    [progress],
-  );
+  const playing = useUi((state) => state.player?.unitKey);
+  const entries = useMemo(() => {
+    const latest = new Map<string, [string, Progress]>();
+    for (const entry of Object.entries(progress).sort(([, a], [, b]) => b.updatedAt - a.updatedAt)) {
+      const show = titleKey(entry[1].title.type, entry[1].title.id);
+      if (!latest.has(show)) latest.set(show, entry);
+    }
+    return [...latest.values()]
+      .filter(([key, item]) => !isWatched(item) && (item.title.type === "tv" ? item.position >= 1 : item.position >= minResumeSeconds || key === playing))
+      .slice(0, continueRowLimit);
+  }, [progress, playing]);
   if (entries.length === 0) return null;
   return (
     <Row title={t("home.row.continue")}>
@@ -330,6 +342,15 @@ export default function Home() {
   const topMovies = useAsync(tmdb.topMovies, []);
   const topSeries = useAsync(tmdb.topSeries, []);
   const animeMovies = useAsync(tmdb.animeMovies, []);
+  const pageRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const refresh = () => {
+      for (const row of [trending, movies, series, anime, nowPlaying, topMovies, topSeries, animeMovies]) row.reload();
+      pageRef.current?.closest(".page-scroller")?.scrollTo({ top: 0, behavior: "smooth" });
+    };
+    window.addEventListener(homeRefreshEvent, refresh);
+    return () => window.removeEventListener(homeRefreshEvent, refresh);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const tracked = useLibrary((state) => state.tracked);
   const feed = usePersonalFeed();
   const planned = useMemo(
@@ -343,7 +364,7 @@ export default function Home() {
 
   if (trending.error) {
     return (
-      <div className="page">
+      <div className="page" ref={pageRef}>
         <ContinueRow />
         <CatalogError onRetry={trending.reload} />
       </div>
@@ -351,7 +372,7 @@ export default function Home() {
   }
 
   return (
-    <div className="page page--flush">
+    <div className="page page--flush" ref={pageRef}>
       <Hero items={trending.data ?? []} />
       <div className="page__rows">
         <ContinueRow />

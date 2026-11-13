@@ -25,6 +25,7 @@ import { useAsync } from "../lib/useAsync";
 import { useSettings, type TrackerSort } from "../state/settings";
 import { useUi, type AddSourceTarget } from "../state/ui";
 import { LanguageFlags } from "./LanguageFlags";
+import { releaseVoices, voicesSummary } from "../lib/trackNames";
 import { recordActivity, titleOf } from "../state/activity";
 
 const pageLookupLimit = 20;
@@ -1043,9 +1044,11 @@ function TrackerItem({
   disabled: boolean;
   onPick: () => void;
 }) {
-  const { t, tn } = useT();
+  const { t, tn, language } = useT();
   const { item, release, isVideo } = row;
   const audioLanguages = release.audioLanguages.map((code) => (code === originalLanguageMark ? originalLanguage : code));
+  const ownLanguage = useSettings((state) => state.audioLanguage) || language;
+  const voiceText = voicesSummary(releaseVoices(release, originalLanguage), locale, ownLanguage, release.audio.length) || release.audio.map(audioTrackLabel).join(" · ");
 
   return (
     <div className={`tracker-item ${best ? "is-best" : ""}`}>
@@ -1098,11 +1101,11 @@ function TrackerItem({
             <dt>{t("tracker.voiceover")}</dt>
             <dd>
               <LanguageFlags available={audioLanguages} locale={locale} />
-              <span>{release.audio.length > 0 ? release.audio.map(audioTrackLabel).join(" · ") : t("tracker.voiceover.notListed")}</span>
+              <span title={release.audio.map(audioTrackLabel).join(" · ")}>{voiceText || t("tracker.voiceover.notListed")}</span>
             </dd>
             <dt>{t("common.subtitles")}</dt>
             <dd>
-              <LanguageFlags available={release.subtitleLanguages} locale={locale} />
+              {release.subtitleLanguages.length > 0 ? <LanguageFlags available={release.subtitleLanguages} locale={locale} /> : <span>{t("tracker.voiceover.notListed")}</span>}
             </dd>
           </dl>
         )}

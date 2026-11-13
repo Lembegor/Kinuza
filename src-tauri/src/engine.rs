@@ -57,6 +57,8 @@ pub struct TorrentView {
     pub peers: u64,
     pub files: Vec<TorrentFileView>,
     pub upload_enabled: bool,
+    pub queue_order: u64,
+    pub focused: bool,
 }
 
 #[derive(Serialize, Clone)]
@@ -91,11 +93,14 @@ const PARKED_INDEX_NAME: &str = "parked.json";
 const CACHE_INDEX_NAME: &str = "cache.json";
 const QUEUE_INDEX_NAME: &str = "queue.json";
 const ORDER_INDEX_NAME: &str = "order.json";
+const FOCUS_FILE_NAME: &str = "focus.json";
 const POLICY_FILE_NAME: &str = "policy.json";
 const UPLOAD_CHOICES_NAME: &str = "upload-choices.json";
 const PROMOTED_INDEX_NAME: &str = "promoted.json";
 const PEERS_INDEX_NAME: &str = "peers.json";
 const PEERS_WAIT: Duration = Duration::from_secs(15);
+const DISK_RELIEF_FOR: Duration = Duration::from_secs(90);
+const DISK_RELIEF_BPS: u32 = 4 * 1024 * 1024;
 const WARM_LIGHT_FOR: Duration = Duration::from_secs(2 * 60);
 const WARM_FULL_FOR: Duration = Duration::from_secs(5 * 60);
 const WARM_LIMIT: usize = 2;
@@ -242,7 +247,10 @@ pub struct Engine {
     migrating: tokio::sync::Mutex<()>,
     forgotten: Mutex<Vec<(String, usize, Vec<u32>)>>,
     known_peers: Mutex<HashMap<String, Vec<SocketAddr>>>,
+    focus: Mutex<Option<String>>,
     warm: Mutex<HashMap<String, Warm>>,
+    slow_reads_seen: std::sync::atomic::AtomicU64,
+    disk_relief_until: Mutex<Option<Instant>>,
     session_reset: bool,
     listen_port: u16,
 }
@@ -414,7 +422,10 @@ impl Engine {
             migrating: tokio::sync::Mutex::new(()),
             forgotten: Mutex::new(Vec::new()),
             known_peers: Mutex::new(read_json(&cache_dir_for_peers.join(PEERS_INDEX_NAME))),
+            focus: Mutex::new(read_json(&cache_dir_for_peers.join(FOCUS_FILE_NAME))),
             warm: Mutex::new(HashMap::new()),
+            slow_reads_seen: std::sync::atomic::AtomicU64::new(0),
+            disk_relief_until: Mutex::new(None),
             session_reset,
             listen_port,
         });
@@ -431,6 +442,7 @@ impl Engine {
                 keeper.rest_released().await;
                 keeper.trim_windows();
                 keeper.cool_down().await;
+                keeper.relieve_disk();
                 keeper.migrate_promoted().await;
                 tick = tick.wrapping_add(1);
                 if tick % SWARM_LOG_EVERY == 0 {
@@ -467,9 +479,43 @@ impl Engine {
         }
     }
 
+    fn download_cap(&self, policy: &DownloadPolicy) -> u32 {
+        let relieving = self.disk_relief_until.lock().unwrap().is_some_and(|until| until > Instant::now());
+        match (relieving, policy.download_limit) {
+            (false, limit) => limit,
+            (true, 0) => DISK_RELIEF_BPS,
+            (true, limit) => limit.min(DISK_RELIEF_BPS),
+        }
+    }
+
+    fn relieve_disk(&self) {
+        let slow = librqbit::slow_stream_reads();
+        let previous = self.slow_reads_seen.swap(slow, std::sync::atomic::Ordering::Relaxed);
+        let playing = self.usage.lock().unwrap().values().any(Usage::playing);
+        let downloading = self.session.with_torrents(|torrents| {
+            torrents.map(|(_, handle)| handle.clone()).any(|handle| !handle.is_paused() && !handle.stats().finished && !self.is_online_only(&handle))
+        });
+        let mut until = self.disk_relief_until.lock().unwrap();
+        let active = until.is_some_and(|until| until > Instant::now());
+        if slow > previous && playing && downloading {
+            if !active {
+                tracing::warn!("engine: the disk is too slow for playback while downloading, downloads slow down to {} MB/s for a while", DISK_RELIEF_BPS >> 20);
+            }
+            *until = Some(Instant::now() + DISK_RELIEF_FOR);
+        } else if until.is_some() && !active {
+            *until = None;
+            tracing::info!("engine: downloads go back to full speed");
+        } else {
+            return;
+        }
+        drop(until);
+        let policy = *self.policy.lock().unwrap();
+        self.session.ratelimits.set_download_bps(std::num::NonZeroU32::new(self.download_cap(&policy)));
+    }
+
     fn apply_policy(&self, policy: DownloadPolicy) {
         let limit = |bytes_per_second: u32| std::num::NonZeroU32::new(bytes_per_second);
-        self.session.ratelimits.set_download_bps(limit(policy.download_limit));
+        self.session.ratelimits.set_download_bps(limit(self.download_cap(&policy)));
         self.session.ratelimits.set_upload_bps(limit(policy.upload_limit));
         *self.policy.lock().unwrap() = policy;
         self.policy_known.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -530,6 +576,65 @@ impl Engine {
         write_json(&self.cache_dir.join(PROMOTED_INDEX_NAME), &promoted);
     }
 
+    fn save_focus(&self) {
+        let focus = self.focus.lock().unwrap().clone();
+        write_json(&self.cache_dir.join(FOCUS_FILE_NAME), &focus);
+    }
+
+    fn set_focus(&self, focus: Option<String>) {
+        let changed = {
+            let mut current = self.focus.lock().unwrap();
+            let changed = *current != focus;
+            *current = focus;
+            changed
+        };
+        if changed {
+            self.save_focus();
+        }
+    }
+
+    pub async fn focus(&self, info_hash: &str) -> Result<()> {
+        let handle = self.find(info_hash)?;
+        if self.is_online_only(&handle) || handle.stats().finished {
+            bail!("not_downloading");
+        }
+        {
+            let mut order = self.order.lock().unwrap();
+            let first = order.values().copied().min().unwrap_or_else(|| unix_millis(SystemTime::now()));
+            order.insert(info_hash.to_owned(), first.saturating_sub(1));
+        }
+        self.save_order();
+        self.set_focus(Some(info_hash.to_owned()));
+        if self.queued.lock().unwrap().remove(info_hash) {
+            self.save_queue();
+        }
+        self.resume_handle(&handle).await?;
+        tracing::info!("engine: {} downloads first, the others wait", &info_hash[..info_hash.len().min(8)]);
+        self.enforce_policy().await;
+        Ok(())
+    }
+
+    pub fn reorder(&self, info_hashes: &[String]) {
+        {
+            let mut order = self.order.lock().unwrap();
+            let mut slots: Vec<u64> = info_hashes.iter().filter_map(|hash| order.get(hash).copied()).collect();
+            if slots.len() != info_hashes.len() {
+                let base = order.values().copied().max().unwrap_or_else(|| unix_millis(SystemTime::now()));
+                slots = (1..=info_hashes.len() as u64).map(|step| base + step).collect();
+            }
+            slots.sort_unstable();
+            slots.dedup();
+            while slots.len() < info_hashes.len() {
+                let next = slots.last().copied().unwrap_or(0) + 1;
+                slots.push(next);
+            }
+            for (hash, slot) in info_hashes.iter().zip(slots) {
+                order.insert(hash.clone(), slot);
+            }
+        }
+        self.save_order();
+    }
+
     fn remember_order(&self, info_hash: &str) {
         let added = {
             let mut order = self.order.lock().unwrap();
@@ -587,7 +692,21 @@ impl Engine {
             downloading.iter().any(|handle| &handle.info_hash().as_string() == info_hash && handle.is_paused())
         });
 
-        let limit = if policy.max_active_downloads == 0 { usize::MAX } else { policy.max_active_downloads };
+        let focus = self.focus.lock().unwrap().clone();
+        let focus_alive = focus.as_ref().is_some_and(|hash| {
+            downloading.iter().any(|handle| &handle.info_hash().as_string() == hash && !handle.is_paused())
+        });
+        if focus.is_some() && !focus_alive {
+            self.set_focus(None);
+            tracing::info!("engine: the first download is done or paused, the queue goes on");
+        }
+        let limit = if focus_alive {
+            1
+        } else if policy.max_active_downloads == 0 {
+            usize::MAX
+        } else {
+            policy.max_active_downloads
+        };
         let mut active = downloading.iter().filter(|handle| !handle.is_paused()).count();
         for handle in downloading.iter().rev() {
             if active <= limit {
@@ -668,8 +787,21 @@ impl Engine {
                     }
                 }
             }
+            let streams = handle
+                .all_stream_positions()
+                .into_iter()
+                .filter_map(|(file, position)| {
+                    let pieces = self.file_pieces(&info_hash, file).ok()?;
+                    if position + 1 >= pieces.length {
+                        return None;
+                    }
+                    let ready = pieces.available_until(position).saturating_sub(position);
+                    Some(format!("f{file}@{}MB/{}MB+{}MB", position >> 20, pieces.length >> 20, ready >> 20))
+                })
+                .collect::<Vec<_>>()
+                .join(",");
             tracing::info!(
-                "swarm {} state={:?} paused={} only_files={:?} have={}MB selected_total={}MB speed={:.2}MiB/s peers_by_state={:?} aggregate={} attempts={} connections={} errors={} incoming={} fetched={}MB trackers={} watching={}",
+                "swarm {} state={:?} paused={} only_files={:?} have={}MB selected_total={}MB speed={:.2}MiB/s peers_by_state={:?} aggregate={} attempts={} connections={} errors={} incoming={} fetched={}MB trackers={} watching={} streams=[{}]",
                 &info_hash[..8],
                 stats.state,
                 handle.is_paused(),
@@ -686,6 +818,7 @@ impl Engine {
                 fetched >> 20,
                 handle.shared().trackers.len(),
                 self.watching.lock().unwrap().get(&info_hash).map(|watch| watch.file).map_or("-".to_owned(), |file| file.to_string()),
+                streams,
             );
         }
     }
@@ -1138,6 +1271,13 @@ impl Engine {
 
     pub async fn add(&self, info_hash: &str, files: Vec<usize>, download_dir: &Path) -> Result<()> {
         let known = self.find(info_hash).is_ok() || self.parked.lock().unwrap().contains_key(info_hash);
+        tracing::info!(
+            "engine: {} add asked for files {:?} (known={known}, in session={}, online={})",
+            &info_hash[..info_hash.len().min(8)],
+            files,
+            self.find(info_hash).is_ok(),
+            self.find(info_hash).is_ok_and(|handle| self.is_online_only(&handle))
+        );
         if known {
             let pending = self.pending.lock().unwrap().remove(info_hash);
             if files.is_empty() {
@@ -1174,6 +1314,8 @@ impl Engine {
                 .map(|(_, handle)| {
                     let mut view = torrent_view(handle);
                     view.upload_enabled = self.uploads(&view.info_hash);
+                    view.queue_order = self.order.lock().unwrap().get(&view.info_hash).copied().unwrap_or(0);
+                    view.focused = self.focus.lock().unwrap().as_deref() == Some(view.info_hash.as_str());
                     if self.is_streaming_cache(handle) {
                         if !self.is_playing(&view.info_hash) {
                             view.state = STATE_PARKED;
@@ -1215,6 +1357,8 @@ impl Engine {
                 upload_speed: 0.0,
                 peers: 0,
                 upload_enabled: self.uploads(info_hash),
+                queue_order: 0,
+                focused: false,
                 files: parked
                     .files
                     .iter()
@@ -1263,6 +1407,7 @@ impl Engine {
 
     pub async fn select_files(&self, info_hash: &str, files: &[usize], download_dir: &Path) -> Result<()> {
         let _parking = self.parking.lock().await;
+        tracing::info!("engine: {} select files {:?}", &info_hash[..info_hash.len().min(8)], files);
         if let Ok(handle) = self.find(info_hash) {
             if !self.is_online_only(&handle) {
                 self.include_files(&handle, files).await?;
@@ -1286,6 +1431,21 @@ impl Engine {
             parked.trackers,
         )
         .await
+    }
+
+    pub async fn exclude_files(&self, info_hash: &str, files: &[usize]) -> Result<()> {
+        let _parking = self.parking.lock().await;
+        let handle = self.find(info_hash)?;
+        if self.is_online_only(&handle) {
+            bail!("not_downloaded");
+        }
+        let Some(current) = handle.only_files() else { bail!("not_downloaded") };
+        let kept: HashSet<usize> = current.into_iter().filter(|file| !files.contains(file)).collect();
+        if kept.is_empty() {
+            bail!("last_file");
+        }
+        tracing::info!("engine: {} stops downloading files {:?}, keeps {:?}", &info_hash[..info_hash.len().min(8)], files, kept);
+        self.session.update_only_files(&handle, &kept).await
     }
 
     pub fn lease_stream(self: &Arc<Self>, info_hash: &str) -> StreamLease {
@@ -1488,7 +1648,7 @@ impl Engine {
             (true, Some(file)) => self.select_for_announce(&handle, file).await,
             _ => false,
         };
-        if let (true, Some(file)) = (online, file) {
+        if let Some(file) = file {
             Self::set_read_ahead(&handle, file);
         }
         if let (true, false, Some(file)) = (online, announcing, file) {
@@ -1610,7 +1770,7 @@ impl Engine {
             tauri::async_runtime::spawn_blocking(move || move_cached_files(&source, &target, &relative)).await?
         };
         match moved {
-            Ok(bytes) => tracing::info!("engine: {} moved {} MB from the stream cache into the downloads", &info_hash[..8], bytes >> 20),
+            Ok(bytes) => tracing::info!("engine: {} moved {} MB from the stream cache into the downloads, files {:?}", &info_hash[..8], bytes >> 20, files),
             Err(error) => tracing::warn!("engine: {} could not reuse the stream cache, it downloads again: {error:#}", &info_hash[..8]),
         }
         let _ = std::fs::remove_dir_all(&source);
@@ -1877,6 +2037,7 @@ impl Engine {
         if selected.len() == before {
             return Ok(());
         }
+        tracing::info!("engine: {} now downloads files {:?}", handle.info_hash().as_string().get(..8).unwrap_or_default(), selected);
         self.session.update_only_files(handle, &selected).await
     }
 
@@ -2118,6 +2279,8 @@ fn torrent_view(handle: &TorrentHandle) -> TorrentView {
         peers,
         files: file_views(handle, &stats.file_progress),
         upload_enabled: handle.upload_enabled(),
+        queue_order: 0,
+        focused: false,
     }
 }
 

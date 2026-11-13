@@ -72,13 +72,29 @@ export interface ReleaseScope {
 export const originalLanguageMark = "original";
 
 const namedLanguages: [RegExp, string][] = [
-  [/\b(rus|ru)\b|рус/i, "ru"],
+  [/\b(rus|ru)\b|(?<!бело)рус/i, "ru"],
   [/\b(ukr|ua)\b|укр/i, "uk"],
   [/\b(eng|en)\b|англ/i, "en"],
   [/\b(jap|jpn)\b|япон/i, "ja"],
+  [/\b(ger|deu)\b|немец/i, "de"],
+  [/\b(fre|fra)\b|франц/i, "fr"],
+  [/\b(spa|esp)\b|испан/i, "es"],
+  [/\bita\b|итал/i, "it"],
+  [/\bkor\b|корей/i, "ko"],
+  [/\b(chi|zho|chn)\b|китай/i, "zh"],
+  [/\bpol\b|польск/i, "pl"],
+  [/\bpor\b|португал/i, "pt"],
+  [/\btur\b|турец/i, "tr"],
+  [/\bkaz\b|казах/i, "kk"],
+  [/\bbel\b|белорус/i, "be"],
+  [/\b(cze|ces)\b|чешск/i, "cs"],
+  [/\bswe\b|шведск/i, "sv"],
+  [/\bfin\b|финск/i, "fi"],
+  [/\bhin\b|хинди/i, "hi"],
+  [/\bgeo\b|грузин/i, "ka"],
 ];
 
-function languagesNamedIn(text: string): string[] {
+export function languagesNamedIn(text: string): string[] {
   return namedLanguages.filter(([pattern]) => pattern.test(text)).map(([, code]) => code);
 }
 

@@ -1,13 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { createPortal } from "react-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import {
   ArrowLeft,
+  ArrowUp,
   AudioLines,
   Camera,
   Captions,
+  CaptionsOff,
   Check,
+  Download,
   ExternalLink,
+  FileText,
+  FolderOpen,
   Frame,
   Gauge,
+  Globe,
   ListVideo,
   LoaderCircle,
   Maximize,
@@ -45,12 +53,12 @@ import {
   type SubtitleTrackInfo,
   type TorrentFile,
 } from "../lib/backend";
-import { t, useT, type MessageKey } from "../lib/i18n";
+import { t, tn, useT, type MessageKey } from "../lib/i18n";
 import { languageCode, languageName, threeLetterCodes } from "../lib/languages";
 import { beforeAppClose } from "../lib/lifecycle";
 import { setMiniWindow } from "../lib/miniWindow";
 import { formatBytes, formatClock, formatSpeed } from "../lib/format";
-import { baseName, isSubtitleFile, qualityFromSize, qualityRank } from "../lib/parse";
+import { baseName, isSubtitleFile, parseEpisode, qualityFromSize, qualityRank } from "../lib/parse";
 import {
   activeCueText,
   compareSubtitleLabels,
@@ -83,6 +91,26 @@ import { StatsPanel } from "./player/StatsPanel";
 import { isLinux } from "../lib/platform";
 import { recordActivity, titleOf } from "../state/activity";
 import { warmFile } from "../state/warmup";
+import { placementFor, usePlayerPlacement, type Placement } from "../state/playerPlacement";
+import { usePlayerHost } from "./player/usePlayerHost";
+import { LanguageFlag } from "./LanguageFlag";
+import { pictureBadge, pictureMarks, sourceName, voiceGroups } from "../lib/releaseNames";
+import type { ReleaseVoice } from "../lib/trackNames";
+import type { PickHealth } from "../state/autoPick";
+import {
+  audioFace,
+  audioFileFace,
+  audioFileGuess,
+  sameVoice,
+  soundInfo,
+  subtitleFace,
+  subtitleFileFace,
+  voiceFace,
+  voicedBy,
+  type TrackGuess,
+  type VoiceLike,
+} from "../lib/trackNames";
+import { autoPlay, choosePick, commitPick, healthOf, inspectPick, requestPick, useAutoPick, type PickCandidate, type PickTarget } from "../state/autoPick";
 
 const controlsHideDelayMs = 3000;
 const progressSaveIntervalMs = 5000;
@@ -127,13 +155,29 @@ const hintLifetimeMs = 900;
 const releaseDelayMs = 1500;
 const builtInAudioCodecs = new Set(["aac", "mp3", "opus", "vorbis", "flac"]);
 const subtitlesOff = "off";
+const onlineLanguagesAsked = 6;
 const convertedVideoCodecs = new Set(["mpeg4", "msmpeg4v2", "msmpeg4v3", "mpeg2video", "mpeg1video", "wmv1", "wmv2", "wmv3", "vc1", "rv30", "rv40", "flv1", "h263", "theora"]);
 
 const delayStepSeconds = 0.1;
-const longestDelaySeconds = 10;
+const longestDelaySeconds = 600;
 const skipOfferEndsSeconds = 2;
 const skipOfferShownMs = 6000;
 const activityMinSeconds = 10;
+const nextPickAheadSeconds = 240;
+const audioFilePattern = /\.(mka|ac3|eac3|dts|aac|flac|mp3|m4a|ogg|opus|wav)$/i;
+const plainSoundFolder = /^(sound|sounds|audio|звук|озвучка|озвучки|дорожки|rus|ru|russian|rus sound|rus audio)$/i;
+const maxTorrentAudio = 16;
+const syncPrintSeconds = 300;
+const syncLeastSeconds = 20;
+const audioAttachWaitMs = 90_000;
+const holdSpeedAfterMs = 350;
+const holdSpeedRate = 2;
+const stillWatchingAfter = 3;
+const wheelVolumeStep = 0.05;
+
+let unattendedEpisodes = 0;
+const diagnosticsEveryMs = 30_000;
+const stallLogSeconds = 1.5;
 
 const skippableChapters: { kind: "intro" | "credits" | "recap"; pattern: RegExp }[] = [
   { kind: "intro", pattern: /\b(intro|opening|op)\b|заставк|опенинг/i },
@@ -175,17 +219,38 @@ function skipSegments(chapters: Chapter[], sound: SoundSegments | null, duration
 }
 
 const onlineSubtitlesKey: string = import.meta.env.VITE_OPENSUBTITLES_API_KEY ?? "";
-const sameReleaseWords = 3;
+const sameReleaseFit = 2;
+const sameSizeShare = 0.006;
 const onlineSubtitleErrors = ["subtitles_key_invalid", "subtitles_quota", "subtitles_unavailable"] as const;
 
-function releaseWords(name: string): Set<string> {
-  return new Set(name.toLowerCase().split(/[^a-z0-9а-яё]+/).filter((word) => word.length >= 3));
+const releaseSources: [RegExp, string][] = [
+  [/blu[\s._-]?ray|bd[\s._-]?rip|br[\s._-]?rip|bd[\s._-]?remux|\bremux\b|\bbd\b/i, "disc"],
+  [/web[\s._-]?dl|web[\s._-]?rip|\bweb\b|\bamzn\b|\bnf\b/i, "web"],
+  [/hdtv|tv[\s._-]?rip|sat[\s._-]?rip/i, "tv"],
+  [/dvd/i, "dvd"],
+];
+const episodeMark = /^s?\d{1,2}[ex]\d{1,3}$/;
+
+function releaseSource(name: string): string {
+  return releaseSources.find(([pattern]) => pattern.test(name))?.[1] ?? "";
 }
 
-function sharedWords(a: Set<string>, b: Set<string>): number {
+function technicalWords(name: string): Set<string> {
+  return new Set(
+    name
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((word) => /\d/.test(word) && /[a-z]/.test(word) && !episodeMark.test(word)),
+  );
+}
+
+function releaseFit(found: string, playing: string): number {
+  const source = releaseSource(found);
+  if (!source || source !== releaseSource(playing)) return 0;
+  const other = technicalWords(playing);
   let shared = 0;
-  for (const word of a) if (b.has(word)) shared += 1;
-  return shared;
+  for (const word of technicalWords(found)) if (other.has(word)) shared += 1;
+  return 1 + shared;
 }
 
 function clampDelay(seconds: number): number {
@@ -280,18 +345,182 @@ function readAudioOptions(video: VideoWithExtras): { options: AudioOption[]; sel
   return { options, selected };
 }
 
-function audioTrackLabel(track: AudioTrackInfo, locale: string): string {
-  const format = [track.codec.toUpperCase(), track.channels.replace(/\(.*\)/, "")].filter(Boolean).join(" ");
-  const language = languageName(languageCode(track.language), locale);
-  return [language, track.title, format].filter(Boolean).join(" · ") || t("player.track", { number: track.index + 1 });
-}
-
 function showsSignsOnly(track: SubtitleTrackInfo): boolean {
   return track.isForced || /forced|форсир|надпис/i.test(track.title);
 }
 
 function embeddedSubtitleLabel(track: SubtitleTrackInfo, locale: string): string {
   return languageName(languageCode(track.language), locale) || track.title || t("player.track", { number: track.index + 1 });
+}
+
+function TrackRow({
+  lead,
+  name,
+  note,
+  on,
+  busy,
+  disabled,
+  title,
+  onClick,
+  accent,
+  trailing,
+}: {
+  lead: React.ReactNode;
+  name: string;
+  note?: string;
+  on?: boolean;
+  busy?: boolean;
+  disabled?: boolean;
+  title?: string;
+  onClick?: () => void;
+  accent?: boolean;
+  trailing?: React.ReactNode;
+}) {
+  return (
+    <button className={`track ${on ? "is-on" : ""} ${accent ? "track--accent" : ""}`} title={title} disabled={disabled} onClick={onClick}>
+      <span className="track__lead">{lead}</span>
+      <span className="track__text">
+        <strong>{name}</strong>
+        {note && <small>{note}</small>}
+      </span>
+      {trailing}
+      {busy ? <LoaderCircle size={15} className="spin" /> : on ? <Check size={16} /> : null}
+    </button>
+  );
+}
+
+interface SoundRow {
+  key: string;
+  voice: VoiceLike;
+  name: string;
+  codec: string;
+  codecFull: string;
+  layout: string;
+  lossless: boolean;
+  origin: string;
+  ready: boolean;
+  on: boolean;
+  busy: boolean;
+  health?: PickHealth;
+  title?: string;
+  pick: () => void;
+}
+
+function ReleaseVoices({ voices, locale }: { voices: ReleaseVoice[]; locale: string }) {
+  const groups = voiceGroups(voices, locale);
+  if (groups.length === 0) return null;
+  return (
+    <span className="release-row__voices">
+      {groups.map((group) => (
+        <span key={group.code} className="release-row__voice">
+          <LanguageFlag code={group.code} />
+          <span>
+            {group.kinds}
+            {group.authors && <small>{group.kinds ? ` · ${group.authors}` : group.authors}</small>}
+          </span>
+        </span>
+      ))}
+    </span>
+  );
+}
+
+function ReleaseList({
+  entry,
+  releases,
+  busy,
+  locale,
+  series,
+  onPick,
+}: {
+  entry: { status: string } | undefined;
+  releases: PickCandidate[];
+  busy: string | null;
+  locale: string;
+  series: boolean;
+  onPick: (candidate: PickCandidate) => void;
+}) {
+  if (!entry || entry.status === "searching") {
+    return (
+      <div className="player__menu-note">
+        <LoaderCircle size={14} className="spin" />
+        {t("stage.pick.searching")}
+      </div>
+    );
+  }
+  if (releases.length === 0) return <div className="player__menu-note">{t("player.release.none")}</div>;
+  return (
+    <>
+      {releases.map((candidate) => {
+        const badge = pictureBadge(candidate.resolution, candidate.quality);
+        const origin = sourceName(candidate.quality);
+        const whole = candidate.sizeBytes > 0 ? formatBytes(candidate.sizeBytes) : candidate.sizeText;
+        const perUnit = series && (candidate.units ?? 0) > 1 && candidate.sizeBytes > 0;
+        return (
+          <button key={candidate.id} className="release-row" title={candidate.title} disabled={busy !== null} onClick={() => onPick(candidate)}>
+            <span className={`release-row__badge release-row__badge--${badge.tone}`}>{badge.label}</span>
+            <span className="release-row__body">
+              <span className="release-row__head">
+                <strong title={origin.note}>{origin.name || t("common.video")}</strong>
+                {(candidate.marks ?? []).map((mark) => (
+                  <em key={mark}>{mark}</em>
+                ))}
+                <span className="release-row__size" title={perUnit ? t("release.wholeSize", { size: whole }) : undefined}>
+                  {perUnit ? t("release.aboutPerEpisode", { size: formatBytes(candidate.sizeBytes / candidate.units) }) : whole}
+                </span>
+              </span>
+              <ReleaseVoices voices={candidate.voiceTracks ?? []} locale={locale} />
+            </span>
+            <span className={`release-row__seeds release-row__seeds--${candidate.health}`} title={tn("stage.pick.seeds", candidate.seeds)}>
+              {busy === candidate.id ? (
+                <LoaderCircle size={15} className="spin" />
+              ) : (
+                <>
+                  <span>
+                    <ArrowUp size={13} />
+                    {candidate.seeds.toLocaleString(locale)}
+                  </span>
+                  <small>{t("release.seeds.label")}</small>
+                </>
+              )}
+            </span>
+          </button>
+        );
+      })}
+    </>
+  );
+}
+
+interface AudioFileOption {
+  file: TorrentFile;
+  label: string;
+}
+
+function audioFileLabel(path: string, videoStem: string): string {
+  const parts = path.replace(/\\/g, "/").split("/");
+  const folders = parts.slice(0, -1).filter((folder) => !plainSoundFolder.test(folder.trim()));
+  const folder = folders[folders.length - 1];
+  if (folder && parts.length > 2) return folder;
+  const name = baseName(path);
+  const extension = (/\.([^.]+)$/.exec(name)?.[1] ?? "").toUpperCase();
+  const stem = name.replace(/\.[^.]+$/, "");
+  const rest = videoStem && stem.toLowerCase().startsWith(videoStem) ? stem.slice(videoStem.length).replace(/^[\s._\-[\]()]+|[\s._\-[\]()]+$/g, "") : stem;
+  return rest ? rest : t("player.voice.separate", { format: extension });
+}
+
+function torrentAudioFiles(files: TorrentFile[], videoFileName: string, episode: number | undefined): AudioFileOption[] {
+  const audio = files.filter((file) => audioFilePattern.test(file.path));
+  if (audio.length === 0) return [];
+  const stem = videoFileName.replace(/\.[^.]+$/, "").toLowerCase();
+  let matching = audio.filter((file) => baseName(file.path).toLowerCase().startsWith(stem));
+  if (matching.length === 0 && episode !== undefined) {
+    const wanted = parseEpisode(videoFileName).episode ?? episode;
+    matching = audio.filter((file) => parseEpisode(file.path).episode === wanted);
+  }
+  if (matching.length === 0 && episode === undefined) matching = audio;
+  const labelled = matching.slice(0, maxTorrentAudio).map((file) => ({ file, label: audioFileLabel(file.path, stem) }));
+  return labelled.map((option, index) =>
+    labelled.some((other, at) => at !== index && other.label === option.label) ? { ...option, label: `${option.label} ${index + 1}` } : option,
+  );
 }
 
 function torrentSubtitleFiles(files: TorrentFile[], videoFileName: string): TorrentFile[] {
@@ -475,9 +704,20 @@ function SeekBar({
   );
 }
 
-function PlayerView({ session }: { session: PlayerSession }) {
+function PlayerView({ session, placement, onReturn }: { session: PlayerSession; placement: Placement; onReturn: () => void }) {
+  const onPage = useSettings((state) => state.playerPlacement === "page");
+  const hovered = useRef(false);
   const videoRef = useRef<VideoWithExtras>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    const measure = () => root.style.setProperty("--player-height", `${root.clientHeight}px`);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(root);
+    return () => observer.disconnect();
+  }, []);
   const closePlayer = useUi((state) => state.closePlayer);
   const play = useUi((state) => state.play);
   const toast = useUi((state) => state.toast);
@@ -568,6 +808,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
   const [onlinePanel, setOnlinePanel] = useState(false);
   const [hotkeysShown, setHotkeysShown] = useState(false);
   const [onlineLanguage, setOnlineLanguage] = useState("");
+  const [onlineSearched, setOnlineSearched] = useState<string[]>([]);
   const [statsShown, setStatsShown] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [aspect, setAspect] = useState<AspectChoice>("auto");
@@ -1033,6 +1274,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
   useEffect(() => {
     if (upNextLeft === null || !playing) return;
     if (upNextLeft <= 0) {
+      unattendedEpisodes += 1;
       playNext();
       return;
     }
@@ -1076,15 +1318,316 @@ function PlayerView({ session }: { session: PlayerSession }) {
     return () => abort.abort();
   }, [upNextVisible, nextSource?.id, buffering]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const pickTarget = useMemo<PickTarget | null>(() => {
+    const details = titleDetails.data;
+    if (!details || !settings.autoPick) return null;
+    return {
+      title: session.title,
+      originalTitle: details.originalTitle,
+      originalLanguage: details.language,
+      seasons: details.seasons,
+      season: session.season,
+      episode: session.episode,
+      layout: playerLayout.data ?? null,
+      runtimeMinutes: details.runtimeMinutes,
+      anime: details.isAnime,
+    };
+  }, [titleDetails.data, settings.autoPick, session, playerLayout.data]);
+  const pickEntry = useAutoPick((state) => state.entries[session.unitKey]);
+  const [releaseBusy, setReleaseBusy] = useState<string | null>(null);
+  const releaseOf = (item: Source | undefined): PickCandidate | undefined => {
+    const candidates = pickEntry?.candidates ?? [];
+    if (!item) return undefined;
+    const known = candidates.find((candidate) => pickEntry?.hashes[candidate.id] === item.infoHash);
+    if (known) return known;
+    const total = useTorrents.getState().byHash[item.infoHash]?.totalBytes ?? 0;
+    if (!(total > 0)) return undefined;
+    return candidates.find((candidate) => candidate.sizeBytes > 0 && Math.abs(candidate.sizeBytes - total) / total < sameSizeShare);
+  };
+  const seedsOf = (item: Source): number | null => {
+    const known = releaseOf(item);
+    if (known) return known.seeds;
+    const total = useTorrents.getState().byHash[item.infoHash]?.totalBytes ?? 0;
+    if (!(total > 0)) return null;
+    return (pickEntry?.seen ?? []).find((entry) => entry.sizeBytes > 0 && Math.abs(entry.sizeBytes - total) / total < sameSizeShare)?.seeds ?? null;
+  };
+  const currentRelease = releaseOf(source);
+  const otherReleases = (pickEntry?.candidates ?? []).filter(
+    (candidate) => candidate.id !== currentRelease?.id && pickEntry?.hashes[candidate.id] !== source?.infoHash,
+  );
+
+  useEffect(() => {
+    if (pickTarget && (menu === "quality" || menu === "audio" || slowSource)) void requestPick(pickTarget);
+  }, [menu, slowSource, pickTarget]);
+
+  const switchRelease = async (candidate: PickCandidate) => {
+    if (releaseBusy) return;
+    setMenu(null);
+    if (candidate.health === "poor") toast(t("player.release.poorWarning"), "info");
+    setReleaseBusy(candidate.id);
+    try {
+      choosePick(session.unitKey, candidate.id, false);
+      const infoHash = await commitPick(session.unitKey);
+      const next = infoHash ? (useLibrary.getState().sources[session.unitKey] ?? []).find((item) => item.infoHash === infoHash) : undefined;
+      if (!next) {
+        toast(t("stage.pick.noFile"), "error");
+        return;
+      }
+      switchSource(next);
+      showHint(t("player.release.switched"));
+    } catch (error) {
+      toast(describeError(error), "error");
+    } finally {
+      setReleaseBusy(null);
+    }
+  };
+
+  const [externalAudio, setExternalAudio] = useState<{ key: string; url: string } | null>(null);
+  const outside = useRef<Record<string, { key: string; delay: number; guess: TrackGuess; release: boolean }>>({});
+  const [audioBusy, setAudioBusy] = useState<string | null>(null);
+  const delayBeforeBorrow = useRef(0);
+  const audioFiles = useMemo(
+    () => (usingMpv && source && torrent ? torrentAudioFiles(torrent.files, source.fileName, session.episode) : []),
+    [usingMpv, source?.id, torrent?.files.length, session.episode], // eslint-disable-line react-hooks/exhaustive-deps
+  );
+  const videoPath = torrent?.files.find((file) => file.index === source?.fileIndex)?.path ?? source?.fileName ?? "";
+  const fileGuess = useMemo<TrackGuess>(() => {
+    const voices = (currentRelease?.voiceTracks ?? []).filter((voice) => voice.kind !== "original");
+    const languages = [...new Set(voices.map((voice) => voice.language).filter(Boolean))];
+    if (languages.length !== 1) return {};
+    return voices.length === 1 ? { code: languages[0], kind: voices[0].kind, author: voices[0].author } : { code: languages[0] };
+  }, [currentRelease]);
+  const shownAudio = media.tracks?.audio ?? [];
+  const audioGuess = (track: AudioTrackInfo): TrackGuess => {
+    if (track.externalFile) {
+      const known = outside.current[track.externalFile];
+      return { ...known?.guess, origin: t(known?.release ? "player.track.otherRelease" : "player.track.separateFile") };
+    }
+    const stated = currentRelease?.voiceTracks ?? [];
+    if (shownAudio.filter((other) => !other.externalFile).length !== 1) return {};
+    if (stated.length === 1) return { code: stated[0].language, kind: stated[0].kind, author: stated[0].author };
+    return audioFiles.length > 0 && originalLanguage ? { code: originalLanguage, kind: "original" } : {};
+  };
+  const looseAudioFiles = audioFiles.filter(
+    (option) => !shownAudio.some((track) => track.externalFile?.endsWith(`/stream/${source?.infoHash}/${option.file.index}`)),
+  );
+
+  const attachAudio = async (infoHash: string, fileIndex: number, key: string, guess: TrackGuess, release: boolean, sync: boolean) => {
+    if (!usingMpv || !source || audioBusy) return;
+    setAudioBusy(key);
+    setMenu(null);
+    try {
+      const url = await streamUrl(infoHash, fileIndex);
+      let offset: number | null = null;
+      if (sync) {
+        showHint(t("player.voice.syncing"));
+        const reference = { infoHash: source.infoHash, fileIndex: source.fileIndex };
+        const other = { infoHash, fileIndex };
+        try {
+          await Promise.all([backend.audioPrint(reference, "head", syncPrintSeconds), backend.audioPrint(other, "head", syncPrintSeconds)]);
+          const found = await backend.audioOffset(reference, other);
+          if (found && found.matchedSeconds >= syncLeastSeconds) offset = found.seconds;
+        } catch {
+          offset = null;
+        }
+      }
+      if (!sync) showHint(t("player.voice.attaching"));
+      const heard = () => mpvPlayer.video.tracks()?.audio ?? [];
+      const before = new Set(heard().map((track) => track.externalFile));
+      const added = () => heard().filter((track) => track.externalFile && (track.externalFile === url || !before.has(track.externalFile)));
+      const startedAt = Date.now();
+      if (added().length === 0) await mpv.command("audio-add", url, "auto").catch(() => undefined);
+      while (added().length === 0 && Date.now() - startedAt < audioAttachWaitMs) await new Promise((resolve) => setTimeout(resolve, 300));
+      const found = added();
+      if (found.length === 0) {
+        void backend.appLog(`player: outside sound ${key} did not open in ${Math.round((Date.now() - startedAt) / 1000)}s`);
+        toast(t("player.voice.failed"), "error");
+        return;
+      }
+      const wanted = guess.code || settings.audioLanguage || language;
+      const fits = (track: AudioTrackInfo) => {
+        const info = soundInfo(track, locale, originalLanguage || undefined);
+        const voiced = guess.author ? sameVoice({ code: info.code, kind: null, author: info.author }, { code: info.code, kind: null, author: guess.author }) : false;
+        return (guess.code && info.code === guess.code ? 2 : 0) + (voiced ? 4 : 0) + (guess.kind && info.kind === guess.kind ? 1 : 0);
+      };
+      const fitting = [...found].sort((a, b) => fits(b) - fits(a))[0];
+      const chosen =
+        fits(fitting) > 0
+          ? fitting
+          : (found.find((track) => languageCode(track.language) === wanted) ?? found.find((track) => languageCode(track.language) !== originalLanguage) ?? found[0]);
+      const address = chosen.externalFile ?? url;
+      const id = mpvPlayer.video.audioId(chosen.index);
+      if (id !== null) await mpv.set("aid", id).catch(() => undefined);
+      setAudioTrack(chosen.index);
+      if (externalAudio) {
+        const left = outside.current[externalAudio.url];
+        if (left) left.delay = audioDelay;
+      } else {
+        delayBeforeBorrow.current = audioDelay;
+      }
+      const delay = sync && offset !== null ? Math.round(-offset * 100) / 100 : 0;
+      outside.current[address] = { key, delay, guess, release };
+      setExternalAudio({ key, url: address });
+      pickedAudio.current = true;
+      setAudioDelay(delay);
+      if (sync && offset !== null) showHint(t("player.voice.synced"));
+      else if (sync) toast(t("player.voice.noSync"), "info");
+      else showHint(audioFace(chosen, locale, originalLanguage || undefined, guess).name);
+      void backend.appLog(
+        `player: outside sound ${key} from ${infoHash.slice(0, 8)} file ${fileIndex}, tracks=${found.length}, offset=${offset === null ? "none" : offset.toFixed(2)}`,
+      );
+    } catch (error) {
+      toast(describeError(error), "error");
+    } finally {
+      setAudioBusy(null);
+    }
+  };
+
+  const borrowVoice = async (candidate: PickCandidate, voice: ReleaseVoice, key: string) => {
+    if (!usingMpv || audioBusy) return;
+    setAudioBusy(key);
+    try {
+      const ready = await inspectPick(session.unitKey, candidate.id);
+      const video = ready?.preview.files.find((file) => file.index === ready.fileIndex);
+      if (!ready || !video) {
+        toast(t("stage.pick.noFile"), "error");
+        return;
+      }
+      const separate = torrentAudioFiles(ready.preview.files, baseName(video.path), session.episode);
+      const named = voice.author.toLowerCase();
+      const chosen = named ? separate.find((option) => option.label.toLowerCase().includes(named)) : separate[0];
+      await backend.addTorrent(ready.infoHash, [], useSettings.getState().downloadDir || null);
+      setAudioBusy(null);
+      await attachAudio(ready.infoHash, chosen?.file.index ?? ready.fileIndex, key, { code: voice.language, kind: voice.kind, author: voice.author }, true, true);
+    } catch (error) {
+      toast(describeError(error), "error");
+    } finally {
+      setAudioBusy(null);
+    }
+  };
+
+  const soundRows = (): SoundRow[] => {
+    const rows: SoundRow[] = [];
+    for (const track of shownAudio) {
+      const guess = audioGuess(track);
+      const info = soundInfo(track, locale, originalLanguage || undefined, guess);
+      const row: SoundRow = {
+        key: `track:${track.index}`,
+        voice: info,
+        name: info.name,
+        codec: info.codec,
+        codecFull: info.codecFull,
+        layout: info.layout,
+        lossless: info.lossless,
+        origin: guess.origin ?? "",
+        ready: true,
+        on: track.index === audioTrack,
+        busy: false,
+        title: track.title,
+        pick: () => chooseAudioTrack(track),
+      };
+      const twin =
+        info.author || info.kind === "original"
+          ? rows.findIndex((other) => sameVoice(other.voice, info) && other.codec === info.codec && other.layout === info.layout)
+          : -1;
+      if (twin < 0) rows.push(row);
+      else if (row.on) rows[twin] = row;
+    }
+    if (!usingMpv || !source) return rows;
+    for (const option of looseAudioFiles) {
+      const known = audioFileGuess(option.file.path, videoPath, fileGuess);
+      const voice: VoiceLike = { code: known.code ?? "", kind: known.kind ?? null, author: known.author ?? "" };
+      if (voice.author && rows.some((other) => sameVoice(other.voice, voice))) continue;
+      const key = `file:${option.file.index}`;
+      rows.push({
+        key,
+        voice,
+        name: audioFileFace(option.file.path, videoPath, locale, fileGuess).name,
+        codec: "",
+        codecFull: "",
+        layout: "",
+        lossless: false,
+        origin: t("player.track.separateFile"),
+        ready: false,
+        on: false,
+        busy: audioBusy === key,
+        title: option.file.path,
+        pick: () => void attachAudio(source.infoHash, option.file.index, key, known, false, false),
+      });
+    }
+    if (!pickTarget) return rows;
+    for (const candidate of otherReleases) {
+      (candidate.voiceTracks ?? []).forEach((item, index) => {
+        if (item.kind === "original") return;
+        const voice: VoiceLike = { code: item.language, kind: item.kind, author: item.author };
+        if (rows.some((other) => sameVoice(other.voice, voice))) return;
+        if (!voice.author && rows.some((other) => other.voice.code === voice.code && (!other.voice.kind || other.voice.kind === voice.kind))) return;
+        const key = `borrow:${candidate.id}:${index}`;
+        rows.push({
+          key,
+          voice,
+          name: voiceFace(item, locale).name,
+          codec: "",
+          codecFull: "",
+          layout: "",
+          lossless: false,
+          origin: t("player.track.otherRelease"),
+          ready: false,
+          on: false,
+          busy: audioBusy === key,
+          health: candidate.health,
+          title: candidate.title,
+          pick: () => void borrowVoice(candidate, item, key),
+        });
+      });
+    }
+    return rows;
+  };
+
+  useEffect(() => {
+    outside.current = {};
+    if (!externalAudio) return;
+    setExternalAudio(null);
+    setAudioDelay(delayBeforeBorrow.current);
+  }, [source?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const nextPicked = useRef<string | null>(null);
+  useEffect(() => {
+    if (!settings.autoPick || !settings.autoNextEpisode || !nextCandidate || nextEpisode || !titleDetails.data) return;
+    if (!(duration > 0) || duration - current > nextPickAheadSeconds) return;
+    const key = unitKey("tv", session.title.id, nextCandidate.season, nextCandidate.episode);
+    if (nextPicked.current === key) return;
+    nextPicked.current = key;
+    const details = titleDetails.data;
+    void autoPlay({
+      title: session.title,
+      originalTitle: details.originalTitle,
+      originalLanguage: details.language,
+      seasons: details.seasons,
+      season: nextCandidate.season,
+      episode: nextCandidate.episode,
+      layout: playerLayout.data ?? null,
+      anime: details.isAnime,
+    }).catch(() => null);
+  }, [current, duration, nextCandidate, nextEpisode, settings.autoPick, settings.autoNextEpisode, titleDetails.data]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const toggleFullscreen = useCallback(() => {
     setFullscreen((value) => {
       void setWindowFullscreen(!value, rootRef.current);
+      if (onPage) usePlayerPlacement.getState().setExpanded(!value);
       return !value;
     });
-  }, []);
+  }, [onPage]);
+
+  const toggleTheater = useCallback(() => {
+    if (!onPage || fullscreen) return;
+    const { expanded, setExpanded } = usePlayerPlacement.getState();
+    setExpanded(!expanded);
+  }, [onPage, fullscreen]);
 
   const [mini, setMini] = useState(false);
   const toggleMini = useCallback(() => {
+    if (onPage) usePlayerPlacement.getState().setExpanded(!mini);
     setMini((value) => {
       if (!value) {
         setFullscreen(false);
@@ -1134,6 +1677,55 @@ function PlayerView({ session }: { session: PlayerSession }) {
     wakeControls();
     return () => clearTimeout(hideTimer.current);
   }, [wakeControls]);
+
+  const [askStill, setAskStill] = useState(() => useSettings.getState().stillWatching && unattendedEpisodes >= stillWatchingAfter);
+  const attended = useCallback(() => {
+    unattendedEpisodes = 0;
+  }, []);
+  useEffect(() => {
+    if (askStill && metadataReady) videoRef.current?.pause();
+  }, [askStill, metadataReady]);
+  const stillHere = () => {
+    unattendedEpisodes = 0;
+    setAskStill(false);
+    void videoRef.current?.play().catch(() => undefined);
+  };
+
+  const holdSpeed = useRef<{ timer: ReturnType<typeof setTimeout> | undefined; active: boolean; rate: number }>({ timer: undefined, active: false, rate: 1 });
+  useEffect(() => {
+    const release = (event: KeyboardEvent) => {
+      if (event.key !== " " && event.code !== "Space") return;
+      const hold = holdSpeed.current;
+      if (hold.timer === undefined && !hold.active) return;
+      clearTimeout(hold.timer);
+      hold.timer = undefined;
+      if (hold.active) {
+        hold.active = false;
+        if (videoRef.current) videoRef.current.playbackRate = hold.rate;
+        showHint(t("player.hint.speed", { rate: hold.rate }));
+      } else {
+        togglePlay();
+      }
+    };
+    window.addEventListener("keyup", release);
+    return () => {
+      window.removeEventListener("keyup", release);
+      clearTimeout(holdSpeed.current.timer);
+    };
+  }, [togglePlay, showHint]);
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root || placement !== "full") return;
+    const onWheel = (event: WheelEvent) => {
+      if ((event.target as HTMLElement).closest(".player__menu, .player__panel, .player__episodes, .player__stats-panel")) return;
+      event.preventDefault();
+      changeVolume(event.deltaY < 0 ? wheelVolumeStep : -wheelVolumeStep);
+      wakeControls();
+    };
+    root.addEventListener("wheel", onWheel, { passive: false });
+    return () => root.removeEventListener("wheel", onWheel);
+  }, [placement, changeVolume, wakeControls]);
 
   const controlsShown = controlsVisible || !playing || menu !== null || failed;
   const skipKey = skippable ? `${skippable.kind}:${skippable.start}` : null;
@@ -1243,7 +1835,32 @@ function PlayerView({ session }: { session: PlayerSession }) {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.ctrlKey || event.metaKey || event.altKey) return;
-      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement) return;
+      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLSelectElement || event.target instanceof HTMLTextAreaElement) return;
+      if (placement !== "full" && !hovered.current && !event.key.startsWith("Media")) return;
+      if (document.querySelector(".backdrop")) return;
+      attended();
+      if (askStill) {
+        event.preventDefault();
+        stillHere();
+        return;
+      }
+      if (event.key === " ") {
+        event.preventDefault();
+        if (event.repeat) return;
+        const hold = holdSpeed.current;
+        clearTimeout(hold.timer);
+        hold.timer = setTimeout(() => {
+          hold.timer = undefined;
+          const element = videoRef.current;
+          if (!element || element.paused) return;
+          hold.active = true;
+          hold.rate = element.playbackRate;
+          element.playbackRate = holdSpeedRate;
+          showHint(t("player.hint.holdSpeed", { rate: holdSpeedRate }));
+        }, holdSpeedAfterMs);
+        wakeControls();
+        return;
+      }
       const video = videoRef.current;
       const stepRate = (direction: 1 | -1) => {
         const index = playbackRates.indexOf(rate) + direction;
@@ -1254,7 +1871,6 @@ function PlayerView({ session }: { session: PlayerSession }) {
         showHint(t("player.hint.speed", { rate: next }));
       };
       const handlers: Record<string, () => void> = {
-        " ": togglePlay,
         k: togglePlay,
         ArrowLeft: () => seekBy(event.shiftKey ? -longSeekStepSeconds : -seekStepSeconds),
         ArrowRight: () => seekBy(event.shiftKey ? longSeekStepSeconds : seekStepSeconds),
@@ -1265,6 +1881,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
         Home: () => seekTo(0),
         End: () => seekTo(filmLength()),
         f: toggleFullscreen,
+        t: toggleTheater,
         i: toggleMini,
         m: () => setMuted((value) => !value),
         n: playNext,
@@ -1291,6 +1908,8 @@ function PlayerView({ session }: { session: PlayerSession }) {
           else if (onlinePanel) setOnlinePanel(false);
           else if (menu) setMenu(null);
           else if (fullscreen) toggleFullscreen();
+          else if (placement !== "full") return;
+          else if (onPage) usePlayerPlacement.getState().setExpanded(false);
           else close();
         },
       };
@@ -1301,7 +1920,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
         wakeControls();
         return;
       }
-      const sameKeys: Record<string, string> = { "и": "b", "у": "e", "а": "f", "ь": "m", "л": "k", "о": "j", "д": "l", "т": "n", "с": "c", "ф": "a", "х": "[", "ъ": "]", "п": "g", "р": "h", "ы": "s", "ш": "i", "м": "v", "к": "r", "з": "p", "в": "d" };
+      const sameKeys: Record<string, string> = { "и": "b", "у": "e", "а": "f", "ь": "m", "л": "k", "о": "j", "д": "l", "т": "n", "с": "c", "ф": "a", "х": "[", "ъ": "]", "п": "g", "р": "h", "ы": "s", "ш": "i", "е": "t", "м": "v", "к": "r", "з": "p", "в": "d" };
       const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
       const asksForHelp = event.shiftKey && event.code === "Slash";
       const extra = extraKeys.current;
@@ -1315,7 +1934,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [togglePlay, seekBy, seekTo, changeVolume, toggleFullscreen, playNext, close, menu, fullscreen, wakeControls, rate, showHint, subtitleDelay, skippable, toggleMini, onlinePanel, hotkeysShown, statsShown, previousEpisode, episodesShown]);
+  }, [togglePlay, seekBy, seekTo, changeVolume, toggleFullscreen, toggleTheater, playNext, close, menu, fullscreen, wakeControls, rate, showHint, subtitleDelay, skippable, toggleMini, onlinePanel, hotkeysShown, statsShown, previousEpisode, episodesShown, placement, onPage, askStill, attended]);
 
 
   useEffect(() => {
@@ -1467,6 +2086,8 @@ function PlayerView({ session }: { session: PlayerSession }) {
   const formatDelay = (seconds: number) =>
     t("player.delay.value", { seconds: `${seconds > 0 ? "+" : seconds < 0 ? "−" : ""}${Math.abs(seconds).toLocaleString(locale, { minimumFractionDigits: 1 })}` });
 
+  const showable = (track: SubtitleTrackInfo) => track.isText || usingMpv;
+
   const selectEmbeddedSubtitle = (track: SubtitleTrackInfo, byUser: boolean) => {
     setCues([]);
     externalSubtitle.current = null;
@@ -1555,10 +2176,11 @@ function PlayerView({ session }: { session: PlayerSession }) {
     setOnlinePanel(true);
     setOnline({ loading: true, items: null, error: "" });
     try {
-      const wanted = [preferences?.subtitleLanguage, settings.subtitleLanguage, language, "en"].filter(
+      const wanted = [preferences?.subtitleLanguage, settings.subtitleLanguage, language, "ru", "uk", "en", originalLanguage].filter(
         (code): code is string => Boolean(code) && code !== subtitlesOff,
       );
-      const languages = [...new Set(wanted)];
+      const languages = [...new Set(wanted)].slice(0, onlineLanguagesAsked);
+      setOnlineSearched(languages);
       const moviehash = isDesktop
         ? await Promise.race([
             backend.subtitleFileHash(source.infoHash, source.fileIndex).catch(() => null),
@@ -1572,18 +2194,18 @@ function PlayerView({ session }: { session: PlayerSession }) {
         languages,
         moviehash,
       });
-      const playing = releaseWords(`${source.torrentName} ${source.fileName}`);
+      const playing = `${source.torrentName} ${source.fileName}`;
       const items = found
-        .map((item) => ({ ...item, shared: sharedWords(releaseWords(item.release), playing) }))
+        .map((item) => ({ ...item, shared: releaseFit(item.release, playing) }))
         .sort(
           (a, b) =>
             Number(b.hashMatch) - Number(a.hashMatch) ||
-            Number(b.shared >= sameReleaseWords) - Number(a.shared >= sameReleaseWords) ||
+            Number(b.shared >= sameReleaseFit) - Number(a.shared >= sameReleaseFit) ||
             languages.indexOf(a.language) - languages.indexOf(b.language) ||
             b.shared - a.shared ||
             b.downloads - a.downloads,
         )
-        .map(({ shared, ...item }) => ({ ...item, sameRelease: shared >= sameReleaseWords }));
+        .map(({ shared, ...item }) => ({ ...item, sameRelease: shared >= sameReleaseFit }));
       setOnline({ loading: false, items, error: "" });
       setOnlineLanguage(languages.find((code) => items.some((item) => item.language === code)) ?? items[0]?.language ?? "");
     } catch (error) {
@@ -1693,6 +2315,19 @@ function PlayerView({ session }: { session: PlayerSession }) {
   }, [media.tracks, metadataReady, originalLanguage, originalSettled, probeSettled, applyAudioTrack]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const chooseAudioTrack = (track: AudioTrackInfo) => {
+    const next = track.externalFile ? outside.current[track.externalFile] : undefined;
+    if (externalAudio && externalAudio.url !== track.externalFile) {
+      const left = outside.current[externalAudio.url];
+      if (left) left.delay = audioDelay;
+    }
+    if (track.externalFile && next) {
+      if (!externalAudio) delayBeforeBorrow.current = audioDelay;
+      if (externalAudio?.url !== track.externalFile) setAudioDelay(next.delay);
+      setExternalAudio({ key: next.key, url: track.externalFile });
+    } else if (externalAudio) {
+      setExternalAudio(null);
+      setAudioDelay(delayBeforeBorrow.current);
+    }
     pickedAudio.current = true;
     applyAudioTrack(track.index);
     setMenu(null);
@@ -1714,8 +2349,9 @@ function PlayerView({ session }: { session: PlayerSession }) {
     const heard = audioTrack !== null ? languageCode(media.tracks?.audio[audioTrack]?.language) : "";
     if (!asked && heard === wanted) return;
 
-    const embedded = (media.tracks?.subtitles ?? []).filter((track) => track.isText && languageCode(track.language) === wanted);
-    const full = embedded.find((track) => !showsSignsOnly(track)) ?? embedded[0];
+    const embedded = (media.tracks?.subtitles ?? []).filter((track) => showable(track) && languageCode(track.language) === wanted);
+    const full =
+      embedded.find((track) => track.isText && !showsSignsOnly(track)) ?? embedded.find((track) => !showsSignsOnly(track)) ?? embedded[0];
     const file = subtitleOptions.find((option) => option.languageCode === wanted);
     if (full) selectEmbeddedSubtitle(full, false);
     else if (file) void loadTorrentSubtitle(file, false);
@@ -1777,6 +2413,55 @@ function PlayerView({ session }: { session: PlayerSession }) {
     return () => clearInterval(timer);
   }, [usingMpv, settings.autoSimplify, playing, buffering, sessionQuality]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const diagnosticsDrops = useRef(-1);
+  useEffect(() => {
+    if (!metadataReady || !source) return;
+    const torrent = useTorrents.getState().byHash[source.infoHash];
+    const onDisk = Math.round(fileProgress(torrent, source.fileIndex) * 100);
+    const mode = torrent?.files.some((file) => file.included) ? "download" : "online";
+    void backend.appLog(
+      `player: start ${session.unitKey} via ${usingMpv ? "mpv" : "html"} file="${source.fileName}" size=${Math.round(source.size / 1048576)}MB quality=${source.quality || "-"} torrent=${source.infoHash.slice(0, 8)} mode=${mode} on_disk=${onDisk}% video=${media.tracks?.videoCodec || "-"} subtitles=${(media.tracks?.subtitles ?? []).map((track) => `${track.language || "?"}:${track.codec || "?"}`).join(",") || "-"}`,
+    );
+    diagnosticsDrops.current = -1;
+  }, [metadataReady, source?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!usingMpv || !playing) return;
+    const timer = setInterval(() => {
+      void mpv
+        .stats()
+        .then((stats) => {
+          const dropped = Number(stats["frame-drop-count"] ?? 0) + Number(stats["decoder-frame-drop-count"] ?? 0);
+          const fresh = diagnosticsDrops.current < 0 ? 0 : Math.max(0, dropped - diagnosticsDrops.current);
+          diagnosticsDrops.current = dropped;
+          const number = (name: string, digits = 0) => {
+            const value = Number(stats[name]);
+            return Number.isFinite(value) ? value.toFixed(digits) : "-";
+          };
+          void backend.appLog(
+            `player: health at ${Math.round(filmTime())}s ${stats["video-codec"] ?? "-"} ${number("width")}x${number("height")} hwdec=${stats["hwdec-current"] ?? "-"} vo=${stats["current-vo"] ?? "-"} fps=${number("estimated-vf-fps", 1)}/${number("container-fps", 1)} display=${number("display-fps", 1)} bitrate=${Math.round(Number(stats["video-bitrate"] ?? 0) / 1000)}kbps cache_ahead=${number("demuxer-cache-duration", 1)}s dropped_last_30s=${fresh} dropped_total=${dropped} quality=${sessionQuality}`,
+          );
+        })
+        .catch(() => undefined);
+    }, diagnosticsEveryMs);
+    return () => clearInterval(timer);
+  }, [usingMpv, playing, sessionQuality]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!buffering || !metadataReady || !source || playedSeconds.current < 5) return;
+    const startedAt = Date.now();
+    const position = Math.round(filmTime());
+    const afterSeek = startedAt - lastSeekAt.current < 4000;
+    return () => {
+      const waited = (Date.now() - startedAt) / 1000;
+      if (waited < stallLogSeconds) return;
+      const torrent = useTorrents.getState().byHash[source.infoHash];
+      void backend.appLog(
+        `player: waited ${waited.toFixed(1)}s for video at ${position}s ${afterSeek ? "after a seek" : "while playing"} torrent=${source.infoHash.slice(0, 8)} on_disk=${Math.round(fileProgress(torrent, source.fileIndex) * 100)}% speed=${Math.round((torrent?.downloadSpeed ?? 0) / 1024)}KB/s peers=${torrent?.peers ?? 0}`,
+      );
+    };
+  }, [buffering, metadataReady]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const stalls = useRef<number[]>([]);
   useEffect(() => {
     stalls.current = [];
@@ -1835,6 +2520,12 @@ function PlayerView({ session }: { session: PlayerSession }) {
     saveProgress();
     closePlayer();
     useUi.getState().openAddSource({ target: sourceTarget(episode.season) });
+  };
+
+  const findOther = () => {
+    saveProgress();
+    closePlayer();
+    useUi.getState().openAddSource({ target: sourceTarget(session.season ?? 1) });
   };
 
   const findLighter = (filter: string) => {
@@ -1971,9 +2662,21 @@ function PlayerView({ session }: { session: PlayerSession }) {
   };
 
 
+  const hadSource = useRef(false);
+  useEffect(() => {
+    if (source) {
+      hadSource.current = true;
+      return;
+    }
+    if (!hadSource.current) return;
+    hadSource.current = false;
+    toast(t("player.sourceGone"), "info");
+    closePlayer();
+  }, [source?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
   if (!source) {
     return (
-      <div className="player">
+      <div className={`player is-${placement}`}>
         <div className="player__center">
           <TriangleAlert size={40} />
           <strong>{t("player.noSource")}</strong>
@@ -2010,11 +2713,20 @@ function PlayerView({ session }: { session: PlayerSession }) {
   return (
     <div
       ref={rootRef}
-      className={`player ${controlsShown ? "" : "is-idle"} ${mini ? "is-mini" : ""}`}
+      className={`player is-${placement} ${controlsShown ? "" : "is-idle"} ${mini || placement === "docked" ? "is-mini" : ""}`}
       onMouseMove={wakeControls}
-      onMouseDown={wakeControls}
+      onMouseDown={() => {
+        attended();
+        wakeControls();
+      }}
+      onMouseEnter={() => {
+        hovered.current = true;
+      }}
+      onMouseLeave={() => {
+        hovered.current = false;
+      }}
     >
-      {usingMpv && <div className="player__surface" onClick={togglePlay} onDoubleClick={toggleFullscreen} />}
+      {usingMpv && <div className="player__surface" onClick={placement === "docked" ? onReturn : togglePlay} onDoubleClick={toggleFullscreen} />}
 
       {url && mpvChoice.mode === "unavailable" && (
         <video
@@ -2024,7 +2736,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
           crossOrigin="anonymous"
           style={pictureStyle}
           autoPlay
-          onClick={togglePlay}
+          onClick={placement === "docked" ? onReturn : togglePlay}
           onDoubleClick={toggleFullscreen}
           onPlay={handlers.onPlay}
           onPause={handlers.onPause}
@@ -2055,11 +2767,45 @@ function PlayerView({ session }: { session: PlayerSession }) {
         </div>
       )}
 
-      <div className="player__top" data-tauri-drag-region>
-        <button className="player__back" aria-label={t("common.back")} onClick={close}>
+      {askStill && (
+        <div className="player__still">
+          <strong>{t("player.still.title")}</strong>
+          <button className="button button--primary" onClick={stillHere}>
+            {t("player.still.yes")}
+          </button>
+        </div>
+      )}
+      {placement !== "full" && (
+        <div className="player__place">
+          {placement === "docked" && (
+            <button className="player__place-button" aria-label={t("player.place.back")} title={t("player.place.back")} onClick={onReturn}>
+              <ArrowLeft size={16} />
+            </button>
+          )}
+          {placement === "inline" && (
+            <button className="player__place-button" aria-label={t("player.place.theater")} title={t("player.place.theater")} onClick={toggleTheater}>
+              <Maximize size={15} />
+            </button>
+          )}
+          <button className="player__place-button" aria-label={t("player.place.close")} title={t("player.place.close")} onClick={close}>
+            <X size={16} />
+          </button>
+        </div>
+      )}
+      <div className="player__top" data-tauri-drag-region={placement === "full" ? true : undefined}>
+        <button
+          className="player__back"
+          aria-label={t("common.back")}
+          onClick={() => {
+            if (!onPage) close();
+            else if (fullscreen) toggleFullscreen();
+            else if (mini) toggleMini();
+            else usePlayerPlacement.getState().setExpanded(false);
+          }}
+        >
           <ArrowLeft size={22} />
         </button>
-        <div className="player__title" data-tauri-drag-region>
+        <div className="player__title" data-tauri-drag-region={placement === "full" ? true : undefined}>
           <strong>{session.title.title}</strong>
           <span>{subtitle}</span>
         </div>
@@ -2072,7 +2818,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
             </span>
           </div>
         )}
-        {!fullscreen && <WindowButtons />}
+        {!fullscreen && placement === "full" && <WindowButtons />}
       </div>
 
       <div className="player__center">
@@ -2231,12 +2977,23 @@ function PlayerView({ session }: { session: PlayerSession }) {
           {online.items && online.items.length > 0 && (
             <>
               <div className="player__panel-languages">
-                {[...new Set(online.items.map((item) => item.language))].map((code) => (
-                  <button key={code} className={`chip ${code === onlineLanguage ? "is-active" : ""}`} onClick={() => setOnlineLanguage(code)}>
-                    {languageName(code, locale) || code}
-                    <small>{online.items?.filter((item) => item.language === code).length}</small>
-                  </button>
-                ))}
+                {[...new Set([...onlineSearched, ...online.items.map((item) => item.language)])].map((code) => {
+                  const count = online.items?.filter((item) => item.language === code).length ?? 0;
+                  const name = languageName(code, locale) || code;
+                  return (
+                    <button
+                      key={code}
+                      className={`chip ${code === onlineLanguage ? "is-active" : ""}`}
+                      disabled={count === 0}
+                      title={count === 0 ? t("player.subtitles.online.noneIn", { language: name }) : undefined}
+                      onClick={() => setOnlineLanguage(code)}
+                    >
+                      <LanguageFlag code={languageCode(code) || code} />
+                      {name.charAt(0).toLocaleUpperCase(locale) + name.slice(1)}
+                      <small>{count}</small>
+                    </button>
+                  );
+                })}
               </div>
               <div className="player__panel-list">
                 {online.items
@@ -2284,7 +3041,16 @@ function PlayerView({ session }: { session: PlayerSession }) {
               {t("player.slow.switch", { quality: item.quality })}
             </button>
           ))}
-          {lighterSources.length === 0 && lighterFilter && (
+          {lighterSources.length === 0 &&
+            otherReleases
+              .filter((candidate) => candidate.health === "good")
+              .slice(0, 1)
+              .map((candidate) => (
+                <button key={candidate.id} className="button button--small button--primary" disabled={releaseBusy !== null} onClick={() => void switchRelease(candidate)}>
+                  {t("player.slow.release", { quality: candidate.resolution || candidate.quality || t("common.video"), seeds: candidate.seeds })}
+                </button>
+              ))}
+          {lighterSources.length === 0 && !otherReleases.some((candidate) => candidate.health === "good") && lighterFilter && (
             <button className="button button--small button--primary" onClick={() => findLighter(lighterFilter)}>
               {t("player.slow.find", { quality: lighterFilter === "1080" ? "1080p" : "720p" })}
             </button>
@@ -2478,7 +3244,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
         </div>
 
         {menu === "quality" && (
-          <div className="player__menu">
+          <div className="player__menu player__menu--wide">
             <h3>{t("player.quality")}</h3>
             {sources.map((item) => (
               <QualityOption
@@ -2486,9 +3252,30 @@ function PlayerView({ session }: { session: PlayerSession }) {
                 source={item}
                 active={item.id === source.id}
                 resolution={item.id === source.id ? resolution : ""}
+                release={releaseOf(item)}
+                seeds={seedsOf(item)}
+                series={session.season !== undefined}
+                locale={locale}
                 onPick={() => switchSource(item)}
               />
             ))}
+            {pickTarget && (
+              <>
+                <h3>{t("player.release.others")}</h3>
+                <ReleaseList
+                  entry={pickEntry}
+                  releases={otherReleases}
+                  busy={releaseBusy}
+                  locale={locale}
+                  series={session.season !== undefined}
+                  onPick={(candidate) => void switchRelease(candidate)}
+                />
+                <button className="player__menu-item" onClick={() => findOther()}>
+                  <i />
+                  <span>{t("stage.pick.manual")}</span>
+                </button>
+              </>
+            )}
             {externalPlayer && (
               <button className="player__menu-item" onClick={() => void openExternally()}>
                 <ExternalLink size={15} />
@@ -2498,21 +3285,53 @@ function PlayerView({ session }: { session: PlayerSession }) {
           </div>
         )}
         {menu === "audio" && (
-          <div className="player__menu">
+          <div className="player__menu player__menu--wide">
             <h3>{t("player.audioTrack")}</h3>
-            {media.tracks && media.tracks.audio.length > 0
-              ? media.tracks.audio.map((option) => (
-                  <button key={option.index} className="player__menu-item" onClick={() => chooseAudioTrack(option)}>
-                    {option.index === audioTrack ? <Check size={15} /> : <i />}
-                    <span>{audioTrackLabel(option, locale)}</span>
-                  </button>
-                ))
-              : audio.options.map((option) => (
-                  <button key={option.index} className="player__menu-item" onClick={() => selectAudio(option.index)}>
-                    {option.index === audio.selected ? <Check size={15} /> : <i />}
-                    <span>{option.label}</span>
-                  </button>
+            {media.tracks && media.tracks.audio.length > 0 ? (
+              <>
+                {soundRows().map((row) => (
+                  <TrackRow
+                    key={row.key}
+                    lead={<LanguageFlag code={row.voice.code} />}
+                    name={row.name}
+                    note={[voicedBy(row.voice), row.origin].filter(Boolean).join(" · ")}
+                    title={row.title}
+                    on={row.on}
+                    busy={row.busy}
+                    disabled={!row.ready && audioBusy !== null}
+                    trailing={
+                      <>
+                        {(row.codec || row.layout) && (
+                          <span className={`track__format ${row.lossless ? "is-lossless" : ""}`} title={[row.codecFull, row.layout].filter(Boolean).join(" · ")}>
+                            {row.layout && <b>{row.layout}</b>}
+                            {row.codec}
+                          </span>
+                        )}
+                        {!row.ready && !row.busy && (
+                          <span className="track__get" title={t("player.track.getHint")}>
+                            {row.health && <i className={`health health--${row.health}`} />}
+                            <Download size={13} />
+                            {t("player.track.get")}
+                          </span>
+                        )}
+                      </>
+                    }
+                    onClick={row.pick}
+                  />
                 ))}
+                {usingMpv && pickTarget && (!pickEntry || pickEntry.status === "searching") && (
+                  <div className="player__menu-note">
+                    <LoaderCircle size={14} className="spin" />
+                    {t("player.voice.searching")}
+                  </div>
+                )}
+                {usingMpv && (looseAudioFiles.length > 0 || otherReleases.length > 0) && <div className="player__menu-note">{t("player.voice.borrowNote")}</div>}
+              </>
+            ) : (
+              audio.options.map((option) => (
+                <TrackRow key={option.index} lead={<AudioLines size={16} />} name={option.label} on={option.index === audio.selected} onClick={() => selectAudio(option.index)} />
+              ))
+            )}
             <h3>{t("player.audio.mode")}</h3>
             <div className="player__menu-row player__menu-row--wrap">
               {(["off", "night", "level", "dialogue"] as const).map((mode) => (
@@ -2608,52 +3427,54 @@ function PlayerView({ session }: { session: PlayerSession }) {
           </div>
         )}
         {menu === "subtitles" && (
-          <div className="player__menu">
+          <div className="player__menu player__menu--wide">
             <h3>{t("common.subtitles")}</h3>
-            <button className="player__menu-item" onClick={disableSubtitles}>
-              {subtitleKey === null ? <Check size={15} /> : <i />}
-              <span>{t("player.subtitles.off")}</span>
-            </button>
-            {(media.tracks?.subtitles ?? [])
-              .filter((track) => track.isText)
-              .map((track) => (
-                <button key={`embedded:${track.index}`} className="player__menu-item" onClick={() => selectEmbeddedSubtitle(track, true)}>
-                  {subtitleKey === `embedded:${track.index}` ? <Check size={15} /> : <i />}
-                  <span>{embeddedSubtitleLabel(track, locale)}</span>
-                  <small>
-                    {[track.title, showsSignsOnly(track) ? t("player.subtitles.signsOnly") : "", t("player.subtitles.embedded")]
-                      .filter(Boolean)
-                      .join(" · ")}
-                  </small>
-                </button>
-              ))}
-            {subtitleOptions.map((option) => (
-              <button
-                key={option.key}
-                className="player__menu-item"
-                title={baseName(option.file.path)}
-                onClick={() => void loadTorrentSubtitle(option)}
-              >
-                {subtitleKey === option.key ? <Check size={15} /> : <i />}
-                <span>{option.label}</span>
-                <small>{option.detail}</small>
-              </button>
-            ))}
-            {subtitleKey?.startsWith("disk:") && (
-              <button className="player__menu-item">
-                <Check size={15} />
-                <span>{subtitleLabel}</span>
-              </button>
+            <TrackRow lead={<CaptionsOff size={17} />} name={t("player.subtitles.off")} on={subtitleKey === null} onClick={disableSubtitles} />
+            {(media.tracks?.subtitles ?? []).filter(showable).map((track) => {
+              const face = subtitleFace(track, locale);
+              return (
+                <TrackRow
+                  key={`embedded:${track.index}`}
+                  lead={<LanguageFlag code={face.code} />}
+                  name={face.name}
+                  note={face.note}
+                  title={track.title}
+                  on={subtitleKey === `embedded:${track.index}`}
+                  onClick={() => selectEmbeddedSubtitle(track, true)}
+                />
+              );
+            })}
+            {subtitleOptions.map((option) => {
+              const face = subtitleFileFace(option, option.file.path, videoPath, locale);
+              return (
+                <TrackRow
+                  key={option.key}
+                  lead={<LanguageFlag code={face.code} />}
+                  name={face.name}
+                  note={face.note}
+                  title={baseName(option.file.path)}
+                  on={subtitleKey === option.key}
+                  onClick={() => void loadTorrentSubtitle(option)}
+                />
+              );
+            })}
+            {subtitleKey !== null && (subtitleKey.startsWith("disk:") || subtitleKey.startsWith("online:")) && (
+              <TrackRow
+                lead={<FileText size={16} />}
+                name={subtitleLabel}
+                note={t(subtitleKey.startsWith("disk:") ? "player.track.fromDisk" : "player.track.fromInternet")}
+                on
+              />
             )}
-            <button className="player__menu-item" onClick={() => void loadSubtitleFromDisk()}>
-              <i />
-              <span>{t("player.subtitles.loadFile")}</span>
-            </button>
+            <TrackRow lead={<FolderOpen size={16} />} name={t("player.subtitles.loadFile")} onClick={() => void loadSubtitleFromDisk()} />
             {onlineSubtitlesKey && (
-              <button className="player__menu-item" onClick={() => void findOnlineSubtitles()}>
-                <i />
-                <span>{t("player.subtitles.online")}</span>
-              </button>
+              <TrackRow
+                lead={<Globe size={17} />}
+                name={t("player.subtitles.online")}
+                note={t("player.subtitles.online.note")}
+                accent
+                onClick={() => void findOnlineSubtitles()}
+              />
             )}
             {subtitleKey !== null && (
               <>
@@ -2677,27 +3498,36 @@ function PlayerView({ session }: { session: PlayerSession }) {
             {((media.tracks?.subtitles ?? []).some((track) => track.isText) || (!usingMpv && subtitleOptions.length > 0)) && (
               <>
                 <h3>{t("player.subtitles.secondary")}</h3>
-                <button className="player__menu-item" onClick={clearSecondary}>
-                  {secondary === null ? <Check size={15} /> : <i />}
-                  <span>{t("player.subtitles.off")}</span>
-                </button>
+                <TrackRow lead={<CaptionsOff size={17} />} name={t("player.subtitles.off")} on={secondary === null} onClick={clearSecondary} />
                 {(media.tracks?.subtitles ?? [])
                   .filter((track) => track.isText)
-                  .map((track) => (
-                    <button key={`second:${track.index}`} className="player__menu-item" onClick={() => chooseSecondaryEmbedded(track)}>
-                      {secondary?.key === `embedded:${track.index}` ? <Check size={15} /> : <i />}
-                      <span>{embeddedSubtitleLabel(track, locale)}</span>
-                      <small>{track.title}</small>
-                    </button>
-                  ))}
+                  .map((track) => {
+                    const face = subtitleFace(track, locale);
+                    return (
+                      <TrackRow
+                        key={`second:${track.index}`}
+                        lead={<LanguageFlag code={face.code} />}
+                        name={face.name}
+                        note={face.note}
+                        on={secondary?.key === `embedded:${track.index}`}
+                        onClick={() => chooseSecondaryEmbedded(track)}
+                      />
+                    );
+                  })}
                 {!usingMpv &&
-                  subtitleOptions.map((option) => (
-                    <button key={`second:${option.key}`} className="player__menu-item" onClick={() => void chooseSecondaryFile(option)}>
-                      {secondary?.key === option.key ? <Check size={15} /> : <i />}
-                      <span>{option.label}</span>
-                      <small>{option.detail}</small>
-                    </button>
-                  ))}
+                  subtitleOptions.map((option) => {
+                    const face = subtitleFileFace(option, option.file.path, videoPath, locale);
+                    return (
+                      <TrackRow
+                        key={`second:${option.key}`}
+                        lead={<LanguageFlag code={face.code} />}
+                        name={face.name}
+                        note={face.note}
+                        on={secondary?.key === option.key}
+                        onClick={() => void chooseSecondaryFile(option)}
+                      />
+                    );
+                  })}
               </>
             )}
             <h3>{t("player.subtitles.look")}</h3>
@@ -2745,32 +3575,101 @@ function QualityOption({
   source,
   active,
   resolution,
+  release,
+  seeds,
+  series,
+  locale,
   onPick,
 }: {
   source: Source;
   active: boolean;
   resolution: string;
+  release: PickCandidate | undefined;
+  seeds: number | null;
+  series: boolean;
+  locale: string;
   onPick: () => void;
 }) {
   const progress = useTorrents((state) => fileProgress(state.byHash[source.infoHash], source.fileIndex));
-  const { t } = useT();
+  const peers = useTorrents((state) => {
+    const torrent = state.byHash[source.infoHash];
+    return torrent?.state === "live" ? torrent.peers : null;
+  });
+  const { t, tn } = useT();
+  const kind = source.tags.join(" ");
+  const badge = pictureBadge(source.quality, kind);
+  const origin = sourceName(source.tags.filter((tag) => !pictureMarks.includes(tag)).join(" "));
+  const loaded = progress >= 1 ? t("common.downloaded") : t("release.loaded", { percent: Math.floor(progress * 100) });
+  const connected = peers !== null ? t("release.connected", { count: peers }) : "";
+  const size = series ? t("release.perEpisode", { size: formatBytes(source.size) }) : formatBytes(source.size);
   return (
-    <button className="player__menu-item" onClick={onPick}>
-      {active ? <Check size={15} /> : <i />}
-      <span>
-        {source.quality || t("common.video")}
-        {source.tags.length > 0 && <em> {source.tags.join(" · ")}</em>}
+    <button className={`release-row ${active ? "is-on" : ""}`} title={source.torrentName} onClick={onPick}>
+      <span className={`release-row__badge release-row__badge--${badge.tone}`}>{badge.label}</span>
+      <span className="release-row__body">
+        <span className="release-row__head">
+          <strong title={origin.note}>{origin.name || t("common.video")}</strong>
+          {source.tags
+            .filter((tag) => pictureMarks.includes(tag))
+            .map((mark) => (
+              <em key={mark}>{mark}</em>
+            ))}
+          <span className="release-row__size">{[size, resolution].filter(Boolean).join(" · ")}</span>
+        </span>
+        <ReleaseVoices voices={release?.voiceTracks ?? []} locale={locale} />
+        <span className="release-row__state">
+          {active && <Check size={13} />}
+          {[active ? t("release.now") : "", loaded, seeds !== null ? connected : ""].filter(Boolean).join(" · ")}
+        </span>
       </span>
-      <small>
-        {resolution && `${resolution} · `}
-        {formatBytes(source.size)} · {progress >= 1 ? t("common.downloaded") : `${Math.floor(progress * 100)}%`}
-      </small>
+      {seeds !== null ? (
+        <span className={`release-row__seeds release-row__seeds--${healthOf(seeds)}`} title={tn("stage.pick.seeds", seeds)}>
+          <span>
+            <ArrowUp size={13} />
+            {seeds.toLocaleString(locale)}
+          </span>
+          <small>{t("release.seeds.label")}</small>
+        </span>
+      ) : peers !== null ? (
+        <span className="release-row__seeds release-row__seeds--live" title={t("release.connected.note")}>
+          <span>
+            <Users size={13} />
+            {peers.toLocaleString(locale)}
+          </span>
+          <small>{t("release.connected.label")}</small>
+        </span>
+      ) : (
+        <span className="release-row__seeds" />
+      )}
     </button>
   );
 }
 
 export function Player() {
   const session = useUi((state) => state.player);
+  const onPage = useSettings((state) => state.playerPlacement === "page");
+  const placementState = usePlayerPlacement();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const titleKey = session ? `${session.title.type}:${session.title.id}` : "";
+  const placement = session ? placementFor(placementState, titleKey, onPage) : "full";
+  const host = usePlayerHost(session !== null, placement);
+  const titlePath = session ? `/title/${session.title.type}/${session.title.id}` : "";
+  const season = session?.season;
+
+  const toTitle = useCallback(() => {
+    if (!titlePath) return;
+    if (location.pathname !== titlePath) navigate(season !== undefined ? `${titlePath}?s=${season}` : titlePath);
+    usePlayerPlacement.getState().requestFocus();
+  }, [titlePath, season, location.pathname, navigate]);
+
+  useEffect(() => {
+    if (!titleKey) {
+      usePlayerPlacement.getState().setExpanded(false);
+      return;
+    }
+    if (onPage && location.pathname !== titlePath) navigate(season !== undefined ? `${titlePath}?s=${season}` : titlePath);
+  }, [titleKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
   if (!session) return null;
-  return <PlayerView key={session.unitKey} session={session} />;
+  return createPortal(<PlayerView key={session.unitKey} session={session} placement={placement} onReturn={toTitle} />, host);
 }

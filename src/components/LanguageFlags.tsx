@@ -1,5 +1,5 @@
-import { useT } from "../lib/i18n";
-import { appLanguages, languageName, type AppLanguage } from "../lib/languages";
+import { languageName, type AppLanguage } from "../lib/languages";
+import { LanguageFlag } from "./LanguageFlag";
 
 export function FlagArt({ language }: { language: AppLanguage }) {
   if (language === "uk") {
@@ -31,20 +31,15 @@ export function FlagArt({ language }: { language: AppLanguage }) {
 }
 
 export function LanguageFlags({ available, locale }: { available: readonly string[]; locale: string }) {
-  const { t } = useT();
+  const codes = [...new Set(available.filter(Boolean))];
+  if (codes.length === 0) return null;
   return (
     <span className="language-flags">
-      {appLanguages.map((language) => {
-        const present = available.includes(language);
-        const name = languageName(language, locale);
-        const capitalized = `${name.charAt(0).toUpperCase()}${name.slice(1)}`;
+      {codes.map((code) => {
+        const name = languageName(code, locale);
         return (
-          <span
-            key={language}
-            className={`language-flags__flag ${present ? "is-present" : ""}`}
-            title={present ? t("language.available", { language: capitalized }) : t("language.missing", { language: capitalized })}
-          >
-            <FlagArt language={language} />
+          <span key={code} className="language-flags__flag" title={`${name.charAt(0).toUpperCase()}${name.slice(1)}`}>
+            <LanguageFlag code={code} />
           </span>
         );
       })}

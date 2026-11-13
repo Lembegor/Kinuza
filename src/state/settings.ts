@@ -36,6 +36,9 @@ export interface Settings {
   muted: boolean;
   subtitleScale: number;
   autoNextEpisode: boolean;
+  playerPlacement: "page" | "window";
+  autoPick: boolean;
+  stillWatching: boolean;
   soundSegments: boolean;
   smoothMotion: boolean;
   preferredQuality: number;
@@ -78,6 +81,9 @@ const defaults: Settings = {
   muted: false,
   subtitleScale: 1,
   autoNextEpisode: true,
+  playerPlacement: "page",
+  autoPick: true,
+  stillWatching: false,
   soundSegments: true,
   smoothMotion: false,
   preferredQuality: 0,

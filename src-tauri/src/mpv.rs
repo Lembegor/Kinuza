@@ -3,7 +3,7 @@
 use std::{
     path::{Path, PathBuf},
     process::Stdio,
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering},
     time::Duration,
 };
 
@@ -129,6 +129,8 @@ pub struct MpvState {
     downloaded_bytes: AtomicU64,
     total_bytes: AtomicU64,
     player: Mutex<Option<Player>>,
+    surface: AtomicIsize,
+    placed: std::sync::Mutex<Option<[i32; 4]>>,
 }
 
 type Replies = Arc<std::sync::Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>;
@@ -383,7 +385,7 @@ async fn spawn(_app: &AppHandle, _data_dir: &Path) -> anyhow::Result<Player> {
 #[cfg(windows)]
 async fn spawn(app: &AppHandle, data_dir: &Path) -> anyhow::Result<Player> {
     let executable = executable(app, data_dir).ok_or_else(|| anyhow!("mpv_missing"))?;
-    let window = main_window_handle(app)?;
+    let window = video_surface(app).await?;
     let pipe = pipe_name();
     let mut command = Command::new(&executable);
     command.args(mpv_arguments(window, &pipe));
@@ -453,15 +455,82 @@ async fn spawn(app: &AppHandle, data_dir: &Path) -> anyhow::Result<Player> {
 
 #[cfg(windows)]
 fn place_below_interface(app: &AppHandle) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowExW, SetWindowPos, HWND_BOTTOM, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE};
-    let Ok(parent) = main_window_handle(app) else { return };
-    let class: Vec<u16> = "mpv".encode_utf16().chain(std::iter::once(0)).collect();
-    unsafe {
-        let child = FindWindowExW(parent as _, std::ptr::null_mut(), class.as_ptr(), std::ptr::null());
-        if !child.is_null() {
-            SetWindowPos(child, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowPos, HWND_BOTTOM, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE};
+    let surface = app.state::<MpvState>().surface.load(Ordering::Relaxed);
+    if surface != 0 {
+        unsafe {
+            SetWindowPos(surface as _, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
         }
     }
+}
+
+#[cfg(windows)]
+fn create_surface(parent: isize) -> isize {
+    use windows_sys::Win32::{
+        Foundation::RECT,
+        UI::WindowsAndMessaging::{CreateWindowExW, GetClientRect, SetWindowPos, HWND_BOTTOM, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WS_CHILD, WS_CLIPCHILDREN, WS_VISIBLE},
+    };
+    const BLACK_FILL: u32 = 0x0004;
+    let class: Vec<u16> = "STATIC".encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        let mut area = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        GetClientRect(parent as _, &mut area);
+        let surface = CreateWindowExW(
+            0,
+            class.as_ptr(),
+            std::ptr::null(),
+            WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | BLACK_FILL,
+            0,
+            0,
+            area.right.max(1),
+            area.bottom.max(1),
+            parent as _,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null(),
+        );
+        if !surface.is_null() {
+            SetWindowPos(surface, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+        surface as isize
+    }
+}
+
+#[cfg(windows)]
+async fn video_surface(app: &AppHandle) -> anyhow::Result<isize> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::IsWindow;
+    let known = app.state::<MpvState>().surface.load(Ordering::Relaxed);
+    if known != 0 && unsafe { IsWindow(known as _) } != 0 {
+        return Ok(known);
+    }
+    let parent = main_window_handle(app)?;
+    let (made, waiting) = oneshot::channel();
+    app.run_on_main_thread(move || {
+        let _ = made.send(create_surface(parent));
+    })?;
+    let surface = waiting.await.context("the main window did not answer")?;
+    if surface == 0 {
+        bail!("could not make a window for the video");
+    }
+    let state = app.state::<MpvState>();
+    state.surface.store(surface, Ordering::Relaxed);
+    let placed = state.placed.lock().ok().and_then(|placed| *placed);
+    if let Some(rect) = placed {
+        place_surface(surface, rect);
+    }
+    Ok(surface)
+}
+
+fn place_surface(surface: isize, rect: [i32; 4]) {
+    #[cfg(windows)]
+    if surface != 0 {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_NOACTIVATE, SWP_NOZORDER};
+        unsafe {
+            SetWindowPos(surface as _, std::ptr::null_mut(), rect[0], rect[1], rect[2], rect[3], SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = (surface, rect);
 }
 
 #[cfg(not(windows))]
@@ -531,6 +600,7 @@ fn allowed_command(command: &[Value], stream_base_url: &str, grants: &FileGrants
             from_our_server && command.len() <= 3 && flag_ok
         }
         Some("sub-add") => command.len() <= 5 && text(1).is_some_and(|path| grants.may_read(Path::new(path))),
+        Some("audio-add") => command.len() <= 4 && text(1).is_some_and(|url| url.starts_with(&format!("{stream_base_url}/"))),
         _ => false,
     }
 }
@@ -565,6 +635,18 @@ pub async fn mpv_set(app: AppHandle, state: State<'_, AppState>, mpv: State<'_, 
         return Err("mpv_property_refused".to_owned());
     }
     send(&app, &mpv, &state.data_dir, json!(["set_property", name, value])).await.map(|_| ())
+}
+
+#[tauri::command]
+pub fn mpv_place(mpv: State<'_, MpvState>, x: f64, y: f64, width: f64, height: f64) {
+    if ![x, y, width, height].iter().all(|value| value.is_finite()) {
+        return;
+    }
+    let rect = [x.round() as i32, y.round() as i32, (width.round() as i32).max(1), (height.round() as i32).max(1)];
+    if let Ok(mut placed) = mpv.placed.lock() {
+        *placed = Some(rect);
+    }
+    place_surface(mpv.surface.load(Ordering::Relaxed), rect);
 }
 
 #[tauri::command]

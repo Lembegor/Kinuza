@@ -193,6 +193,7 @@ export class MpvVideo {
         title: track.title ?? "",
         isDefault: track.default ?? false,
         isOriginal: false,
+        externalFile: track.external ? (track["external-filename"] ?? "outside") : undefined,
       })),
       subtitles: subtitles.map((track, index) => ({
         index,

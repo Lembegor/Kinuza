@@ -317,6 +317,35 @@ export default function Settings() {
         </div>
         <div className="setting">
           <div>
+            <strong>{t("settings.player.placement")}</strong>
+            <p>{t("settings.player.placement.note")}</p>
+          </div>
+          <select
+            className="select"
+            aria-label={t("settings.player.placement")}
+            value={settings.playerPlacement}
+            onChange={(event) => settings.patch({ playerPlacement: event.target.value as "page" | "window" })}
+          >
+            <option value="page">{t("settings.player.placement.page")}</option>
+            <option value="window">{t("settings.player.placement.window")}</option>
+          </select>
+        </div>
+        <div className="setting">
+          <div>
+            <strong>{t("settings.player.stillWatching")}</strong>
+            <p>{t("settings.player.stillWatching.note")}</p>
+          </div>
+          <Toggle label={t("settings.player.stillWatching")} checked={settings.stillWatching} onChange={(value) => settings.patch({ stillWatching: value })} />
+        </div>
+        <div className="setting">
+          <div>
+            <strong>{t("settings.player.autoPick")}</strong>
+            <p>{t("settings.player.autoPick.note")}</p>
+          </div>
+          <Toggle label={t("settings.player.autoPick")} checked={settings.autoPick} onChange={(value) => settings.patch({ autoPick: value })} />
+        </div>
+        <div className="setting">
+          <div>
             <strong>{t("settings.player.autoNext")}</strong>
             <p>{t("settings.player.autoNext.note")}</p>
           </div>

@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowDown, ArrowUp, ChevronDown, Download, FolderOpen, HardDrive, Pause, Play, Plus, Trash2, Users } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpToLine, ChevronDown, Download, FolderOpen, GripVertical, HardDrive, Pause, Play, Plus, Trash2, Users } from "lucide-react";
 import { EmptyState } from "../components/Cards";
 import { backend, describeError, isDesktop, type TorrentView } from "../lib/backend";
 import { formatBytes, formatEta, formatSpeed } from "../lib/format";
@@ -36,6 +36,23 @@ interface TorrentInfo {
   path: string | null;
   units: Unit[];
   next: Unit | null;
+}
+
+interface Ordering {
+  dragging: string | null;
+  over: string | null;
+  begin: (infoHash: string, label: string, event: React.PointerEvent) => void;
+  focus: (infoHash: string) => void;
+}
+
+const dragThreshold = 6;
+
+const heroTarget = "hero";
+
+const OrderingContext = createContext<Ordering | null>(null);
+
+function byQueue(a: TorrentView, b: TorrentView): number {
+  return Number(Boolean(b.focused)) - Number(Boolean(a.focused)) || (a.queueOrder ?? 0) - (b.queueOrder ?? 0) || a.name.localeCompare(b.name);
 }
 
 function isOnlineOnly(torrent: TorrentView): boolean {
@@ -164,39 +181,122 @@ function Sparkline({ samples }: { samples: SpeedSample[] }) {
   );
 }
 
+const numberedTilesLimit = 60;
+
+type TileState = "ready" | "loading" | "queued" | "online";
+
 function EpisodeStrip({ info, torrent }: { info: TorrentInfo; torrent: TorrentView }) {
   const progress = useLibrary((state) => state.progress);
   const playUnit = usePlayUnit(info);
+  const [busy, setBusy] = useState<number[]>([]);
   const episodes = info.units.filter((unit) => unit.season !== undefined);
   if (episodes.length < 2) return null;
+  const fileFor = (unit: Unit) => torrent.files.find((item) => item.index === unit.fileIndex);
   const share = (unit: Unit) => {
-    const file = torrent.files.find((item) => item.index === unit.fileIndex);
+    const file = fileFor(unit);
     return file && file.length > 0 ? Math.min(1, file.downloaded / file.length) : 0;
   };
-  const ready = episodes.filter((unit) => share(unit) >= 1).length;
+  const included = (unit: Unit) => fileFor(unit)?.included ?? true;
+  const stateOf = (unit: Unit): TileState => {
+    const done = share(unit);
+    if (done >= 1) return "ready";
+    if (!included(unit)) return "online";
+    return done > 0 ? "loading" : "queued";
+  };
+  const ready = episodes.filter((unit) => stateOf(unit) === "ready").length;
+  const online = episodes.filter((unit) => stateOf(unit) === "online");
+  const chosen = episodes.length - online.length;
+  const numbered = episodes.length <= numberedTilesLimit;
+  const downloadDir = () => useSettings.getState().downloadDir || null;
+
+  const change = (files: number[], action: Promise<void>) => {
+    setBusy((current) => [...current, ...files]);
+    void run(action).finally(() => setBusy((current) => current.filter((file) => !files.includes(file))));
+  };
+  const toggle = (unit: Unit) => {
+    const state = stateOf(unit);
+    if (state === "ready") {
+      playUnit(unit);
+      return;
+    }
+    if (state === "online") change([unit.fileIndex], backend.selectFiles(torrent.infoHash, [unit.fileIndex], downloadDir()));
+    else change([unit.fileIndex], backend.excludeFiles(torrent.infoHash, [unit.fileIndex]));
+  };
+  const hint = (unit: Unit) => {
+    const state = stateOf(unit);
+    const name = t("common.seasonEpisode", { season: unit.season ?? "", episode: unit.episode ?? "" });
+    const status =
+      state === "ready"
+        ? t("downloads.tile.ready")
+        : state === "loading"
+          ? t("downloads.tile.loading", { percent: Math.floor(share(unit) * 100) })
+          : state === "queued"
+            ? t("downloads.tile.queued")
+            : t("downloads.tile.online");
+    const watched = isWatched(progress[unit.unitKey]) ? ` · ${t("downloads.episode.watched")}` : "";
+    return `${name}${watched}\n${status}`;
+  };
+
   return (
-    <div className="dl-episodes">
-      <div className="dl-episodes__cells">
+    <div className="dl-episodes" onClick={(event) => event.stopPropagation()}>
+      <div className={`dl-tiles ${numbered ? "is-numbered" : ""}`}>
         {episodes.map((unit) => {
+          const state = stateOf(unit);
           const done = share(unit);
-          const state = done >= 1 ? "is-ready" : done > 0 ? "is-loading" : "";
-          const watched = isWatched(progress[unit.unitKey]);
           return (
-            <button
+            <div
               key={unit.unitKey}
-              className={`dl-cell ${state} ${watched ? "is-watched" : ""} ${info.next?.unitKey === unit.unitKey ? "is-next" : ""}`}
-              style={done > 0 && done < 1 ? { ["--fill" as string]: `${Math.round(done * 100)}%` } : undefined}
-              title={`${t("common.seasonEpisode", { season: unit.season ?? "", episode: unit.episode ?? "" })} · ${Math.floor(done * 100)}%${watched ? ` · ${t("downloads.episode.watched")}` : ""}`}
-              aria-label={unitLabel(unit)}
-              onClick={(event) => {
-                event.stopPropagation();
-                playUnit(unit);
-              }}
-            />
+              className={`dl-tile is-${state} ${isWatched(progress[unit.unitKey]) ? "is-watched" : ""} ${info.next?.unitKey === unit.unitKey ? "is-next" : ""} ${busy.includes(unit.fileIndex) ? "is-busy" : ""}`}
+              style={state === "loading" ? { ["--fill" as string]: `${Math.max(6, Math.round(done * 100))}%` } : undefined}
+            >
+              <button
+                className="dl-tile__toggle"
+                title={hint(unit)}
+                aria-label={hint(unit)}
+                aria-pressed={state !== "online"}
+                onClick={() => toggle(unit)}
+              >
+                {numbered && <span>{unit.episode}</span>}
+              </button>
+              {numbered && state !== "ready" && (
+                <button
+                  className="dl-tile__play"
+                  title={t("downloads.tile.play", { episode: unit.episode ?? "" })}
+                  aria-label={t("downloads.tile.play", { episode: unit.episode ?? "" })}
+                  onClick={() => playUnit(unit)}
+                >
+                  <Play size={8} fill="currentColor" />
+                </button>
+              )}
+            </div>
           );
         })}
       </div>
-      <span className="dl-episodes__note">{t("downloads.episodes.ready", { ready, total: episodes.length })}</span>
+      <div className="dl-episodes__foot">
+        <span className="dl-episodes__note">
+          {online.length > 0
+            ? t("downloads.episodes.partial", { ready, chosen, online: online.length })
+            : t("downloads.episodes.ready", { ready, total: episodes.length })}
+        </span>
+        {online.length > 0 && (
+          <button
+            className="dl-link"
+            onClick={() => change(online.map((unit) => unit.fileIndex), backend.selectFiles(torrent.infoHash, online.map((unit) => unit.fileIndex), downloadDir()))}
+          >
+            {t("downloads.episodes.chooseAll")}
+          </button>
+        )}
+        <span className="dl-legend">
+          <i className="dl-legend__ready" />
+          {t("downloads.legend.ready")}
+          <i className="dl-legend__loading" />
+          {t("downloads.legend.loading")}
+          <i className="dl-legend__queued" />
+          {t("downloads.legend.queued")}
+          <i className="dl-legend__online" />
+          {t("downloads.legend.online")}
+        </span>
+      </div>
     </div>
   );
 }
@@ -277,7 +377,8 @@ function Details({ torrent, info }: { torrent: TorrentView; info: TorrentInfo })
   );
 }
 
-function Actions({ torrent }: { torrent: TorrentView }) {
+function Actions({ torrent, canFocus }: { torrent: TorrentView; canFocus?: boolean }) {
+  const ordering = useContext(OrderingContext);
   const askConfirm = useUi((state) => state.askConfirm);
   const removeFromLibrary = useLibrary((state) => state.removeTorrent);
   const paused = torrent.state === "paused" || torrent.state === "queued";
@@ -307,6 +408,11 @@ function Actions({ torrent }: { torrent: TorrentView }) {
           <span>{t(torrent.uploadEnabled ? "downloads.upload.on" : "downloads.upload.off")}</span>
         </button>
       )}
+      {canFocus && ordering && (
+        <button className="icon-button" aria-label={t("downloads.focus")} title={t("downloads.focus")} onClick={() => ordering.focus(torrent.infoHash)}>
+          <ArrowUpToLine size={17} />
+        </button>
+      )}
       {!torrent.finished && (
         <button
           className="icon-button"
@@ -332,10 +438,10 @@ function Poster({ title, large }: { title: TitleRef | null; large?: boolean }) {
   return <div className={`dl-poster ${large ? "dl-poster--large" : ""}`}>{src ? <img src={src} alt="" loading="lazy" draggable={false} /> : <Download size={large ? 26 : 16} />}</div>;
 }
 
-function Meta({ torrent }: { torrent: TorrentView }) {
+function Meta({ torrent, partial }: { torrent: TorrentView; partial?: boolean }) {
   return (
     <div className="dl-meta">
-      <span>{statusText(torrent)}</span>
+      <span>{partial && torrent.finished && torrent.state === "live" ? t("downloads.status.chosenDone") : statusText(torrent)}</span>
       <span>
         {isOnlineOnly(torrent)
           ? t("downloads.onDisk", { size: formatBytes(torrent.files.reduce((sum, file) => sum + file.downloaded, 0)) })
@@ -387,8 +493,14 @@ function Hero({ torrent }: { torrent: TorrentView }) {
   const progress = torrentProgress(torrent);
   const peak = Math.max(0, ...samples.map((sample) => sample.down));
   const eta = formatEta(etaSeconds(torrent));
+  const ordering = useContext(OrderingContext);
+  const accepts = Boolean(ordering?.dragging && ordering.dragging !== torrent.infoHash);
   return (
-    <section className="dl-hero">
+    <section
+      className={`dl-hero ${accepts && ordering?.over === heroTarget ? "is-drop" : ""} ${accepts ? "is-droppable" : ""}`}
+      data-drop={heroTarget}
+    >
+      {accepts && <div className="dl-hero__drop">{t("downloads.dropFirst")}</div>}
       <Poster title={info.title} large />
       <div className="dl-hero__body">
         <NameLine torrent={torrent} info={info} large />
@@ -439,18 +551,32 @@ function Row({ torrent }: { torrent: TorrentView }) {
   const info = useTorrentInfo(torrent);
   const [open, setOpen] = useState(false);
   const progress = torrentProgress(torrent);
+  const ordering = useContext(OrderingContext);
+  const movable = !torrent.finished && ordering !== null;
+  const accepts = movable && Boolean(ordering?.dragging && ordering.dragging !== torrent.infoHash);
   return (
-    <div className={`dl-row ${open ? "is-open" : ""} ${torrent.finished ? "is-finished" : ""}`}>
+    <div
+      className={`dl-row ${open ? "is-open" : ""} ${torrent.finished ? "is-finished" : ""} ${movable ? "is-movable" : ""} ${ordering?.dragging === torrent.infoHash ? "is-dragging" : ""} ${accepts && ordering?.over === torrent.infoHash ? "is-drop" : ""}`}
+      data-drop={movable ? torrent.infoHash : undefined}
+      onPointerDown={(event) => {
+        if (movable) ordering?.begin(torrent.infoHash, info.title?.title ?? torrent.name, event);
+      }}
+    >
       <div className="dl-row__main" role="button" tabIndex={0} aria-expanded={open} onClick={() => setOpen(!open)} onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
           setOpen(!open);
         }
       }}>
+        {movable && (
+          <span className="dl-row__grip" title={t("downloads.dragHint")} aria-hidden="true">
+            <GripVertical size={16} />
+          </span>
+        )}
         <Poster title={info.title} />
         <div className="dl-row__body">
           <NameLine torrent={torrent} info={info} />
-          <Meta torrent={torrent} />
+          <Meta torrent={torrent} partial={info.units.some((unit) => torrent.files.find((file) => file.index === unit.fileIndex)?.included === false)} />
           {!torrent.finished && (
             <div className="dl-row__progress">
               <div className="bar bar--thin">
@@ -463,7 +589,7 @@ function Row({ torrent }: { torrent: TorrentView }) {
           <EpisodeStrip info={info} torrent={torrent} />
         </div>
         <WatchButton info={info} torrent={torrent} />
-        <Actions torrent={torrent} />
+        <Actions torrent={torrent} canFocus={movable} />
         <ChevronDown size={16} className={`dl-row__chevron ${open ? "is-open" : ""}`} />
       </div>
       {open && <Details torrent={torrent} info={info} />}
@@ -523,14 +649,86 @@ export default function Downloads() {
   );
   const { hero, active, waiting, done } = useMemo(() => {
     const byName = (a: TorrentView, b: TorrentView) => a.name.localeCompare(b.name);
-    const running = torrents.filter((torrent) => !torrent.finished && !isWaiting(torrent)).sort((a, b) => b.downloadSpeed - a.downloadSpeed || byName(a, b));
+    const running = torrents.filter((torrent) => !torrent.finished && !isWaiting(torrent)).sort(byQueue);
     return {
       hero: running[0] ?? null,
       active: running.slice(1),
-      waiting: torrents.filter(isWaiting).sort(byName),
+      waiting: torrents.filter(isWaiting).sort(byQueue),
       done: torrents.filter((torrent) => torrent.finished).sort(byName),
     };
   }, [torrents]);
+
+  const [dragging, setDragging] = useState<string | null>(null);
+  const [over, setOver] = useState<string | null>(null);
+  const [ghost, setGhost] = useState<{ x: number; y: number; label: string } | null>(null);
+  const layout = useRef({ active, waiting, hero });
+  layout.current = { active, waiting, hero };
+
+  const ordering = useMemo<Ordering>(() => {
+    const focus = (infoHash: string) => void run(backend.focusTorrent(infoHash));
+    const place = (moved: string, target: string | null) => {
+      if (!target || target === moved) return;
+      if (target === heroTarget) {
+        focus(moved);
+        return;
+      }
+      const { active: running, waiting: queued, hero: first } = layout.current;
+      const queue = [...running, ...queued].map((torrent) => torrent.infoHash).filter((hash) => hash !== moved);
+      const at = queue.indexOf(target);
+      if (at < 0) return;
+      queue.splice(at, 0, moved);
+      void run(backend.reorderTorrents([...(first ? [first.infoHash] : []), ...queue]));
+    };
+    const begin = (infoHash: string, label: string, event: React.PointerEvent) => {
+      if (event.button !== 0 || (event.target as HTMLElement).closest("button, a, input, select")) return;
+      event.preventDefault();
+      const startX = event.clientX;
+      const startY = event.clientY;
+      let moving = false;
+      let target: string | null = null;
+      const move = (next: PointerEvent) => {
+        if (!moving && Math.hypot(next.clientX - startX, next.clientY - startY) < dragThreshold) return;
+        if (!moving) {
+          moving = true;
+          setDragging(infoHash);
+          document.body.classList.add("is-reordering");
+        }
+        next.preventDefault();
+        setGhost({ x: next.clientX, y: next.clientY, label });
+        const spot = document.elementFromPoint(next.clientX, next.clientY)?.closest<HTMLElement>("[data-drop]");
+        const value = spot?.dataset.drop ?? null;
+        target = value && value !== infoHash ? value : null;
+        setOver(target);
+      };
+      const finish = (apply: boolean) => {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+        window.removeEventListener("keydown", key, true);
+        document.body.classList.remove("is-reordering");
+        setGhost(null);
+        setDragging(null);
+        setOver(null);
+        if (!moving) return;
+        const swallow = (click: MouseEvent) => {
+          click.stopPropagation();
+          click.preventDefault();
+        };
+        window.addEventListener("click", swallow, true);
+        setTimeout(() => window.removeEventListener("click", swallow, true), 0);
+        if (apply) place(infoHash, target);
+      };
+      const up = () => finish(true);
+      const key = (press: KeyboardEvent) => {
+        if (press.key !== "Escape") return;
+        press.stopPropagation();
+        finish(false);
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
+      window.addEventListener("keydown", key, true);
+    };
+    return { dragging, over, begin, focus };
+  }, [dragging, over]);
 
   return (
     <div className="page">
@@ -562,10 +760,14 @@ export default function Downloads() {
       {torrents.length === 0 ? (
         <EmptyState icon={<Download size={40} />} title={t("downloads.empty.title")} text={t("downloads.empty.text")} />
       ) : (
+        <OrderingContext.Provider value={ordering}>
         <div className="dl-page">
           {hero && (
             <section className="dl-section">
-              <h2 className="dl-section__title">{t("downloads.section.now")}</h2>
+              <h2 className="dl-section__title">
+                {t("downloads.section.now")}
+                {active.length + waiting.length > 0 && <small>{t("downloads.dragNote")}</small>}
+              </h2>
               <Hero torrent={hero} />
             </section>
           )}
@@ -573,6 +775,13 @@ export default function Downloads() {
           <Section title={t("downloads.section.waiting")} torrents={waiting} />
           <Section title={t("downloads.section.done")} torrents={done} />
         </div>
+        {ghost && (
+          <div className="dl-ghost" style={{ left: ghost.x, top: ghost.y }}>
+            <GripVertical size={14} />
+            {ghost.label}
+          </div>
+        )}
+        </OrderingContext.Provider>
       )}
     </div>
   );

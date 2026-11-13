@@ -152,6 +152,27 @@ pub async fn torrent_select_files(
 }
 
 #[tauri::command]
+pub async fn torrent_focus(state: State<'_, AppState>, info_hash: String) -> CommandResult<()> {
+    state.engine.focus(&info_hash).await.map_err(to_message)
+}
+
+#[tauri::command]
+pub fn torrent_reorder(state: State<'_, AppState>, info_hashes: Vec<String>) {
+    state.engine.reorder(&info_hashes);
+}
+
+#[tauri::command]
+pub async fn torrent_exclude_files(state: State<'_, AppState>, info_hash: String, files: Vec<usize>) -> CommandResult<()> {
+    state.engine.exclude_files(&info_hash, &files).await.map_err(to_message)
+}
+
+#[tauri::command]
+pub fn app_log(message: String) {
+    let line: String = message.chars().filter(|c| !c.is_control()).take(1200).collect();
+    tracing::info!("ui: {line}");
+}
+
+#[tauri::command]
 pub fn torrent_warm(state: State<'_, AppState>, info_hash: String, file_index: usize, full: bool) {
     let engine = state.engine.clone();
     tauri::async_runtime::spawn(async move {

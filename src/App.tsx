@@ -262,6 +262,7 @@ export default function App() {
   return (
     <HashRouter key={language}>
       <div className="app">
+        <div className="app__backdrop" />
         <Titlebar />
         <Sidebar />
         <Content />

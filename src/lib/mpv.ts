@@ -17,6 +17,7 @@ export interface MpvTrack {
   default?: boolean;
   forced?: boolean;
   external?: boolean;
+  "external-filename"?: string;
   selected?: boolean;
   "demux-channel-count"?: number;
   "demux-channels"?: string;
@@ -48,6 +49,7 @@ export const mpv = {
   quit: () => invoke<void>("mpv_quit"),
   command: (...command: unknown[]) => invoke<void>("mpv_command", { command }),
   set: (name: string, value: unknown) => invoke<void>("mpv_set", { name, value }),
+  place: (x: number, y: number, width: number, height: number) => invoke<void>("mpv_place", { x, y, width, height }),
   addSubtitleText: (text: string, title: string) => invoke<void>("mpv_add_subtitle_text", { text, title }),
   audioFilter: (mode: AudioMode) => invoke<void>("mpv_audio_filter", { mode }),
   stats: () => invoke<Record<string, unknown>>("mpv_stats"),

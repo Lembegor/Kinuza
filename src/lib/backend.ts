@@ -35,6 +35,8 @@ export interface TorrentView {
   peers: number;
   files: TorrentFile[];
   uploadEnabled: boolean;
+  queueOrder?: number;
+  focused?: boolean;
 }
 
 export interface AppInfo {
@@ -272,6 +274,7 @@ export interface AudioTrackInfo {
   title: string;
   isDefault: boolean;
   isOriginal: boolean;
+  externalFile?: string;
 }
 
 export interface PrintTarget {
@@ -296,6 +299,9 @@ export const backend = {
   pause: (infoHash: string) => call<void>("torrent_pause", { infoHash }),
   setUpload: (infoHash: string, enabled: boolean) => call<void>("torrent_set_upload", { infoHash, enabled }),
   resume: (infoHash: string) => call<void>("torrent_resume", { infoHash }),
+  excludeFiles: (infoHash: string, files: number[]) => call<void>("torrent_exclude_files", { infoHash, files }),
+  focusTorrent: (infoHash: string) => call<void>("torrent_focus", { infoHash }),
+  reorderTorrents: (infoHashes: string[]) => call<void>("torrent_reorder", { infoHashes }),
   remove: (infoHash: string, deleteFiles: boolean) =>
     call<void>("torrent_delete", { infoHash, deleteFiles }),
   selectFiles: (infoHash: string, files: number[], downloadDir: string | null) =>
@@ -316,6 +322,8 @@ export const backend = {
   subtitleFileHash: (infoHash: string, fileIndex: number) => call<string>("subtitle_file_hash", { infoHash, fileIndex }),
   audioPrint: (target: PrintTarget, part: "head" | "tail", seconds: number) => call<boolean>("audio_print", { target, part, seconds }),
   audioPrintCancel: () => call<void>("audio_print_cancel"),
+  audioOffset: (reference: PrintTarget, other: PrintTarget) =>
+    call<{ seconds: number; matchedSeconds: number } | null>("audio_offset", { reference, other }),
   audioSegments: (target: PrintTarget, duration: number, neighbours: PrintTarget[]) =>
     call<SoundSegments>("audio_segments", { target, duration, neighbours }),
   torrentFileMap: (infoHash: string, fileIndex: number, buckets: number) =>
@@ -356,6 +364,7 @@ export const backend = {
   imdbRating: (imdbId: string) => call<ImdbRating | null>("imdb_rating", { imdbId }),
   storeGet: (name: string) => call<StoredDocument | null>("store_get", { name }),
   storeSet: (name: string, value: string, allowShrink = false) => call<void>("store_set", { name, value, allowShrink }),
+  appLog: (message: string) => (isDesktop ? call<void>("app_log", { message }).catch(() => undefined) : Promise.resolve()),
   warm: (infoHash: string, fileIndex: number, full: boolean) => call<void>("torrent_warm", { infoHash, fileIndex, full }),
   activityAppend: (events: object[]) => call<number>("activity_append", { events }),
   activityRead: (since?: number) => call<object[]>("activity_read", { since: since ?? null }),
@@ -373,6 +382,7 @@ const errorMessages: Record<string, MessageKey> = {
   metadata_timeout: "errors.metadataTimeout",
   torrent_not_inspected: "errors.torrentNotInspected",
   torrent_not_found: "errors.torrentNotFound",
+  last_file: "errors.lastFile",
   torrent_file_unreadable: "errors.torrentFileUnreadable",
   no_external_player: "errors.noExternalPlayer",
   file_too_large: "errors.fileTooLarge",

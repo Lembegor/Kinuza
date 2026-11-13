@@ -478,3 +478,24 @@ html[data-density="large"] {
   --grid-card-width: 196px;
   --grid-gap: 30px 22px;
 }
+
+.flag {
+  flex: none;
+  display: block;
+  width: 24px;
+  height: 16px;
+  border-radius: 3px;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18);
+}
+
+.flag--code {
+  display: grid;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  line-height: 1;
+}
+

@@ -75,6 +75,8 @@ interface UiState {
   closePlayer: () => void;
 }
 
+export const homeRefreshEvent = "kinuza:home-refresh";
+
 let nextToastId = 1;
 const maxToasts = 2;
 

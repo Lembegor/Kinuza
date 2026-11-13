@@ -25,6 +25,36 @@ use super::{ManagedTorrentHandle, TorrentMetadata};
 type StreamId = usize;
 
 const PER_STREAM_BUF_DEFAULT: u64 = 128 * 1024 * 1024;
+const SLOW_READ: std::time::Duration = std::time::Duration::from_millis(300);
+const SLOW_READ_LOG_EVERY_MS: u64 = 5_000;
+
+static SLOW_READS: AtomicU64 = AtomicU64::new(0);
+static LAST_SLOW_LOG_MS: AtomicU64 = AtomicU64::new(0);
+
+pub fn slow_stream_reads() -> u64 {
+    SLOW_READS.load(Ordering::Relaxed)
+}
+
+fn note_slow_read(elapsed: std::time::Duration, bytes: usize, position: u64, file_id: usize) {
+    let count = SLOW_READS.fetch_add(1, Ordering::Relaxed) + 1;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let last = LAST_SLOW_LOG_MS.load(Ordering::Relaxed);
+    if now.saturating_sub(last) >= SLOW_READ_LOG_EVERY_MS
+        && LAST_SLOW_LOG_MS
+            .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+    {
+        tracing::warn!(
+            "stream: slow disk read {} ms for {} KB at {} MB of file {file_id} ({count} slow reads so far)",
+            elapsed.as_millis(),
+            bytes / 1024,
+            position >> 20
+        );
+    }
+}
 
 struct StreamState {
     file_id: usize,
@@ -66,6 +96,10 @@ impl TorrentStreams {
 
     pub(crate) fn set_buffer(&self, bytes: u64) {
         self.buffer.store(bytes, Ordering::Relaxed);
+    }
+
+    pub(crate) fn all_positions(&self) -> Vec<(usize, u64)> {
+        self.streams.iter().map(|s| (s.value().file_id, s.value().position)).collect()
     }
 
     pub(crate) fn positions(&self, file_id: usize) -> Vec<u64> {
@@ -245,6 +279,10 @@ impl AsyncRead for FileStream {
             }
         )));
 
+        let elapsed = start.elapsed();
+        if elapsed >= SLOW_READ {
+            note_slow_read(elapsed, buf.len(), self.position, self.file_id);
+        }
         trace!(
             buflen = buf.len(),
             stream_id = self.stream_id,
@@ -334,6 +372,10 @@ impl ManagedTorrent {
     pub fn set_stream_buffer(&self, bytes: u64) -> anyhow::Result<()> {
         self.streams()?.set_buffer(bytes);
         Ok(())
+    }
+
+    pub fn all_stream_positions(&self) -> Vec<(usize, u64)> {
+        self.streams().map(|s| s.all_positions()).unwrap_or_default()
     }
 
     pub fn stream_positions(&self, file_id: usize) -> Vec<u64> {

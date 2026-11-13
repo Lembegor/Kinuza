@@ -179,8 +179,29 @@ export async function mockInvoke(command: string, args: Record<string, unknown> 
       return { freeBytes: 180 * GiB, totalBytes: 930 * GiB, cacheBytes: 3.4 * GiB };
     case "stream_cache_clear":
       return 3.4 * GiB;
+    case "media_tracks":
+      return {
+        audio: [
+          { index: 0, language: "rus", codec: "ac3", channels: "5.1(side)", title: "Дубляж | Пифагор", isDefault: true, isOriginal: false },
+          { index: 1, language: "rus", codec: "ac3", channels: "stereo", title: "MVO LostFilm", isDefault: false, isOriginal: false },
+          { index: 2, language: "ukr", codec: "aac", channels: "stereo", title: "Двухголосая (Цікава Ідея)", isDefault: false, isOriginal: false },
+          { index: 3, language: "eng", codec: "dts", channels: "5.1(side)", title: "DTS-HD MA 5.1", isDefault: false, isOriginal: true },
+          { index: 4, language: "eng", codec: "ac3", channels: "stereo", title: "Commentary by the director", isDefault: false, isOriginal: false },
+          { index: 5, language: "", codec: "flac", channels: "3.0", title: "", isDefault: false, isOriginal: false },
+        ],
+        subtitles: [
+          { index: 0, language: "rus", codec: "subrip", title: "Надписи", isDefault: true, isForced: true, isText: true },
+          { index: 1, language: "rus", codec: "ass", title: "Полные [AniLibria]", isDefault: false, isForced: false, isText: true },
+          { index: 2, language: "eng", codec: "hdmv_pgs_subtitle", title: "SDH", isDefault: false, isForced: false, isText: false },
+          { index: 3, language: "jpn", codec: "ass", title: "", isDefault: false, isForced: false, isText: true },
+          { index: 4, language: "", codec: "subrip", title: "", isDefault: false, isForced: false, isText: true },
+        ],
+        chapters: [],
+        duration: 0,
+        videoCodec: "h264",
+      };
     case "ffmpeg_status":
-      return { installed: false, installing: false, downloadedBytes: 0, totalBytes: 82 * 1024 * 1024 };
+      return { installed: (globalThis as { __kinuzaMockFfmpeg?: boolean }).__kinuzaMockFfmpeg === true, installing: false, downloadedBytes: 0, totalBytes: 82 * 1024 * 1024 };
     case "imdb_rating":
       return { rating: 8.8, votes: 2_600_000 };
     case "gateway_status":
@@ -243,9 +264,11 @@ export async function mockInvoke(command: string, args: Record<string, unknown> 
     case "torrent_add": {
       const selected = new Set(args.files as number[]);
       const files = demoPreview.files.map((file) => ({ ...file, included: selected.has(file.index) }));
+      const copy = torrents.filter((item) => item.infoHash.startsWith(demoPreview.infoHash.slice(0, 30))).length;
       torrents.push({
-        infoHash: demoPreview.infoHash,
-        name: demoPreview.name,
+        infoHash: copy === 0 ? demoPreview.infoHash : `${demoPreview.infoHash.slice(0, 30)}${String(copy).padStart(10, "0")}`,
+        name: copy === 0 ? demoPreview.name : `${demoPreview.name} (${copy + 1})`,
+        queueOrder: copy,
         outputFolder: "C:\\Users\\you\\Videos\\Kinuza\\Demo.Show.S01.1080p.WEB-DL",
         state: "live",
         error: null,
@@ -292,6 +315,31 @@ export async function mockInvoke(command: string, args: Record<string, unknown> 
       if (torrent) torrent.uploadEnabled = Boolean(args.enabled);
       return null;
     }
+    case "torrent_exclude_files": {
+      const torrent = torrents.find((t) => t.infoHash === args.infoHash);
+      const dropped = new Set(args.files as number[]);
+      if (torrent) {
+        if (torrent.files.filter((file) => file.included && !dropped.has(file.index)).length === 0) throw "last_file";
+        torrent.files = torrent.files.map((file) => (dropped.has(file.index) ? { ...file, included: false } : file));
+        torrent.totalBytes = torrent.files.filter((file) => file.included).reduce((sum, file) => sum + file.length, 0);
+      }
+      return null;
+    }
+    case "torrent_focus": {
+      for (const torrent of torrents) {
+        torrent.focused = torrent.infoHash === args.infoHash;
+        if (torrent.focused) torrent.state = "live";
+        else if (!torrent.finished && torrent.state === "live") torrent.state = "queued";
+      }
+      return null;
+    }
+    case "torrent_reorder": {
+      (args.infoHashes as string[]).forEach((hash, index) => {
+        const torrent = torrents.find((item) => item.infoHash === hash);
+        if (torrent) torrent.queueOrder = index;
+      });
+      return null;
+    }
     case "torrent_pause":
     case "torrent_resume": {
       const torrent = torrents.find((t) => t.infoHash === args.infoHash);
@@ -323,6 +371,7 @@ export async function mockInvoke(command: string, args: Record<string, unknown> 
       localStorage.setItem(storagePrefix + String(args.name), String(args.value));
       return null;
     case "torrent_warm":
+    case "app_log":
       return null;
     case "torrent_file_map": {
       const buckets = Number(args.buckets) || 100;

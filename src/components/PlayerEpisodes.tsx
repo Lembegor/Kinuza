@@ -47,7 +47,9 @@ export function PlayerEpisodes({
 
   useEffect(() => {
     if (season !== current.season || !episodes.data) return;
-    listRef.current?.querySelector(".player__episode.is-current")?.scrollIntoView({ block: "center" });
+    const list = listRef.current;
+    const row = list?.querySelector<HTMLElement>(".player__episode.is-current");
+    if (list && row) list.scrollTop += row.getBoundingClientRect().top - list.getBoundingClientRect().top - (list.clientHeight - row.clientHeight) / 2;
   }, [episodes.data, season, current.season]);
 
   return (

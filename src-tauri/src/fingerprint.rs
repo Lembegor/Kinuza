@@ -637,6 +637,48 @@ pub async fn audio_print(
     Ok(true)
 }
 
+const OFFSET_SHORTEST_SECONDS: f64 = 12.0;
+
+#[derive(Serialize, Debug, Clone, Copy)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioOffset {
+    seconds: f64,
+    matched_seconds: f64,
+}
+
+pub fn offset_between(first: &Print, second: &Print) -> Option<AudioOffset> {
+    let runs = shared_runs(first, second, OFFSET_SHORTEST_SECONDS);
+    let best = runs.iter().max_by_key(|run| run.frames())?;
+    let frame = HOP as f64 / SAMPLE_RATE as f64;
+    let seconds = (best.other_first as f64 - best.first as f64) * frame + (second.offset - first.offset);
+    let agreeing: usize = runs
+        .iter()
+        .filter(|run| ((run.other_first as f64 - run.first as f64) - (best.other_first as f64 - best.first as f64)).abs() <= 3.0)
+        .map(Run::frames)
+        .sum();
+    Some(AudioOffset { seconds, matched_seconds: agreeing as f64 * frame })
+}
+
+#[tauri::command]
+pub async fn audio_offset(state: State<'_, AppState>, reference: PrintTarget, other: PrintTarget) -> Result<Option<AudioOffset>, String> {
+    let (Some(first_key), Some(second_key)) = (reference.key(), other.key()) else {
+        return Err(ERROR_PRINT_FAILED.to_owned());
+    };
+    let data_dir = state.data_dir.clone();
+    let found = tokio::task::spawn_blocking(move || {
+        let first = load(&data_dir, &first_key, Part::Head)?;
+        let second = load(&data_dir, &second_key, Part::Head)?;
+        offset_between(&first, &second)
+    })
+    .await
+    .map_err(|_| ERROR_PRINT_FAILED.to_owned())?;
+    match found {
+        Some(offset) => tracing::info!("fingerprint: the other sound is {:+.2}s apart, {:.0}s matched", offset.seconds, offset.matched_seconds),
+        None => tracing::info!("fingerprint: the two sounds do not match"),
+    }
+    Ok(found)
+}
+
 #[tauri::command]
 pub fn audio_print_cancel(prints: State<'_, PrintState>) {
     prints.cancel.send_modify(|generation| *generation += 1);
@@ -738,6 +780,28 @@ mod tests {
 
     fn episode(parts: &[Vec<f32>]) -> Vec<f32> {
         parts.concat()
+    }
+
+    #[test]
+    fn finds_how_far_a_dubbed_track_is_shifted() {
+        let music = melody(90.0, 7);
+        let talking = |index: usize| {
+            let second = index / SAMPLE_RATE;
+            !(25..70).contains(&second)
+        };
+        let voiced = |voice: Vec<f32>| -> Vec<f32> {
+            music.iter().zip(voice).enumerate().map(|(index, (m, v))| if talking(index) { m + v * 0.5 } else { *m }).collect()
+        };
+        let original = voiced(speech(90.0, 3));
+        let shift = (4.0 * SAMPLE_RATE as f64) as usize;
+        let mut dubbed: Vec<f32> = speech(4.0, 11);
+        dubbed.extend(voiced(speech(90.0, 5)));
+        assert_eq!(dubbed.len(), original.len() + shift);
+        let first = fingerprint(&to_samples(&original, 1.0, 1), 0.0);
+        let second = fingerprint(&to_samples(&dubbed, 0.8, 2), 0.0);
+        let found = offset_between(&first, &second).expect("the shared music should line up");
+        assert!((found.seconds - 4.0).abs() < 0.15, "offset {}", found.seconds);
+        assert!(found.matched_seconds > 30.0, "matched {}", found.matched_seconds);
     }
 
     #[test]

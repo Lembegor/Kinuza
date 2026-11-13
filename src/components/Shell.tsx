@@ -4,7 +4,7 @@ import { ArrowLeft, ArrowRight, CalendarDays, Copy, Download, House, LayoutGrid,
 import { isDesktop } from "../lib/backend";
 import { useT } from "../lib/i18n";
 import { useBrowse } from "../state/browse";
-import { useUi } from "../state/ui";
+import { homeRefreshEvent, useUi } from "../state/ui";
 import { InboxButton } from "./InboxButton";
 import { isActiveDownload, useTorrents } from "../state/torrents";
 
@@ -151,13 +151,21 @@ export function Titlebar() {
 }
 
 export function Sidebar() {
+  const location = useLocation();
   const { t } = useT();
   const activeDownloads = useTorrents((state) => state.list.filter(isActiveDownload).length);
   const browseSearch = useBrowse((state) => state.search);
 
   return (
     <nav className="sidebar">
-      <NavLink to="/" end className="sidebar__link">
+      <NavLink
+        to="/"
+        end
+        className="sidebar__link"
+        onClick={() => {
+          if (location.pathname === "/") window.dispatchEvent(new Event(homeRefreshEvent));
+        }}
+      >
         <House size={21} />
         <span>{t("shell.nav.home")}</span>
       </NavLink>

@@ -843,18 +843,9 @@ label.file-row,
   height: 16px;
   border-radius: 3px;
   overflow: hidden;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.14);
-  filter: grayscale(1);
-  opacity: 0.22;
 }
 
-.language-flags__flag.is-present {
-  filter: none;
-  opacity: 1;
-}
-
-.language-flags__flag svg {
-  display: block;
+.language-flags__flag .flag {
   width: 100%;
   height: 100%;
 }
@@ -948,8 +939,33 @@ label.file-row,
   display: grid;
   gap: 10px;
   margin: 0;
-  padding-left: 20px;
+  padding: 0;
+  list-style: none;
   line-height: 1.5;
+  counter-reset: change;
+}
+
+.whats-new__list li {
+  position: relative;
+  padding-left: 36px;
+  counter-increment: change;
+}
+
+.whats-new__list li::before {
+  content: counter(change);
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: #ff8d90;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
 }
 
 .tracker-slow {

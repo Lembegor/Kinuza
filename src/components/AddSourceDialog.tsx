@@ -3,7 +3,7 @@ import { ArrowLeft, ChevronDown, Download, FileUp, Link2, LoaderCircle, Play, Se
 import { backend, describeError, isDesktop, type TorrentFile, type TorrentPreview } from "../lib/backend";
 import { formatBytes } from "../lib/format";
 import { useT } from "../lib/i18n";
-import { baseName, guessTitleQuery, isMagnetLink, isVideoFile, parseEpisode, parseQuality, resolveEpisodes } from "../lib/parse";
+import { baseName, guessTitleQuery, isMagnetLink, parseEpisode, parseQuality } from "../lib/parse";
 import { toSource } from "../lib/releaseUpdate";
 import { imageUrl, tmdb, type MediaItem, type SeasonInfo } from "../lib/tmdb";
 import { useAsync } from "../lib/useAsync";
@@ -15,19 +15,13 @@ import { useTorrents } from "../state/torrents";
 import { useUi, type AddSourceRequest, type AddSourceTarget } from "../state/ui";
 import { typeLabel } from "./Cards";
 import { TrackerSearch } from "./TrackerSearch";
-import { arcsOfSeason, inLayout, isRecut, resolveLongEpisodes, type Coverage } from "../lib/episodeLayout";
+import { arcsOfSeason, isRecut, type Coverage } from "../lib/episodeLayout";
 import { warmFile } from "../state/warmup";
+import { buildEpisodeRows, videoFiles, type EpisodeRowState } from "../lib/episodeRows";
 
 const titleSearchDebounceMs = 350;
 const titleSearchLimit = 8;
 const playerFriendlyExtensions = /\.(mp4|m4v|mkv|webm|mov)$/i;
-
-function videoFiles(preview: TorrentPreview): TorrentFile[] {
-  const videos = preview.files.filter((file) => isVideoFile(file.path));
-  return (videos.length > 0 ? videos : preview.files).sort((a, b) =>
-    a.path.localeCompare(b.path, undefined, { numeric: true }),
-  );
-}
 
 function InputStep({
   busy,
@@ -207,25 +201,6 @@ function TitlePicker({
       </div>
     </div>
   );
-}
-
-interface EpisodeRowState {
-  file: TorrentFile;
-  included: boolean;
-  season: number;
-  episode: number | null;
-}
-
-function buildEpisodeRows(preview: TorrentPreview, target: AddSourceTarget): EpisodeRowState[] {
-  const { seasons, defaultSeason, pinnedSeason, layout } = target;
-  const files = videoFiles(preview);
-  const paths = files.map((file) => file.path);
-  const long = layout && inLayout(layout, defaultSeason) ? resolveLongEpisodes(paths, layout, target.coverage ?? null) : null;
-  const slots = long && long.some((slot) => slot !== null) ? long : resolveEpisodes(paths, seasons, defaultSeason, pinnedSeason);
-  return files.map((file, index) => {
-    const slot = slots[index];
-    return { file, included: slot !== null, season: slot?.season ?? defaultSeason, episode: slot?.episode ?? null };
-  });
 }
 
 type AddMode = "stream" | "download";
@@ -546,6 +521,9 @@ function AddSourceFlow({ request }: { request: AddSourceRequest }) {
     try {
       const downloadDir = useSettings.getState().downloadDir || null;
       const downloaded = mode === "download" ? entries.filter((entry) => entry.download ?? true).map((entry) => entry.file.index) : [];
+      void backend.appLog(
+        `add: ${preview.infoHash.slice(0, 8)} mode=${mode} download=[${downloaded.join(",")}] all=[${entries.map((entry) => `${entry.file.index}${entry.download === false ? "-" : "+"}`).join(",")}]`,
+      );
       await backend.addTorrent(preview.infoHash, downloaded, downloadDir);
       useLibrary.getState().addSources(entries.map((entry) => ({ unitKey: entry.unitKey, source: toSource(preview, entry.file) })));
       if (target.title.type === "tv" && topic.current) {

@@ -26,6 +26,7 @@ export const useTorrents = create<TorrentsState>((set) => ({
     try {
       const list = await backend.listTorrents();
       set((state) => {
+        noteSpeed(list.reduce((sum, torrent) => sum + torrent.downloadSpeed, 0));
         const history: Record<string, SpeedSample[]> = {};
         for (const torrent of list) {
           const known = state.history[torrent.infoHash] ?? [];
@@ -38,6 +39,39 @@ export const useTorrents = create<TorrentsState>((set) => ({
     }
   },
 }));
+
+const speedStoreKey = "kinuza-best-speed";
+const speedMemoryMs = 14 * 86_400_000;
+let bestSpeed: { value: number; at: number } | null = null;
+
+function readBestSpeed(): { value: number; at: number } {
+  if (bestSpeed) return bestSpeed;
+  try {
+    const saved = JSON.parse(localStorage.getItem(speedStoreKey) ?? "null") as { value?: number; at?: number } | null;
+    bestSpeed = saved && typeof saved.value === "number" && typeof saved.at === "number" ? { value: saved.value, at: saved.at } : { value: 0, at: 0 };
+  } catch {
+    bestSpeed = { value: 0, at: 0 };
+  }
+  return bestSpeed;
+}
+
+function noteSpeed(speed: number): void {
+  const known = readBestSpeed();
+  const stale = Date.now() - known.at > speedMemoryMs;
+  if (speed <= known.value && !stale) return;
+  if (speed < 256 * 1024) return;
+  bestSpeed = { value: speed, at: Date.now() };
+  try {
+    localStorage.setItem(speedStoreKey, JSON.stringify(bestSpeed));
+  } catch {
+    return;
+  }
+}
+
+export function bestObservedSpeed(): number {
+  const known = readBestSpeed();
+  return Date.now() - known.at > speedMemoryMs ? 0 : known.value;
+}
 
 export function isDownload(torrent: TorrentView): boolean {
   return torrent.state !== "parked" && torrent.files.some((file) => file.included);
