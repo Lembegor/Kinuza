@@ -136,6 +136,7 @@ interface LibraryState extends LibraryData {
   removeTracked: (key: string) => void;
   restoreTracked: (key: string, entry: TrackEntry) => void;
   restoreProgress: (key: string, progress: Progress) => void;
+  forgetProgress: (key: string) => void;
   noteTitleDetails: (title: TitleRef, totalEpisodes: number | undefined) => void;
   addSources: (entries: { unitKey: string; source: Source }[]) => void;
   removeSource: (unitKey: string, sourceId: string) => void;
@@ -527,6 +528,17 @@ export const useLibrary = create<LibraryState>((set, get) => {
         const removed = { ...state.removed };
         delete removed[trackedRemovalKey(key)];
         return { tracked: { ...state.tracked, [key]: { ...entry, updatedAt: Date.now() } }, removed };
+      });
+    },
+
+    forgetProgress(key) {
+      if (!get().progress[key]) return;
+      libraryShrinkAllowed = true;
+      progressShrinkAllowed = true;
+      update((state) => {
+        const progress = { ...state.progress };
+        delete progress[key];
+        return { progress, removed: { ...state.removed, [progressRemovalKey(key)]: Date.now() } };
       });
     },
 

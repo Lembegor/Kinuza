@@ -130,8 +130,8 @@ function ContinueCard({ unitKey, progress }: { unitKey: string; progress: Progre
   const openTitle = () => navigate(`/title/${title.type}/${title.id}`);
   const context = { title, season: progress.season, episode: progress.episode, episodeName: progress.episodeName };
   const hide = () => {
-    const { setWatched, restoreProgress } = useLibrary.getState();
-    setWatched(unitKey, false, context);
+    const { forgetProgress, restoreProgress } = useLibrary.getState();
+    forgetProgress(unitKey);
     useUi.getState().toast(t("home.continue.hidden", { title: title.title }), "info", {
       label: t("feed.dismissed.undo"),
       run: () => restoreProgress(unitKey, progress),

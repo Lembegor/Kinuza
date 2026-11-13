@@ -324,6 +324,11 @@ export async function mockInvoke(command: string, args: Record<string, unknown> 
       return null;
     case "torrent_warm":
       return null;
+    case "torrent_file_map": {
+      const buckets = Number(args.buckets) || 100;
+      const done = Math.min(1, ((Date.now() - startedAt) / 1000) * 0.012);
+      return Array.from({ length: buckets }, (_, index) => (index / buckets < done || (index > buckets * 0.6 && index < buckets * 0.66) ? 255 : index % 7 === 0 ? 128 : 0));
+    }
     case "activity_append": {
       const saved = JSON.parse(localStorage.getItem(storagePrefix + "activity") ?? "[]") as object[];
       const events = args.events as object[];

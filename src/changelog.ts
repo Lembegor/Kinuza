@@ -5,6 +5,23 @@ export type ChangelogLine = string | { heading: string };
 export type Changelog = Record<AppLanguage, ChangelogLine[]>;
 
 export const changelog: Record<string, Changelog> = {
+  "0.5.2": {
+    ru: [
+      "Теперь из «Продолжить просмотр» можно убрать фильм или серию, которую не досмотрели.",
+      "В загрузках появилась кнопка «Смотреть»: фильм или серию можно начать смотреть, пока они ещё качаются.",
+      "Новый экран загрузок: что качается сейчас, график скорости, какие серии уже готовы и что уже скачано внутри файла.",
+    ],
+    en: [
+      "You can now remove an unfinished movie or episode from «Continue watching».",
+      "Downloads now have a «Watch» button: start a movie or an episode while it is still downloading.",
+      "New downloads screen: what is downloading now, a speed graph, which episodes are ready and what is already downloaded inside a file.",
+    ],
+    uk: [
+      "Тепер із «Продовжити перегляд» можна прибрати фільм або серію, яку не додивилися.",
+      "У завантаженнях з'явилася кнопка «Дивитися»: фільм або серію можна почати дивитися, поки вони ще завантажуються.",
+      "Новий екран завантажень: що завантажується зараз, графік швидкості, які серії вже готові і що вже завантажено всередині файлу.",
+    ],
+  },
   "0.5.1": {
     ru: [
       "Я теперь качаю базу всех фильмов к себе на сервер, поэтому поиск всех фильмов будет быстрее и работает даже без интернета.",

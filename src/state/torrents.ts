@@ -3,21 +3,36 @@ import { backend, type TorrentFile, type TorrentView } from "../lib/backend";
 import { report } from "../lib/journal";
 
 const pollIntervalMs = 1500;
+const historySamples = 200;
+
+export interface SpeedSample {
+  down: number;
+  up: number;
+}
 
 interface TorrentsState {
   list: TorrentView[];
   byHash: Record<string, TorrentView>;
+  history: Record<string, SpeedSample[]>;
   refresh: () => Promise<void>;
 }
 
 export const useTorrents = create<TorrentsState>((set) => ({
   list: [],
   byHash: {},
+  history: {},
 
   async refresh() {
     try {
       const list = await backend.listTorrents();
-      set({ list, byHash: Object.fromEntries(list.map((torrent) => [torrent.infoHash, torrent])) });
+      set((state) => {
+        const history: Record<string, SpeedSample[]> = {};
+        for (const torrent of list) {
+          const known = state.history[torrent.infoHash] ?? [];
+          history[torrent.infoHash] = [...known, { down: torrent.downloadSpeed, up: torrent.uploadSpeed }].slice(-historySamples);
+        }
+        return { list, byHash: Object.fromEntries(list.map((torrent) => [torrent.infoHash, torrent])), history };
+      });
     } catch (error) {
       report("downloads", "journal.torrents.refresh", error);
     }

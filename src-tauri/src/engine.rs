@@ -570,7 +570,7 @@ impl Engine {
                 let stats = handle.stats();
                 let info_hash = handle.info_hash().as_string();
                 let given_back = stats.total_bytes > 0 && stats.uploaded_bytes as f64 >= stats.total_bytes as f64 * f64::from(policy.seed_ratio);
-                if stats.finished && given_back && !handle.is_paused() && self.seeding_stopped.lock().unwrap().insert(info_hash) {
+                if stats.finished && given_back && !handle.is_paused() && !self.is_playing(&info_hash) && self.seeding_stopped.lock().unwrap().insert(info_hash) {
                     let _ = self.session.pause(handle).await;
                 }
             }
@@ -592,6 +592,9 @@ impl Engine {
         for handle in downloading.iter().rev() {
             if active <= limit {
                 break;
+            }
+            if self.is_playing(&handle.info_hash().as_string()) {
+                continue;
             }
             if !handle.is_paused() && self.session.pause(handle).await.is_ok() {
                 self.queued.lock().unwrap().insert(handle.info_hash().as_string());
