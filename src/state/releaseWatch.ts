@@ -2,13 +2,15 @@ import { backend } from "../lib/backend";
 import { t, tn } from "../lib/i18n";
 import { report } from "../lib/journal";
 import { episodeFiles, planReleaseUpdate, toSource } from "../lib/releaseUpdate";
-import { rutracker, rutrackerErrors } from "../lib/rutracker";
+import { isServerError, rutracker, rutrackerErrors } from "../lib/rutracker";
 import { tmdb } from "../lib/tmdb";
 import { newEpisodes } from "./calendar";
 import { unitKey, useLibrary, type ReleaseWatch, type Source, type TitleRef } from "./library";
 import { useSettings } from "./settings";
 import { useTorrents } from "./torrents";
 import { useUi } from "./ui";
+
+const releaseFreshSeconds = 6 * 3600;
 
 export type { ReleaseWatch };
 
@@ -34,7 +36,7 @@ function sourcesFrom(seriesId: number, infoHash: string): { unitKey: string; sou
 
 async function updateFromTopic(watch: ReleaseWatch): Promise<number> {
   const seriesId = watch.title.id;
-  const preview = await rutracker.inspectRelease(watch.topicId, true);
+  const preview = await rutracker.inspectRelease(watch.topicId, true, true, releaseFreshSeconds);
   if (preview.infoHash === watch.infoHash) return 0;
   const remember = () => useReleaseWatch.getState().follow({ ...watch, infoHash: preview.infoHash });
   if (preview.alreadyAdded) {
@@ -106,7 +108,7 @@ export async function checkReleaseUpdates(): Promise<AddedEpisodes[]> {
       } catch (error) {
         report("downloads", "journal.releaseWatch.failed", error);
         const reason = String(error);
-        if (reason.includes(rutrackerErrors.authRequired) || reason.includes(rutrackerErrors.timeout)) break;
+        if (isServerError(reason) || reason.includes(rutrackerErrors.authRequired) || reason.includes(rutrackerErrors.timeout)) break;
       }
     }
   } finally {

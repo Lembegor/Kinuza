@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { Check, ChevronLeft, ChevronRight, Clock, CloudOff, LoaderCircle, Star, ThumbsDown } from "lucide-react";
 import type { Dismissal } from "../lib/account";
+import { useCardTitle } from "../lib/catalog";
 import { t, useT } from "../lib/i18n";
 import { cachedCatalog } from "../lib/persistentCache";
 import { hasApiKey, imageUrl, tmdb, type MediaItem } from "../lib/tmdb";
@@ -118,11 +119,12 @@ export type DismissDetail = Pick<Dismissal, "reason" | "personId" | "personName"
 export function PosterCard({ item }: { item: CardItem }) {
   const navigate = useNavigate();
   const poster = imageUrl(item.poster, "w342");
+  const title = useCardTitle(item.type, item.id, item.title);
   return (
     <div className="poster-card">
       <button className="poster-card__open" onClick={() => navigate(`/title/${item.type}/${item.id}`)}>
       <div className="poster-card__art">
-        {poster ? <img src={poster} alt="" loading="lazy" draggable={false} /> : <div className="poster-card__blank">{item.title}</div>}
+        {poster ? <img src={poster} alt="" loading="lazy" draggable={false} /> : <div className="poster-card__blank">{title}</div>}
         {item.rating ? (
           <span className="poster-card__rating">
             <Star size={11} fill="currentColor" />
@@ -131,7 +133,7 @@ export function PosterCard({ item }: { item: CardItem }) {
         ) : null}
         <TrackBadge type={item.type} id={item.id} />
       </div>
-      <div className="poster-card__title">{item.title}</div>
+      <div className="poster-card__title">{title}</div>
       <div className="poster-card__meta">
         {item.note ? (
           <span>{item.note}</span>

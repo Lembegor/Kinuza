@@ -12,6 +12,10 @@ export function TrackerAccount() {
   const [busy, setBusy] = useState(false);
   const account = useAsync(() => (isDesktop ? rutracker.account() : Promise.resolve(null)), [version]);
   const signedIn = account.data?.signedIn ?? false;
+  const server = useAsync(
+    () => (isDesktop && account.data && !account.data.signedIn ? rutracker.serverStatus() : Promise.resolve(null)),
+    [version, account.data?.signedIn],
+  );
   const refresh = () => setVersion((value) => value + 1);
 
   const shownBefore = useRef(false);
@@ -62,7 +66,9 @@ export function TrackerAccount() {
       ? t("settings.accounts.unknown")
       : signedIn
         ? t("settings.accounts.rutracker.signedIn")
-        : t("settings.accounts.rutracker.signedOut");
+        : server.data && server.data.state !== "ready"
+          ? t("settings.accounts.rutracker.signedOutServerDown")
+          : t("settings.accounts.rutracker.signedOut");
 
   return (
     <div className="setting">

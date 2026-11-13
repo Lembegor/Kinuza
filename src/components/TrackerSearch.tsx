@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, ChevronDown, ExternalLink, HardDrive, LoaderCircle, Monitor, Search, Sparkles } from "lucide-react";
+import { ArrowUp, ChevronDown, ExternalLink, HardDrive, LoaderCircle, LogIn, Monitor, Search, Server, Sparkles } from "lucide-react";
 import { animeInfo } from "../lib/anilist";
 import { isDesktop, type TorrentPreview } from "../lib/backend";
 import { t, useT, type MessageKey } from "../lib/i18n";
@@ -15,7 +15,7 @@ import {
   type TrackerRelease,
   type VoiceKind,
 } from "../lib/parse";
-import { rutracker, rutrackerErrors, type RutrackerItem, type VideoSize } from "../lib/rutracker";
+import { isServerError, rutracker, rutrackerErrors, serverProblemOf, trackerRoute, type RutrackerItem, type ServerProblem, type TrackerRoute, type VideoSize } from "../lib/rutracker";
 import { buildProfiles, matchSeasons, seasonQueries, taskKey, type SearchTask, type SeasonMatch, type SeasonProfile } from "../lib/seasonSearch";
 import { animeTrackerNames } from "../lib/localized";
 import { tmdb, type ShowNames } from "../lib/tmdb";
@@ -207,6 +207,8 @@ export function TrackerSearch({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [needsAuth, setNeedsAuth] = useState(false);
+  const [route, setRoute] = useState<TrackerRoute | null>(null);
+  const [serverProblem, setServerProblem] = useState<ServerProblem | null>(null);
   const [authBusy, setAuthBusy] = useState(false);
   const [resolvingId, setResolvingId] = useState<string | null>(null);
   const [extraLeft, setExtraLeft] = useState(0);
@@ -309,7 +311,8 @@ export function TrackerSearch({
         } catch (failure) {
           if (task.generation !== state.generation || task.quiet) continue;
           state.queue = [];
-          if (failure === rutrackerErrors.authRequired) setNeedsAuth(true);
+          if (isServerError(failure)) setServerProblem(serverProblemOf(failure));
+          else if (failure === rutrackerErrors.authRequired) setNeedsAuth(true);
           else setError(searchErrorText(failure));
           setLoading(false);
         }
@@ -337,17 +340,14 @@ export function TrackerSearch({
     setLoading(true);
     setError(null);
     setNeedsAuth(false);
+    setServerProblem(null);
     setOthersShown(false);
     setAlternativesQueued(false);
     const generation = state.generation;
     const query = activeQuery.trim();
-    void rutracker.maybeSignedIn().then((signedIn) => {
+    void trackerRoute().then((chosen) => {
       if (state.generation !== generation) return;
-      if (signedIn === false) {
-        setNeedsAuth(true);
-        setLoading(false);
-        return;
-      }
+      setRoute(chosen);
       enqueue([{ query, page: 0, quiet: false, season: null }]);
     });
   };
@@ -373,7 +373,7 @@ export function TrackerSearch({
 
   useEffect(() => {
     const state = runner.current;
-    if (!automatic || !namesReady || loading || needsAuth || error !== null || state.seasonsQueued === state.generation) return;
+    if (!automatic || !namesReady || loading || needsAuth || serverProblem !== null || error !== null || state.seasonsQueued === state.generation) return;
     state.seasonsQueued = state.generation;
     const alternatives: SearchTask[] = showNames.slice(1).map((query) => ({ query, page: 0, quiet: true, season: null }));
     const ordered = [...profiles].sort((a, b) => Number(b.number === season) - Number(a.number === season));
@@ -382,37 +382,49 @@ export function TrackerSearch({
     const otherSeasons = bySeason.filter((task) => task.season !== season);
     enqueue(items.length === 0 ? [...alternatives, ...chosenSeason, ...otherSeasons] : [...chosenSeason, ...alternatives, ...otherSeasons]);
     setAlternativesQueued(true);
-  }, [automatic, namesReady, loading, needsAuth, error, profiles, showNames]);
+  }, [automatic, namesReady, loading, needsAuth, serverProblem, error, profiles, showNames]);
 
   const releases = useMemo(() => new Map(items.map((item) => [item.id, parseTrackerRelease(item.title)])), [items]);
   const [videoSizes, setVideoSizes] = useState<Record<string, VideoSize>>({});
   const [sizeLookupIds, setSizeLookupIds] = useState<ReadonlySet<string>>(new Set());
+  const sizeLookups = useRef({ asked: new Set<string>(), pending: new Set<string>(), alive: true });
 
   useEffect(() => {
-    const unresolved = items
+    const lookups = sizeLookups.current;
+    lookups.alive = true;
+    return () => {
+      lookups.alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const lookups = sizeLookups.current;
+    const wanted = items
       .filter((item) => {
         const release = releases.get(item.id);
         return release !== undefined && isVideoRelease(release) && !release.resolution;
       })
       .slice(0, pageLookupLimit)
-      .map((item) => item.id);
-    setVideoSizes({});
-    setSizeLookupIds(new Set(unresolved));
-    if (unresolved.length === 0) return;
-
-    let stale = false;
+      .map((item) => item.id)
+      .filter((id) => !lookups.asked.has(id));
+    if (wanted.length === 0) return;
+    for (const id of wanted) {
+      lookups.asked.add(id);
+      lookups.pending.add(id);
+    }
+    setSizeLookupIds(new Set(lookups.pending));
     rutracker
-      .videoSizes(unresolved)
+      .videoSizes(wanted)
       .then((found) => {
-        if (!stale) setVideoSizes(found);
+        if (lookups.alive) setVideoSizes((known) => ({ ...known, ...found }));
       })
-      .catch(() => undefined)
+      .catch(() => {
+        for (const id of wanted) lookups.asked.delete(id);
+      })
       .finally(() => {
-        if (!stale) setSizeLookupIds(new Set());
+        for (const id of wanted) lookups.pending.delete(id);
+        if (lookups.alive) setSizeLookupIds(new Set(lookups.pending));
       });
-    return () => {
-      stale = true;
-    };
   }, [items]);
 
   const rows = useMemo<ReleaseRow[]>(
@@ -528,7 +540,37 @@ export function TrackerSearch({
         <span>RuTracker.org</span>
       </div>
 
-      {needsAuth ? (
+      {route === "server" && !needsAuth && serverProblem === null && (
+        <div className="tracker-route">
+          <Server size={15} className="tracker-route__icon" />
+          <span className="tracker-route__text">{t("tracker.server.via")}</span>
+          <button
+            type="button"
+            className="button button--small tracker-route__login"
+            title={t("tracker.server.loginHint")}
+            disabled={authBusy}
+            onClick={() => void handleLogin()}
+          >
+            {authBusy ? <LoaderCircle size={14} className="spin" /> : <LogIn size={14} />}
+            {t("tracker.server.login")}
+          </button>
+        </div>
+      )}
+
+      {serverProblem !== null ? (
+        <div className="tracker-auth">
+          <p className="archive__note">{t(`tracker.server.problem.${serverProblem}`)}</p>
+          <div className="tracker-auth__actions">
+            <button type="button" className="button button--primary" disabled={authBusy} onClick={() => void handleLogin()}>
+              {authBusy ? <LoaderCircle size={16} className="spin" /> : <LogIn size={16} />}
+              {t("tracker.server.login")}
+            </button>
+            <button type="button" className="button" disabled={authBusy} onClick={startSearch}>
+              {t("tracker.server.retry")}
+            </button>
+          </div>
+        </div>
+      ) : needsAuth ? (
         <div className="tracker-auth">
           <p className="archive__note">{t("tracker.auth.note")}</p>
           <button type="button" className="button button--primary" disabled={authBusy} onClick={() => void handleLogin()}>
@@ -658,7 +700,7 @@ export function TrackerSearch({
           {loading ? (
             <>
               <p className="archive__note">{t("tracker.searching", { query: activeQuery })}</p>
-              {slow && (
+              {slow && route === "own" && (
                 <div className="tracker-slow">
                   <p className="archive__note">{t("tracker.slow.note")}</p>
                   <button type="button" className="button" onClick={() => void rutracker.showWindow()}>

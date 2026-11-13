@@ -1,0 +1,60 @@
+services:
+  browser:
+    image: lscr.io/linuxserver/chromium:latest
+    container_name: rt-browser
+    restart: unless-stopped
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Kyiv
+      - LC_ALL=ru_RU.UTF-8
+      - CHROME_CLI=--remote-debugging-port=9222 https://rutracker.org/forum/index.php
+    volumes:
+      - ./config:/config
+    ports:
+      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:8090:8090"
+    shm_size: "1gb"
+    mem_limit: 900m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "2"
+
+  gateway:
+    build: .
+    container_name: rt-gateway
+    restart: unless-stopped
+    network_mode: "service:browser"
+    env_file: .env
+    environment:
+      - TZ=Europe/Kyiv
+    volumes:
+      - ./data:/data
+    mem_limit: 200m
+    depends_on:
+      - browser
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  checker:
+    build: ./check
+    container_name: rt-checker
+    restart: unless-stopped
+    network_mode: "service:browser"
+    environment:
+      - TZ=Europe/Kyiv
+    volumes:
+      - ./log:/log
+    mem_limit: 150m
+    depends_on:
+      - browser
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "2"

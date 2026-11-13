@@ -5,6 +5,43 @@ export const mockStreamUrl = "https://interactive-examples.mdn.mozilla.net/media
 const GiB = 1024 ** 3;
 const storagePrefix = "kinuza-mock-store:";
 
+const demoCatalog = [
+  {
+    k: "t",
+    id: 62715,
+    o: "ドラゴンボール超（スーパー）",
+    l: "ja",
+    y: 2015,
+    v: 8.2,
+    c: 5415,
+    p: 21.6,
+    g: [16, 10759, 10765],
+    t: { en: "Dragon Ball Super", ru: "Драконий жемчуг супер", uk: "Драґон Болл Супер" },
+    i: { "": "/qEUrbXJ2qt4Rg84Btlx4STOhgte.jpg", ru: "/cQ3MXMOkWfj9m3t00nhqPuFWw1j.jpg", uk: "/cQ3MXMOkWfj9m3t00nhqPuFWw1j.jpg" },
+    b: "/qA2UwUQbj05aeBMCuC0mHSQ4loE.jpg",
+    n: ["Doragon bōru sūpā", "DBS"],
+    mal: 30694,
+    s: "Драконий жемчуг: Супер",
+  },
+  {
+    k: "m",
+    id: 81,
+    o: "風の谷のナウシカ",
+    l: "ja",
+    y: 1984,
+    v: 7.9,
+    c: 4273,
+    p: 10.3,
+    g: [12, 16, 14],
+    t: { en: "Warriors of the Wind", ru: "Навсикая из Долины Ветров", uk: "Навсікая з Долини Вітрів" },
+    i: { "": "/tcrkfB8SRPQCgwI88hQScua6nxh.jpg", ru: "/tEPKp9uUEepiTvSsews2kcJQqsP.jpg", uk: "/yfN5EdaSwPQDEc4KXJeA9F03a7G.jpg" },
+    b: "/z2jsAbXWGdJvadhovznjGg33VND.jpg",
+    n: ["Kaze no Tani no Nausicaa"],
+    mal: 572,
+    s: "Навсикая из Долины ветров",
+  },
+];
+
 const demoPreview: TorrentPreview = {
   infoHash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   name: "Demo.Show.S01.1080p.WEB-DL",
@@ -98,6 +135,14 @@ const demoSeriesItems = [
   ["JoJo no Kimyou na Bouken: Stone Ocean [ONA] [01-38 из 38] [2021-2022, WEB-DL] [1080p] [JAP+Sub]", "41 GB", 6],
 ].map(([title, size, seeds], index) => ({ id: String(7100000 + index), title: String(title), size: String(size), seeds: Number(seeds), pageUrl: "https://example.com/" }));
 
+function mockGatewayFailure(): string | null {
+  try {
+    return localStorage.getItem("kinuza-mock-gateway");
+  } catch {
+    return null;
+  }
+}
+
 function demoWords(text: string): string[] {
   return text.toLowerCase().replace(/ё/g, "е").split(/[^\p{L}\p{N}]+/u).filter(Boolean);
 }
@@ -109,6 +154,19 @@ export async function mockInvoke(command: string, args: Record<string, unknown> 
     case "shikimori_search":
     case "wikidata_by_mal":
       return [];
+    case "catalog_lookup": {
+      const keys = (args.keys as { kind: string; id: number }[] | undefined) ?? [];
+      return demoCatalog.filter((record) => keys.some((key) => key.id === record.id && key.kind.startsWith(record.k))).map((record) => JSON.stringify(record));
+    }
+    case "catalog_search": {
+      const words = demoWords(String(args.query ?? ""));
+      return demoCatalog
+        .filter((record) => {
+          const names = demoWords([record.o, ...Object.values(record.t), record.s ?? "", ...record.n].join(" "));
+          return words.length > 0 && words.every((word) => names.some((name) => name.startsWith(word)));
+        })
+        .map((record) => JSON.stringify(record));
+    }
     case "tray_configure":
     case "log_write":
     case "logs_open":
@@ -125,6 +183,18 @@ export async function mockInvoke(command: string, args: Record<string, unknown> 
       return { installed: false, installing: false, downloadedBytes: 0, totalBytes: 82 * 1024 * 1024 };
     case "imdb_rating":
       return { rating: 8.8, votes: 2_600_000 };
+    case "gateway_status":
+      return { state: mockGatewayFailure() ? "login_required" : "ready" };
+    case "gateway_search":
+    case "gateway_video_sizes":
+    case "gateway_torrent_inspect": {
+      const failure = mockGatewayFailure();
+      if (failure) {
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        throw failure;
+      }
+      return mockInvoke(command.replace("gateway_", "rutracker_"), args);
+    }
     case "rutracker_search":
       await new Promise((resolve) => setTimeout(resolve, 500));
       if (demoWords(String(args.query ?? "")).some((word) => word === "джоджо" || word === "jojo")) {

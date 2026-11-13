@@ -5,7 +5,7 @@ import { backend, describeError, getAppInfo, isDesktop } from "../lib/backend";
 import { formatBytes, formatMoment } from "../lib/format";
 import { t, useT, type MessageKey } from "../lib/i18n";
 import { clearJournal, loadJournal, useJournal, type JournalArea, type JournalEntry } from "../lib/journal";
-import { rutracker, rutrackerErrors } from "../lib/rutracker";
+import { isServerError, rutracker, rutrackerErrors, serverProblemOf } from "../lib/rutracker";
 import { catalogHealth } from "../lib/tmdb";
 import { restoreFeed, tuneWeights, useFeed } from "../state/feed";
 import { ReportProblem } from "../components/ReportProblem";
@@ -55,6 +55,9 @@ async function checkTracker(): Promise<CheckResult> {
     return { status: "ok", text: t("diagnostics.tracker.ok") };
   } catch (error) {
     const code = String(error).split(":")[0];
+    if (isServerError(error)) {
+      return { status: "note", text: t(`tracker.server.problem.${serverProblemOf(error)}`) };
+    }
     if (code === rutrackerErrors.authRequired) {
       return { status: "note", text: t("diagnostics.tracker.signedOut"), hint: t("diagnostics.tracker.signedOut.hint") };
     }

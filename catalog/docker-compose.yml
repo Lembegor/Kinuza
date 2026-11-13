@@ -1,0 +1,21 @@
+services:
+  collector:
+    build: .
+    container_name: kinuza-catalog
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - TZ=Europe/Kyiv
+    volumes:
+      - ./data:/data
+      - ./public:/public
+    mem_limit: 300m
+    memswap_limit: 300m
+    cpus: 0.5
+    cpu_shares: 256
+    oom_score_adj: 500
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

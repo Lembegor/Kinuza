@@ -5,6 +5,24 @@ export type ChangelogLine = string | { heading: string };
 export type Changelog = Record<AppLanguage, ChangelogLine[]>;
 
 export const changelog: Record<string, Changelog> = {
+  "0.5.1": {
+    ru: [
+      "Русские названия аниме теперь видны прямо на карточках.",
+      "Поиск находит тайтлы по любому названию, в том числе по оригинальному, и работает быстрее.",
+      "Каталог всех фильмов и сериалов скачивается на компьютер и обновляется сам.",
+      "Раздачи на RuTracker теперь можно искать без своего аккаунта - через сервер Kinuza. Войти в свой аккаунт можно в любой момент.",
+    ],
+    en: [
+      "Search finds titles by any of their names, including the original one, and works faster.",
+      "The catalog of every movie and show is downloaded to your computer and updates on its own.",
+      "You can now search RuTracker releases without your own account - through the Kinuza server. You can sign in to your own account at any time.",
+    ],
+    uk: [
+      "Пошук знаходить тайтли за будь-якою назвою, зокрема за оригінальною, і працює швидше.",
+      "Каталог усіх фільмів і серіалів завантажується на комп'ютер і оновлюється сам.",
+      "Роздачі на RuTracker тепер можна шукати без свого акаунта - через сервер Kinuza. Увійти у свій акаунт можна будь-коли.",
+    ],
+  },
   "0.5.0": {
     ru: [
       "Улучшен поиск по жанрам в аниме.",

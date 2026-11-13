@@ -3,11 +3,13 @@ mod associations;
 #[cfg(not(windows))]
 #[path = "associations_linux.rs"]
 mod associations;
+mod catalog;
 mod commands;
 mod engine;
 mod external_player;
 mod ffmpeg;
 mod fingerprint;
+mod gateway;
 mod children;
 mod files;
 mod host;
@@ -69,6 +71,7 @@ pub fn run() {
         .manage(fingerprint::PrintState::default())
         .manage(files::FileGrants::default())
         .manage(media_keys::MediaKeys::default())
+        .manage(catalog::CatalogState::default())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
@@ -94,6 +97,7 @@ pub fn run() {
                 }
             };
             app.manage(state);
+            catalog::start(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -140,6 +144,9 @@ pub fn run() {
             metadata::shikimori_names,
             metadata::shikimori_search,
             metadata::wikidata_by_mal,
+            catalog::catalog_lookup,
+            catalog::catalog_search,
+            catalog::catalog_status,
             online_subtitles::online_subtitles_download,
             ffmpeg::ffmpeg_status,
             ffmpeg::ffmpeg_install,
@@ -171,6 +178,10 @@ pub fn run() {
             rutracker::rutracker_search,
             rutracker::rutracker_magnet,
             rutracker::rutracker_video_sizes,
+            gateway::gateway_search,
+            gateway::gateway_torrent_inspect,
+            gateway::gateway_video_sizes,
+            gateway::gateway_status,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Kinuza")

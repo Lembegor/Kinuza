@@ -213,7 +213,7 @@ export interface CacheEntry {
   inUse: boolean;
 }
 
-export type StoragePartId = "library" | "ffmpeg" | "imdb" | "fingerprints" | "logs" | "mpv" | "webCache" | "webData";
+export type StoragePartId = "library" | "catalog" | "ffmpeg" | "imdb" | "fingerprints" | "logs" | "mpv" | "webCache" | "webData";
 
 export interface StoragePart {
   id: StoragePartId;
@@ -344,6 +344,8 @@ export const backend = {
   shikimoriNames: (ids: number[]) => call<ShikimoriName[] | null>("shikimori_names", { ids }),
   shikimoriSearch: (query: string) => call<ShikimoriFound[] | null>("shikimori_search", { query }),
   wikidataByMal: (ids: number[]) => call<MalLink[] | null>("wikidata_by_mal", { ids }),
+  catalogLookup: (keys: { kind: string; id: number }[]) => call<string[] | null>("catalog_lookup", { keys }),
+  catalogSearch: (query: string) => call<string[] | null>("catalog_search", { query }),
   clearStoragePart: (id: StoragePartId) => call<number>("storage_clear_part", { id }),
   dropCached: (infoHash: string) => call<number>("storage_drop_cached", { infoHash }),
   freeDownload: (infoHash: string) => call<number>("storage_free_download", { infoHash }),
@@ -379,6 +381,10 @@ const errorMessages: Record<string, MessageKey> = {
   auth_required: "errors.trackerAuth",
   magnet_not_found: "errors.releaseUnavailable",
   torrent_file_unavailable: "errors.releaseUnavailable",
+  gateway_login: "errors.serverLogin",
+  gateway_challenge: "errors.serverLogin",
+  gateway_down: "errors.serverDown",
+  gateway_timeout: "errors.serverDown",
   timeout: "errors.trackerTimeout",
   cancelled: "errors.trackerCancelled",
   library_unreadable: "errors.libraryUnreadable",

@@ -7,6 +7,7 @@ import { imageUrl, tmdb, type FoundPerson, type MediaItem } from "../lib/tmdb";
 import { isWatched, titleKey, unitKey, useLibrary } from "../state/library";
 import { useAsync } from "../lib/useAsync";
 import { animeByName } from "../lib/localized";
+import { catalogSearch } from "../lib/catalog";
 import { bestPersonTier, bestTitleTier, rankTitles } from "../lib/searchRank";
 
 type Filter = "all" | "movie" | "tv" | "anime" | "people";
@@ -87,7 +88,12 @@ export default function Search() {
     `search:${query}:${pages}`,
   );
 
-  const extras = useAsync(async () => ({ query, matches: query ? await animeByName(query).catch(() => []) : [] }), [query]);
+  const extras = useAsync(async () => {
+    if (!query) return { query, matches: [] };
+    const local = await catalogSearch(query).catch(() => []);
+    const matches = local.length > 0 ? local : await animeByName(query).catch(() => []);
+    return { query, matches };
+  }, [query]);
   const extraMatches = extras.data?.query === query ? extras.data.matches : [];
 
   const change = (next: { type?: Filter; pages?: number; hideWatched?: boolean }) => {
@@ -119,7 +125,7 @@ export default function Search() {
   const nothing = visible.length === 0 && people.length === 0;
   const peopleFirst = filter === "people" || (() => {
     const personTier = bestPersonTier(query, people);
-    return personTier <= 1 && extraMatches.length === 0 && bestTitleTier(query, visible) >= 3;
+    return personTier <= 1 && !extraMatches.some((match) => match.exact) && bestTitleTier(query, visible) >= 3;
   })();
   const peopleSection = people.length > 0 && (
     <section className={`section ${peopleFirst ? "section--first" : ""}`}>

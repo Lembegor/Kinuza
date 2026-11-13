@@ -500,6 +500,48 @@ label.file-row,
   margin-top: 10px;
 }
 
+.tracker-auth__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tracker-route {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  padding: 8px 8px 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.tracker-route__icon {
+  flex: none;
+  color: var(--faint);
+}
+
+.tracker-route__text {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.tracker-route__login {
+  flex: none;
+  background: var(--accent-soft);
+  border-color: transparent;
+  color: var(--text);
+}
+
+.tracker-route__login:hover:not(:disabled) {
+  background: var(--accent);
+  border-color: transparent;
+  color: #fff;
+}
+
 .tracker-form {
   display: flex;
   gap: 8px;

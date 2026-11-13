@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { backend, isDesktop } from "../lib/backend";
 import { isVideoRelease, parseTrackerRelease, qualityRank } from "../lib/parse";
-import { rutracker, rutrackerErrors } from "../lib/rutracker";
+import { isServerError, rutracker, rutrackerErrors } from "../lib/rutracker";
 import type { MediaItem } from "../lib/tmdb";
 import { useUi } from "./ui";
 
@@ -67,7 +67,7 @@ function trackerQuery(item: MediaItem): string {
 }
 
 async function check(item: MediaItem): Promise<Availability> {
-  const results = await rutracker.search(trackerQuery(item), true);
+  const results = await rutracker.search(trackerQuery(item), true, 0, true);
   let quality = "";
   let seeds = 0;
   for (const result of results) {
@@ -88,10 +88,6 @@ async function run(): Promise<void> {
   if (running) return;
   running = true;
   try {
-    if ((await rutracker.maybeSignedIn()) === false) {
-      queue = [];
-      return;
-    }
     while (queue.length > 0 && !stoppedForSession) {
       if (useUi.getState().addSource) {
         await sleep(busyWaitMs);
@@ -105,7 +101,7 @@ async function run(): Promise<void> {
         save();
       } catch (error) {
         const code = String(error);
-        if (code.includes(rutrackerErrors.authRequired) || code.includes(rutrackerErrors.cancelled) || code.includes(rutrackerErrors.timeout)) {
+        if (isServerError(error) || code.includes(rutrackerErrors.authRequired) || code.includes(rutrackerErrors.cancelled) || code.includes(rutrackerErrors.timeout)) {
           stoppedForSession = true;
           queue = [];
           break;

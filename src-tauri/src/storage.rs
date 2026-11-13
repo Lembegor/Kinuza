@@ -85,6 +85,9 @@ pub fn storage_report(app: AppHandle, state: State<'_, AppState>, download_dir: 
         Part { id: "fingerprints", bytes: size_of(&data_dir.join("fingerprints")), clearable: true, later: false },
         Part { id: "logs", bytes: old_logs_bytes(&data_dir.join("logs")), clearable: true, later: false },
     ];
+    if let Ok(local) = app.path().app_local_data_dir() {
+        parts.push(Part { id: "catalog", bytes: size_of(&local.join("catalog")), clearable: false, later: false });
+    }
     let mpv_copy = size_of(&data_dir.join("mpv"));
     if mpv_copy > 0 {
         parts.push(Part { id: "mpv", bytes: mpv_copy, clearable: crate::mpv::has_bundled(&app), later: false });
