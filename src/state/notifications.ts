@@ -57,7 +57,11 @@ export function startEpisodeNotifications(): void {
   if (!isDesktop) return;
   const check = async () => {
     await announceNewEpisodes().catch((error) => report("system", "journal.notifications.failed", error));
-    for (const { title, count } of await checkReleaseUpdates()) {
+    const updates = await checkReleaseUpdates().catch((error) => {
+      report("system", "journal.notifications.failed", error);
+      return [];
+    });
+    for (const { title, count } of updates) {
       useInbox.getState().add({
         kind: "episodes",
         title: t("notifications.episodes.added"),

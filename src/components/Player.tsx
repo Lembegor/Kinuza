@@ -172,6 +172,12 @@ const plainSoundFolder = /^(sound|sounds|audio|звук|озвучка|озву�
 const maxTorrentAudio = 16;
 const syncPrintSeconds = 300;
 const syncLeastSeconds = 20;
+let windowFullscreenKept = false;
+let miniWindowKept = false;
+
+function playerClosed(): boolean {
+  return useUi.getState().player === null;
+}
 const audioAttachWaitMs = 90_000;
 const holdSpeedAfterMs = 350;
 const holdSpeedRate = 2;
@@ -747,7 +753,10 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
   const [countdown, setCountdown] = useState<number | null>(null);
   const [menu, setMenu] = useState<Menu>(null);
   const [controlsVisible, setControlsVisible] = useState(true);
-  const [fullscreen, setFullscreen] = useState(false);
+  const [fullscreen, setFullscreen] = useState(() => windowFullscreenKept && !playerClosed());
+  useEffect(() => {
+    windowFullscreenKept = fullscreen;
+  }, [fullscreen]);
   const [rate, setRate] = useState(() => useLibrary.getState().preferences[titleKey(session.title.type, session.title.id)]?.rate ?? 1);
   const [audio, setAudio] = useState<{ options: AudioOption[]; selected: number }>({ options: [], selected: 0 });
   const [cues, setCues] = useState<Cue[]>([]);
@@ -973,10 +982,11 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
 
   useEffect(() => {
     const video = videoRef.current;
+    if (!(video instanceof HTMLMediaElement)) return;
     // WebKit keeps a detached <video> loading (and re-polling an HLS playlist, which restarts the conversion) until its source is cleared.
     return () => {
-      video?.removeAttribute("src");
-      video?.load();
+      video.removeAttribute("src");
+      video.load();
     };
   }, [url]);
 
@@ -1169,12 +1179,14 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
     };
   }, [playedTorrent]);
 
+  useEffect(() => () => saveProgress(), [saveProgress]);
   useEffect(
     () => () => {
-      saveProgress();
+      if (!playerClosed()) return;
+      windowFullscreenKept = false;
       void setWindowFullscreen(false, null);
     },
-    [saveProgress],
+    [],
   );
 
   const close = useCallback(() => {
@@ -1241,6 +1253,25 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
     setSourceId(next.id);
     setMenu(null);
   };
+
+  const askedSource = useRef(session.preferredSourceId);
+  useEffect(() => {
+    const wanted = session.preferredSourceId;
+    if (!wanted || wanted === askedSource.current) return;
+    askedSource.current = wanted;
+    const next = sources.find((item) => item.id === wanted);
+    if (next) switchSource(next);
+  }, [session]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const liveSourceId = useRef(source?.id);
+  liveSourceId.current = source?.id;
+  const viewAlive = useRef(true);
+  useEffect(() => {
+    viewAlive.current = true;
+    return () => {
+      viewAlive.current = false;
+    };
+  }, []);
 
   const credits = segments.find((segment) => segment.kind === "credits" && duration > 0 && segment.start > duration / 2);
   const upNextFrom =
@@ -1428,6 +1459,8 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
 
   const attachAudio = async (infoHash: string, fileIndex: number, key: string, guess: TrackGuess, release: boolean, sync: boolean) => {
     if (!usingMpv || !source || audioBusy) return;
+    const startedFor = source.id;
+    const sameSource = () => viewAlive.current && liveSourceId.current === startedFor;
     setAudioBusy(key);
     setMenu(null);
     try {
@@ -1445,13 +1478,15 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
           offset = null;
         }
       }
+      if (!sameSource()) return;
       if (!sync) showHint(t("player.voice.attaching"));
       const heard = () => mpvPlayer.video.tracks()?.audio ?? [];
       const before = new Set(heard().map((track) => track.externalFile));
       const added = () => heard().filter((track) => track.externalFile && (track.externalFile === url || !before.has(track.externalFile)));
       const startedAt = Date.now();
       if (added().length === 0) await mpv.command("audio-add", url, "auto").catch(() => undefined);
-      while (added().length === 0 && Date.now() - startedAt < audioAttachWaitMs) await new Promise((resolve) => setTimeout(resolve, 300));
+      while (sameSource() && added().length === 0 && Date.now() - startedAt < audioAttachWaitMs) await new Promise((resolve) => setTimeout(resolve, 300));
+      if (!sameSource()) return;
       const found = added();
       if (found.length === 0) {
         void backend.appLog(`player: outside sound ${key} did not open in ${Math.round((Date.now() - startedAt) / 1000)}s`);
@@ -1491,17 +1526,20 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
         `player: outside sound ${key} from ${infoHash.slice(0, 8)} file ${fileIndex}, tracks=${found.length}, offset=${offset === null ? "none" : offset.toFixed(2)}`,
       );
     } catch (error) {
-      toast(describeError(error), "error");
+      if (sameSource()) toast(describeError(error), "error");
     } finally {
-      setAudioBusy(null);
+      if (viewAlive.current) setAudioBusy(null);
     }
   };
 
   const borrowVoice = async (candidate: PickCandidate, voice: ReleaseVoice, key: string) => {
-    if (!usingMpv || audioBusy) return;
+    if (!usingMpv || audioBusy || !source) return;
+    const startedFor = source.id;
+    const sameSource = () => viewAlive.current && liveSourceId.current === startedFor;
     setAudioBusy(key);
     try {
       const ready = await inspectPick(session.unitKey, candidate.id);
+      if (!sameSource()) return;
       const video = ready?.preview.files.find((file) => file.index === ready.fileIndex);
       if (!ready || !video) {
         toast(t("stage.pick.noFile"), "error");
@@ -1511,6 +1549,7 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
       const named = voice.author.toLowerCase();
       const chosen = named ? separate.find((option) => option.label.toLowerCase().includes(named)) : separate[0];
       await backend.addTorrent(ready.infoHash, [], useSettings.getState().downloadDir || null);
+      if (!sameSource()) return;
       setAudioBusy(null);
       await attachAudio(ready.infoHash, chosen?.file.index ?? ready.fileIndex, key, { code: voice.language, kind: voice.kind, author: voice.author }, true, true);
     } catch (error) {
@@ -1639,20 +1678,28 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
     setExpanded(!expanded);
   }, [onPage, fullscreen]);
 
-  const [mini, setMini] = useState(false);
+  const [mini, setMini] = useState(() => miniWindowKept && !playerClosed());
+  useEffect(() => {
+    miniWindowKept = mini;
+  }, [mini]);
   const toggleMini = useCallback(() => {
     if (onPage) usePlayerPlacement.getState().setExpanded(!mini);
-    setMini((value) => {
-      if (!value) {
-        setFullscreen(false);
-        void setWindowFullscreen(false, rootRef.current).then(() => setMiniWindow(true));
-      } else {
-        void setMiniWindow(false);
-      }
-      return !value;
-    });
-  }, []);
-  useEffect(() => () => void setMiniWindow(false), []);
+    if (!mini) {
+      setFullscreen(false);
+      void setWindowFullscreen(false, rootRef.current).then(() => setMiniWindow(true));
+    } else {
+      void setMiniWindow(false);
+    }
+    setMini(!mini);
+  }, [mini, onPage]);
+  useEffect(
+    () => () => {
+      if (!playerClosed()) return;
+      miniWindowKept = false;
+      void setMiniWindow(false);
+    },
+    [],
+  );
 
 
   useEffect(() => {
@@ -1721,10 +1768,22 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
         togglePlay();
       }
     };
+    const letGo = () => {
+      const hold = holdSpeed.current;
+      clearTimeout(hold.timer);
+      hold.timer = undefined;
+      if (!hold.active) return;
+      hold.active = false;
+      if (videoRef.current) videoRef.current.playbackRate = hold.rate;
+    };
     window.addEventListener("keyup", release);
+    window.addEventListener("blur", letGo);
+    document.addEventListener("visibilitychange", letGo);
     return () => {
       window.removeEventListener("keyup", release);
-      clearTimeout(holdSpeed.current.timer);
+      window.removeEventListener("blur", letGo);
+      document.removeEventListener("visibilitychange", letGo);
+      letGo();
     };
   }, [togglePlay, showHint]);
 
@@ -2093,7 +2152,12 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
   const shiftAudio = (step: number) => {
     const next = step === 0 ? 0 : clampDelay(audioDelay + step);
     setAudioDelay(next);
-    rememberForTitle(session.title, { audioDelay: next });
+    if (externalAudio) {
+      const borrowed = outside.current[externalAudio.url];
+      if (borrowed) borrowed.delay = next;
+    } else {
+      rememberForTitle(session.title, { audioDelay: next });
+    }
     showHint(t("player.delay.audio.hint", { value: formatDelay(next) }));
   };
 
@@ -2453,7 +2517,7 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
             return Number.isFinite(value) ? value.toFixed(digits) : "-";
           };
           void backend.appLog(
-            `player: health at ${Math.round(filmTime())}s ${stats["video-codec"] ?? "-"} ${number("width")}x${number("height")} hwdec=${stats["hwdec-current"] ?? "-"} vo=${stats["current-vo"] ?? "-"} fps=${number("estimated-vf-fps", 1)}/${number("container-fps", 1)} display=${number("display-fps", 1)} bitrate=${Math.round(Number(stats["video-bitrate"] ?? 0) / 1000)}kbps cache_ahead=${number("demuxer-cache-duration", 1)}s dropped_last_30s=${fresh} dropped_total=${dropped} quality=${sessionQuality}`,
+            `player: health at ${Math.round(filmTime())}s ${stats["video-codec"] ?? "-"} ${number("width")}x${number("height")} hwdec=${stats["hwdec-current"] ?? "-"} vo=${stats["current-vo"] ?? "-"} fps=${number("estimated-vf-fps", 1)}/${number("container-fps", 1)} display=${number("display-fps", 1)} bitrate=${Math.round(Number(stats["video-bitrate"] ?? 0) / 1000)}kbps cache_ahead=${number("demuxer-cache-duration", 1)}s dropped_last_30s=${fresh} dropped_total=${dropped} speed=${number("speed", 2)} quality=${sessionQuality}`,
           );
         })
         .catch(() => undefined);

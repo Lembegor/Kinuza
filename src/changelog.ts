@@ -5,6 +5,23 @@ export type ChangelogLine = string | { heading: string };
 export type Changelog = Record<AppLanguage, ChangelogLine[]>;
 
 export const changelog: Record<string, Changelog> = {
+  "0.5.6": {
+    ru: [
+      "Если TMDB недоступен, каталог, страницы фильмов и картинки открываются через сервер Kinuza.",
+      "Если трекер недоступен напрямую, поиск раздач сам идёт через сервер Kinuza.",
+      "Много мелких исправлений",
+    ],
+    en: [
+      "If TMDB is unavailable, the catalog, title pages and pictures open through the Kinuza server.",
+      "If the tracker cannot be reached directly, the release search goes through the Kinuza server by itself.",
+      "Lots of small fixes",
+    ],
+    uk: [
+      "Якщо TMDB недоступний, каталог, сторінки фільмів і картинки відкриваються через сервер Kinuza.",
+      "Якщо трекер недоступний напряму, пошук роздач сам іде через сервер Kinuza.",
+      "Багато дрібних виправлень",
+    ],
+  },
   "0.5.5": {
     ru: [
       "Kinuza теперь есть на Mac (M1 и новее)!",

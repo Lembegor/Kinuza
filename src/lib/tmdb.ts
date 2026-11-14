@@ -1,8 +1,127 @@
 import { t } from "./i18n";
 import { report } from "./journal";
 
-const apiBase = "https://api.themoviedb.org/3";
-const imageBase = "https://image.tmdb.org/t/p";
+export type CatalogRouteId = "direct" | "proxy" | "server";
+
+interface CatalogRoute {
+  id: CatalogRouteId;
+  api: string;
+  images: string;
+}
+
+const catalogRoutes: CatalogRoute[] = [
+  { id: "direct", api: "https://api.themoviedb.org/3", images: "https://image.tmdb.org/t/p" },
+  { id: "proxy", api: "https://channeluza.com/kinuza/tmdb/3", images: "https://channeluza.com/kinuza/i/t/p" },
+  { id: "server", api: "https://kinuza.channeluza.com/kinuza/tmdb/3", images: "https://kinuza.channeluza.com/kinuza/i/t/p" },
+];
+const routeStorageKey = "kinuza-catalog-route";
+const routeProbeTimeoutMs = 9000;
+const requestTimeoutMs = 15000;
+const timeoutMessage = "tmdb_timeout";
+const routeRecheckMs = 6 * 60 * 60 * 1000;
+const routeFailureGapMs = 15000;
+
+function storedRoute(): CatalogRoute | null {
+  try {
+    const id = localStorage.getItem(routeStorageKey);
+    return catalogRoutes.find((route) => route.id === id) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+const rememberedRoute = storedRoute();
+let route: CatalogRoute = rememberedRoute ?? catalogRoutes[0];
+let routeCheck: Promise<boolean> | null = null;
+let routeCheckedAt = 0;
+let firstCheck: Promise<boolean> | null = null;
+const routeListeners = new Set<() => void>();
+
+export function catalogRoute(): CatalogRouteId {
+  return route.id;
+}
+
+export function onCatalogRouteChange(listener: () => void): () => void {
+  routeListeners.add(listener);
+  return () => routeListeners.delete(listener);
+}
+
+export function catalogImageBases(): string[] {
+  return catalogRoutes.map((item) => item.images);
+}
+
+export function currentImageBase(): string {
+  return route.images;
+}
+
+function saveRoute(id: CatalogRouteId): void {
+  try {
+    localStorage.setItem(routeStorageKey, id);
+  } catch {
+    return;
+  }
+}
+
+function switchRoute(next: CatalogRoute): void {
+  const changed = next !== route;
+  route = next;
+  saveRoute(next.id);
+  if (changed) for (const listener of routeListeners) listener();
+}
+
+async function probeRoute(candidate: CatalogRoute): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), routeProbeTimeoutMs);
+  try {
+    const key = apiKeyOverride ?? import.meta.env.VITE_TMDB_API_KEY ?? "";
+    const response = await fetch(`${candidate.api}/movie/550?api_key=${encodeURIComponent(key)}&append_to_response=credits,images`, {
+      signal: controller.signal,
+    });
+    if (response.status === keyRejectedStatus) return true;
+    if (!response.ok) return false;
+    const data = (await response.json()) as { id?: number; poster_path?: string | null };
+    if (data.id !== 550) return false;
+    if (!data.poster_path) return true;
+    const picture = await fetch(`${candidate.images}/w342${data.poster_path}`, { mode: "no-cors", signal: controller.signal });
+    await picture.blob();
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export function checkCatalogRoute(): Promise<boolean> {
+  routeCheck ??= (async () => {
+    try {
+      for (const candidate of catalogRoutes) {
+        if (await probeRoute(candidate)) {
+          switchRoute(candidate);
+          return true;
+        }
+      }
+      return false;
+    } finally {
+      routeCheckedAt = Date.now();
+      routeCheck = null;
+    }
+  })();
+  return routeCheck;
+}
+
+function startRouteChecks(): void {
+  if (firstCheck) return;
+  firstCheck = checkCatalogRoute();
+  setInterval(() => {
+    if (route.id !== "direct") void checkCatalogRoute();
+  }, routeRecheckMs);
+}
+
+export function noteCatalogTrouble(): void {
+  if (routeCheck || Date.now() - routeCheckedAt < routeFailureGapMs) return;
+  void checkCatalogRoute();
+}
 const animationGenreId = 16;
 const catalogLocales = {
   en: { language: "en-US", region: "US" },
@@ -220,7 +339,7 @@ export type BackdropSize = "w780" | "w1280" | "original";
 export type StillSize = "w300" | "w500";
 
 export function imageUrl(path: string | null, size: PosterSize | BackdropSize | StillSize): string | null {
-  return path ? `${imageBase}/${size}${path}` : null;
+  return path ? `${route.images}/${size}${path}` : null;
 }
 
 let apiKeyOverride: string | null = null;
@@ -250,9 +369,10 @@ const keyRejectedStatus = 401;
 
 export async function catalogHealth(): Promise<CatalogHealth> {
   if (!hasApiKey()) return "noKey";
+  if (!(await checkCatalogRoute())) return "unreachable";
   try {
     const key = apiKeyOverride ?? import.meta.env.VITE_TMDB_API_KEY ?? "";
-    const response = await fetch(`${apiBase}/configuration?api_key=${encodeURIComponent(key)}`);
+    const response = await fetch(`${route.api}/configuration?api_key=${encodeURIComponent(key)}`);
     if (response.ok) return "ok";
     return response.status === keyRejectedStatus ? "keyRejected" : "unreachable";
   } catch {
@@ -304,15 +424,29 @@ function episodeName(raw: Raw): string {
   return name;
 }
 
+async function fetchWithTimeout(url: string): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), requestTimeoutMs);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    const body = await response.text();
+    return new Response(body, { status: response.status, headers: response.headers });
+  } catch (error) {
+    throw error instanceof TypeError ? error : new TypeError(timeoutMessage);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function fetchWithRetry(url: string): Promise<unknown> {
   for (let attempt = 0; ; attempt++) {
     try {
-      const response = await fetch(url);
+      const response = await fetchWithTimeout(url);
       if (response.ok) return await response.json();
       const retryable = response.status === 429 || response.status >= 500;
       if (!retryable || attempt >= maxRetries) throw new Error(`tmdb_${response.status}`);
     } catch (error) {
-      const networkFailure = error instanceof TypeError;
+      const networkFailure = error instanceof TypeError && error.message !== timeoutMessage;
       if (!networkFailure || attempt >= maxRetries) throw error;
     }
     await new Promise((resolve) => setTimeout(resolve, retryDelayMs * (attempt + 1)));
@@ -321,6 +455,20 @@ async function fetchWithRetry(url: string): Promise<unknown> {
 
 const imdbIdMaxAgeMs = 30 * 24 * 60 * 60 * 1000;
 
+async function fetchOnRoute(path: string, query: URLSearchParams): Promise<unknown> {
+  startRouteChecks();
+  if (!rememberedRoute && firstCheck) await firstCheck;
+  const tried = route;
+  try {
+    return await fetchWithRetry(`${tried.api}${path}?${query}`);
+  } catch (error) {
+    if (!(error instanceof TypeError)) throw error;
+    if (route === tried && !(await checkCatalogRoute())) throw error;
+    if (route === tried) throw error;
+    return fetchWithRetry(`${route.api}${path}?${query}`);
+  }
+}
+
 function request<T>(path: string, params: Record<string, string | number> = {}, maxAgeMs = defaultMaxAgeMs): Promise<T> {
   const query = new URLSearchParams({
     api_key: apiKeyOverride ?? import.meta.env.VITE_TMDB_API_KEY ?? "",
@@ -328,7 +476,7 @@ function request<T>(path: string, params: Record<string, string | number> = {}, 
     include_adult: "false",
     ...Object.fromEntries(Object.entries(params).map(([key, value]) => [key, String(value)])),
   });
-  const url = `${apiBase}${path}?${query}`;
+  const url = `${path}?${query}`;
 
   const cached = cache.get(url);
   if (cached && Date.now() - (cachedAt.get(url) ?? 0) <= maxAgeMs) {
@@ -337,7 +485,7 @@ function request<T>(path: string, params: Record<string, string | number> = {}, 
     return cached as Promise<T>;
   }
 
-  const pending = fetchWithRetry(url);
+  const pending = fetchOnRoute(path, query);
   pending.catch(() => cache.delete(url));
   pending.catch((error) => {
     if (!(error instanceof Error && error.message === "tmdb_404")) report("catalog", "journal.catalog.failed", error);

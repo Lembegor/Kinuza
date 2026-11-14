@@ -162,6 +162,7 @@ export class MpvVideo {
     await mpv.set("mute", this.mutedNow);
     await mpv.set("speed", this.rateNow);
     await mpv.set("sid", "no");
+    await mpv.set("secondary-sid", "no").catch(() => undefined);
     await mpv.set("start", start > 0 ? String(start) : "none");
     await mpv.set("pause", startPaused);
     this.pausedNow = startPaused;

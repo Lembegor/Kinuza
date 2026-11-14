@@ -68,14 +68,28 @@ pub struct StoredDocument {
     recovered: bool,
 }
 
+static STORE_WRITES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[tauri::command]
-pub fn store_get(state: State<'_, AppState>, name: String) -> Result<Option<StoredDocument>, String> {
-    read_document(&state.data_dir.join(STORE_FOLDER_NAME), &name)
+pub async fn store_get(state: State<'_, AppState>, name: String) -> Result<Option<StoredDocument>, String> {
+    let folder = state.data_dir.join(STORE_FOLDER_NAME);
+    tauri::async_runtime::spawn_blocking(move || {
+        let _writing = STORE_WRITES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        read_document(&folder, &name)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
-pub fn store_set(state: State<'_, AppState>, name: String, value: String, allow_shrink: Option<bool>) -> Result<(), String> {
-    save_document(&state.data_dir.join(STORE_FOLDER_NAME), &name, &value, allow_shrink.unwrap_or(false))
+pub async fn store_set(state: State<'_, AppState>, name: String, value: String, allow_shrink: Option<bool>) -> Result<(), String> {
+    let folder = state.data_dir.join(STORE_FOLDER_NAME);
+    tauri::async_runtime::spawn_blocking(move || {
+        let _writing = STORE_WRITES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        save_document(&folder, &name, &value, allow_shrink.unwrap_or(false))
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 fn save_document(folder: &Path, name: &str, value: &str, allow_shrink: bool) -> Result<(), String> {

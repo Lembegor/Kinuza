@@ -7,6 +7,9 @@ import { runBeforeClose } from "../lib/lifecycle";
 import { mpv } from "../lib/mpv";
 import { flushLibrary } from "./library";
 
+const updateCheckTimeoutMs = 30_000;
+const updateDownloadTimeoutMs = 20 * 60_000;
+
 export interface UpdateChanges {
   version: string;
   lines: Partial<Record<AppLanguage, ChangelogLine[]>>;
@@ -83,7 +86,7 @@ export const useUpdater = create<UpdaterState>((set, get) => ({
     set({ status: "checking" });
     try {
       const { check } = await import("@tauri-apps/plugin-updater");
-      pending = await check();
+      pending = await check({ timeout: updateCheckTimeoutMs });
       if (pending) {
         const installed = (await getAppInfo().catch(() => null))?.version ?? pending.currentVersion ?? "";
         set({ status: "available", version: pending.version, notes: pending.body ?? "", changes: changesOf(pending.rawJson, installed, pending.version), dismissed: false });
@@ -102,14 +105,17 @@ export const useUpdater = create<UpdaterState>((set, get) => ({
     try {
       let total = 0;
       let received = 0;
-      await pending.download((event) => {
-        if (event.event === "Started") total = event.data.contentLength ?? 0;
-        if (event.event === "Progress") {
-          received += event.data.chunkLength;
-          if (total > 0) set({ progress: received / total });
-        }
-        if (event.event === "Finished") set({ status: "installing", progress: 1 });
-      });
+      await pending.download(
+        (event) => {
+          if (event.event === "Started") total = event.data.contentLength ?? 0;
+          if (event.event === "Progress") {
+            received += event.data.chunkLength;
+            if (total > 0) set({ progress: received / total });
+          }
+          if (event.event === "Finished") set({ status: "installing", progress: 1 });
+        },
+        { timeout: updateDownloadTimeoutMs },
+      );
       await runBeforeClose();
       await flushLibrary().catch((error) => report("updates", "journal.close.failed", error));
       if (mpv.supported) await mpv.quit().catch((error) => report("updates", "journal.close.failed", error));

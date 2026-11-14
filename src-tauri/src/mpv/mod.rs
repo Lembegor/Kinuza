@@ -123,6 +123,7 @@ const AUDIO_FILTERS: &[(&str, &str)] = &[
 ];
 
 const STATS_PROPERTIES: &[&str] = &[
+    "speed",
     "video-codec",
     "video-format",
     "width",

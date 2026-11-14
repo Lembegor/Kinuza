@@ -371,6 +371,7 @@ async function writeLibrary(): Promise<void> {
       forgetLegacy();
     }
   } catch (error) {
+    libraryDirty = true;
     saveFailed(error);
   }
 }
@@ -394,7 +395,10 @@ function flushProgress(): Promise<void> {
   clearTimeout(progressTimer);
   progressTimer = undefined;
   if (!progressDirty) return Promise.resolve();
-  return writeProgress().catch(saveFailed);
+  return writeProgress().catch((error) => {
+    progressDirty = true;
+    saveFailed(error);
+  });
 }
 
 export async function flushLibrary(): Promise<void> {

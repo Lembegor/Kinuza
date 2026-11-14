@@ -18,7 +18,8 @@ const FOLDER_NAME: &str = "imdb";
 const INDEX_FILE_NAME: &str = "ratings.bin";
 const MAX_INDEX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const RETRY_AFTER_FAILURE: Duration = Duration::from_secs(30 * 60);
-const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(60);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 const RECORD_BYTES: usize = 9;
 const RATING_SCALE: f32 = 10.0;
 
@@ -30,7 +31,7 @@ pub struct ImdbRating {
 
 #[derive(Default)]
 pub struct ImdbState {
-    last_failure: Mutex<Option<SystemTime>>,
+    last_failure: std::sync::Arc<Mutex<Option<SystemTime>>>,
 }
 
 const MAX_BATCH: usize = 400;
@@ -79,24 +80,43 @@ pub async fn imdb_ratings(
     .map_err(|e| e.to_string())
 }
 
+static REFRESHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 async fn fresh_index(app: &AppState, imdb: &ImdbState) -> PathBuf {
     let index = app.data_dir.join(FOLDER_NAME).join(INDEX_FILE_NAME);
-    {
-        let mut last_failure = imdb.last_failure.lock().await;
-        let failed_recently = last_failure
-            .and_then(|at| at.elapsed().ok())
-            .is_some_and(|since| since < RETRY_AFTER_FAILURE);
-        if is_stale(&index) && !failed_recently {
-            match refresh(&index).await {
-                Ok(()) => *last_failure = None,
-                Err(error) => {
-                    tracing::warn!("imdb: refresh failed: {error}");
-                    *last_failure = Some(SystemTime::now());
-                }
-            }
+    if !is_stale(&index) {
+        return index;
+    }
+    if index.is_file() {
+        if !REFRESHING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            let target = index.clone();
+            let last_failure = imdb.last_failure.clone();
+            tauri::async_runtime::spawn(async move {
+                refresh_once(&target, &last_failure).await;
+                REFRESHING.store(false, std::sync::atomic::Ordering::SeqCst);
+            });
+        }
+        return index;
+    }
+    refresh_once(&index, &imdb.last_failure).await;
+    index
+}
+
+async fn refresh_once(index: &Path, last_failure: &Mutex<Option<SystemTime>>) {
+    let mut last_failure = last_failure.lock().await;
+    let failed_recently = last_failure
+        .and_then(|at| at.elapsed().ok())
+        .is_some_and(|since| since < RETRY_AFTER_FAILURE);
+    if !is_stale(index) || failed_recently {
+        return;
+    }
+    match refresh(index).await {
+        Ok(()) => *last_failure = None,
+        Err(error) => {
+            tracing::warn!("imdb: refresh failed: {error}");
+            *last_failure = Some(SystemTime::now());
         }
     }
-    index
 }
 
 fn is_stale(index: &Path) -> bool {
@@ -108,7 +128,7 @@ fn is_stale(index: &Path) -> bool {
 }
 
 async fn refresh(index: &Path) -> anyhow::Result<()> {
-    let client = reqwest::Client::builder().timeout(DOWNLOAD_TIMEOUT).build()?;
+    let client = reqwest::Client::builder().connect_timeout(CONNECT_TIMEOUT).read_timeout(DOWNLOAD_TIMEOUT).build()?;
     let archive = client.get(RATINGS_URL).send().await?.error_for_status()?.bytes().await?;
 
     let index = index.to_path_buf();

@@ -40,14 +40,23 @@ interface RawMedia {
 const fields = `id idMal type format episodes title { romaji english } startDate { year month day } coverImage { large }`;
 const withRelations = `${fields} relations { edges { relationType node { ${fields} } } }`;
 
+const askTimeoutMs = 15000;
+
 async function ask<T>(query: string, variables: Record<string, unknown>): Promise<T> {
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: JSON.stringify({ query, variables }),
-  });
-  if (!response.ok) throw new Error(`anilist_${response.status}`);
-  return ((await response.json()) as { data: T }).data;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), askTimeoutMs);
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ query, variables }),
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`anilist_${response.status}`);
+    return ((await response.json()) as { data: T }).data;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function toPart(raw: RawMedia): AnimePart | null {

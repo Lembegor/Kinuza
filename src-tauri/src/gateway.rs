@@ -1,10 +1,17 @@
-use std::{collections::HashMap, sync::OnceLock, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        OnceLock,
+    },
+    time::Duration,
+};
 
 use serde::{Deserialize, Serialize};
 
 use crate::rutracker::{RutrackerItem, VideoSize};
 
-const BASE_URL: &str = "https://channeluza.com/kinuza/rt/";
+const MIRRORS: &[&str] = &["https://channeluza.com/kinuza/rt/", "https://kinuza.channeluza.com/kinuza/rt/"];
 const APP_KEY: &str = "tB1Ref_s4XVHOuc-yEep4je7F7gcIlaUv7WU9krMIi0";
 const TOPIC_URL: &str = "https://rutracker.org/forum/viewtopic.php?t=";
 const ERROR_PREFIX: &str = "gateway_";
@@ -63,17 +70,26 @@ fn error_code(raw: &str) -> String {
     }
 }
 
+static WORKING_MIRROR: AtomicUsize = AtomicUsize::new(0);
+
+async fn send(path: &str, query: &[(&str, String)]) -> Result<reqwest::Response, String> {
+    let first = WORKING_MIRROR.load(Ordering::Relaxed) % MIRRORS.len();
+    for step in 0..MIRRORS.len() {
+        let index = (first + step) % MIRRORS.len();
+        let mirror = MIRRORS[index];
+        match client().get(format!("{mirror}{path}")).header("X-Kinuza-Key", APP_KEY).query(query).send().await {
+            Ok(response) => {
+                WORKING_MIRROR.store(index, Ordering::Relaxed);
+                return Ok(response);
+            }
+            Err(error) => tracing::warn!("gateway: {path} unreachable at {mirror}: {error}"),
+        }
+    }
+    Err(DOWN.to_owned())
+}
+
 async fn get(path: &str, query: &[(&str, String)]) -> Result<reqwest::Response, String> {
-    let response = client()
-        .get(format!("{BASE_URL}{path}"))
-        .header("X-Kinuza-Key", APP_KEY)
-        .query(query)
-        .send()
-        .await
-        .map_err(|error| {
-            tracing::warn!("gateway: {path} unreachable: {error}");
-            DOWN.to_owned()
-        })?;
+    let response = send(path, query).await?;
     if response.status().is_success() {
         return Ok(response);
     }

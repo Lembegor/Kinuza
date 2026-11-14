@@ -104,6 +104,9 @@ impl JsonSessionPersistenceStore {
         tmp.write_all(&buf)
             .await
             .with_context(|| format!("error writing {tmp_filename:?}"))?;
+        tmp.flush().await.with_context(|| format!("error flushing {tmp_filename:?}"))?;
+        tmp.sync_all().await.with_context(|| format!("error syncing {tmp_filename:?}"))?;
+        drop(tmp);
         trace!(?tmp_filename, "wrote to temp file");
 
         tokio::fs::rename(&tmp_filename, &self.db_filename)

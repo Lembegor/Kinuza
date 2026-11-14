@@ -58,6 +58,13 @@ export async function trackerRoute(): Promise<TrackerRoute> {
   return (await maybeSignedIn()) === true ? "own" : "server";
 }
 
+const ownRouteFailures: string[] = [rutrackerErrors.timeout, rutrackerErrors.unexpectedPage];
+
+function ownRouteFailed(error: unknown): boolean {
+  const text = String(error);
+  return ownRouteFailures.some((code) => text.includes(code)) || /network|connect|dns|error sending request/i.test(text);
+}
+
 function ownSessionLost(error: unknown): boolean {
   const lost = error === rutrackerErrors.authRequired || String(error).includes(rutrackerErrors.authRequired);
   if (lost) ownSessionGone = true;
@@ -76,7 +83,7 @@ async function inspectOwn(id: string, quiet: boolean): Promise<TorrentPreview> {
   try {
     return await call<TorrentPreview>("rutracker_torrent_inspect", { id, quiet });
   } catch (error) {
-    if (ownSessionLost(error) || String(error).includes(rutrackerErrors.cancelled)) throw error;
+    if (ownSessionLost(error) || ownRouteFailed(error) || String(error).includes(rutrackerErrors.cancelled)) throw error;
     return backend.inspectLink(await rutracker.getMagnet(id, quiet));
   }
 }
@@ -87,7 +94,7 @@ export const rutracker = {
       try {
         return await call<RutrackerItem[]>("rutracker_search", { query, quiet, page });
       } catch (error) {
-        if (!ownSessionLost(error)) throw error;
+        if (!ownSessionLost(error) && !ownRouteFailed(error)) throw error;
       }
     }
     return viaServer.search(query, page, background ? "background" : quiet ? "secondary" : "interactive");
@@ -108,7 +115,7 @@ export const rutracker = {
       try {
         return await inspectOwn(id, quiet);
       } catch (error) {
-        if (!ownSessionLost(error)) throw error;
+        if (!ownSessionLost(error) && !ownRouteFailed(error)) throw error;
       }
     }
     return viaServer.inspect(id, freshWithinSeconds, background ? "background" : "interactive");
@@ -118,7 +125,7 @@ export const rutracker = {
       try {
         return await call<Record<string, VideoSize>>("rutracker_video_sizes", { ids });
       } catch (error) {
-        if (!ownSessionLost(error)) throw error;
+        if (!ownSessionLost(error) && !ownRouteFailed(error)) throw error;
       }
     }
     return viaServer.videoSizes(ids, background ? "background" : "secondary");

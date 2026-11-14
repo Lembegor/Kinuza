@@ -17,7 +17,12 @@ use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager};
 use tokio::io::AsyncWriteExt;
 
-const BASE_URL: &str = "https://channeluza.com/kinuza/catalog/";
+const MIRRORS: &[&str] = &["https://channeluza.com/kinuza/catalog/", "https://kinuza.channeluza.com/kinuza/catalog/"];
+#[cfg(test)]
+const BASE_URL: &str = MIRRORS[0];
+const DOWNLOAD_ATTEMPTS: usize = 8;
+const RETRY_PAUSE: Duration = Duration::from_secs(3);
+const HASH_CHUNK: usize = 1 << 20;
 const PUBLIC_KEY: &str = "d4ULP603ovY9ZCeG6CsqZ0WaJryW5eEDFcLgNl3qW0s=";
 const FORMAT: u32 = 1;
 const SCHEMA: &str = "1";
@@ -233,35 +238,113 @@ async fn download(client: &reqwest::Client, part: &Part, target: &Path) -> anyho
     if !safe_name(&part.file) {
         anyhow::bail!("bad catalog file name");
     }
-    let mut response = client.get(format!("{BASE_URL}{}", part.file)).send().await?.error_for_status()?;
     let temp = target.with_extension("part");
-    let mut file = tokio::fs::File::create(&temp).await?;
-    let mut hasher = Sha256::new();
-    let mut size = 0u64;
+    forget_other_parts(target, &temp).await;
+    let mut last_error = None;
+    for attempt in 0..DOWNLOAD_ATTEMPTS {
+        let mirror = MIRRORS[attempt % MIRRORS.len()];
+        match download_from(client, mirror, part, &temp).await {
+            Ok(()) => {
+                if file_digest(&temp).await? == part.sha256.to_ascii_lowercase() {
+                    tokio::fs::rename(&temp, target).await?;
+                    return Ok(());
+                }
+                let _ = tokio::fs::remove_file(&temp).await;
+                last_error = Some(anyhow::anyhow!("catalog file {} failed the checksum", part.file));
+            }
+            Err(error) => {
+                let have = tokio::fs::metadata(&temp).await.map(|metadata| metadata.len()).unwrap_or(0);
+                tracing::warn!("catalog: {} stopped at {} of {} MB from {mirror}: {error:#}", part.file, have >> 20, part.size >> 20);
+                last_error = Some(error);
+            }
+        }
+        tokio::time::sleep(RETRY_PAUSE * (attempt as u32 + 1)).await;
+    }
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("catalog file {} did not download", part.file)))
+}
+
+async fn forget_other_parts(target: &Path, keep: &Path) {
+    let Some(dir) = target.parent() else { return };
+    let Ok(mut entries) = tokio::fs::read_dir(dir).await else { return };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        if path != keep && path.extension().is_some_and(|extension| extension == "part") {
+            let _ = tokio::fs::remove_file(&path).await;
+        }
+    }
+}
+
+async fn download_from(client: &reqwest::Client, mirror: &str, part: &Part, temp: &Path) -> anyhow::Result<()> {
+    let have = tokio::fs::metadata(temp).await.map(|metadata| metadata.len()).unwrap_or(0);
+    if have > part.size {
+        let _ = tokio::fs::remove_file(temp).await;
+    } else if have == part.size {
+        return Ok(());
+    }
+    let have = tokio::fs::metadata(temp).await.map(|metadata| metadata.len()).unwrap_or(0);
+    let mut request = client.get(format!("{mirror}{}", part.file));
+    if have > 0 {
+        request = request.header(reqwest::header::RANGE, format!("bytes={have}-"));
+    }
+    let mut response = request.send().await?.error_for_status()?;
+    let resumed = have > 0 && response.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+    let mut file = tokio::fs::OpenOptions::new().create(true).write(true).append(resumed).truncate(!resumed).open(temp).await?;
+    let mut size = if resumed { have } else { 0 };
     while let Some(chunk) = response.chunk().await? {
         size += chunk.len() as u64;
         if size > part.size {
+            drop(file);
+            let _ = tokio::fs::remove_file(temp).await;
             anyhow::bail!("catalog file is larger than announced");
         }
-        hasher.update(&chunk);
         file.write_all(&chunk).await?;
     }
     file.flush().await?;
-    drop(file);
-    let digest = hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect::<String>();
-    if size != part.size || !digest.eq_ignore_ascii_case(&part.sha256) {
-        let _ = tokio::fs::remove_file(&temp).await;
-        anyhow::bail!("catalog file {} failed the checksum", part.file);
+    if size != part.size {
+        anyhow::bail!("catalog file ended at {size} of {} bytes", part.size);
     }
-    tokio::fs::rename(&temp, target).await?;
     Ok(())
+}
+
+async fn file_digest(path: &Path) -> anyhow::Result<String> {
+    use tokio::io::AsyncReadExt;
+    let mut file = tokio::fs::File::open(path).await?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; HASH_CHUNK];
+    loop {
+        let read = file.read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+async fn fetch_manifest(client: &reqwest::Client) -> anyhow::Result<Manifest> {
+    let mut last_error = None;
+    for mirror in MIRRORS {
+        let attempt = async {
+            let body = client.get(format!("{mirror}manifest.json")).send().await?.error_for_status()?.bytes().await?;
+            let signature = client.get(format!("{mirror}manifest.json.sig")).send().await?.error_for_status()?.text().await?;
+            verify_manifest(&body, &signature)
+        };
+        match attempt.await {
+            Ok(manifest) => return Ok(manifest),
+            Err(error) => {
+                tracing::warn!("catalog: manifest from {mirror} failed: {error:#}");
+                last_error = Some(error);
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("no catalog mirror answered")))
 }
 
 fn http_client(app: &AppHandle) -> anyhow::Result<reqwest::Client> {
     Ok(reqwest::Client::builder()
         .user_agent(format!("Kinuza/{}", app.package_info().version))
         .connect_timeout(Duration::from_secs(20))
-        .read_timeout(Duration::from_secs(90))
+        .read_timeout(Duration::from_secs(45))
         .build()?)
 }
 
@@ -294,9 +377,7 @@ async fn sync(app: &AppHandle) -> anyhow::Result<()> {
         tauri::async_runtime::spawn_blocking(move || ensure_open(&app, &dir)).await??
     };
     let client = http_client(app)?;
-    let body = client.get(format!("{BASE_URL}manifest.json")).send().await?.error_for_status()?.bytes().await?;
-    let signature = client.get(format!("{BASE_URL}manifest.json.sig")).send().await?.error_for_status()?.text().await?;
-    let manifest = verify_manifest(&body, &signature)?;
+    let manifest = fetch_manifest(&client).await?;
     if manifest.version == local {
         return Ok(());
     }
@@ -525,6 +606,34 @@ mod tests {
         assert_eq!(search(&connection, "classic"), vec![1206]);
         assert!(search(&connection, "reloaded").is_empty());
         drop(connection);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn live_download_resumes_after_a_break() {
+        let client = reqwest::Client::builder().user_agent("Kinuza test").build().unwrap();
+        let manifest = fetch_manifest(&client).await.unwrap();
+        let part = manifest.deltas.iter().min_by_key(|delta| delta.size).unwrap().clone();
+        let dir = std::env::temp_dir().join(format!("kinuza-resume-{}", now()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join(&part.file);
+        let half = part.size / 2;
+        let head = client
+            .get(format!("{BASE_URL}{}", part.file))
+            .header(reqwest::header::RANGE, format!("bytes=0-{}", half - 1))
+            .send()
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        assert_eq!(head.len() as u64, half);
+        std::fs::write(target.with_extension("part"), &head).unwrap();
+        std::fs::write(dir.join("old.part"), b"stale").unwrap();
+        download(&client, &part, &target).await.unwrap();
+        assert_eq!(std::fs::metadata(&target).unwrap().len(), part.size);
+        assert!(!dir.join("old.part").exists());
         let _ = std::fs::remove_dir_all(dir);
     }
 

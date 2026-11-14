@@ -27,6 +27,7 @@
     "macOS": {
       "minimumSystemVersion": "11.0",
       "signingIdentity": "-",
+      "hardenedRuntime": false,
       "frameworks": [
         "resources/bin/libmpv/lib/libmpv.dylib",
         "resources/bin/libmpv/lib/libass.dylib",
