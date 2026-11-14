@@ -5,7 +5,7 @@ const searchCandidates = 8;
 
 export type AnimeFormat = "TV" | "TV_SHORT" | "MOVIE" | "OVA" | "ONA" | "SPECIAL";
 const shownFormats: ReadonlySet<string> = new Set<AnimeFormat>(["TV", "TV_SHORT", "MOVIE", "OVA", "ONA", "SPECIAL"]);
-const storyRelations: ReadonlySet<string> = new Set(["PREQUEL", "SEQUEL", "PARENT"]);
+const storyRelations: ReadonlySet<string> = new Set(["PREQUEL", "SEQUEL", "PARENT", "ALTERNATIVE"]);
 const sideRelations: ReadonlySet<string> = new Set(["SIDE_STORY", "SUMMARY"]);
 
 export interface AnimePart {
@@ -184,6 +184,7 @@ async function loadAnime(query: AnimeQuery): Promise<AnimeInfo | null> {
       for (const { relationType = "", node } of media.relations?.edges ?? []) {
         const part = node && toPart(node);
         if (!part || parts.has(part.id) || !(storyRelations.has(relationType) || sideRelations.has(relationType))) continue;
+        if (parts.size >= maxParts) break;
         parts.set(part.id, part);
         if (storyRelations.has(relationType)) next.push(part.id);
       }

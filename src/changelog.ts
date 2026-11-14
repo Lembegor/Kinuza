@@ -5,7 +5,7 @@ export type ChangelogLine = string | { heading: string };
 export type Changelog = Record<AppLanguage, ChangelogLine[]>;
 
 export const changelog: Record<string, Changelog> = {
-  "0.5.4": {
+  "0.5.5": {
     ru: [
       "Kinuza теперь есть на Mac (M1 и новее)!",
       "Ставить оценку стало приятнее: звёзды крупнее, рядом число и слово к оценке, появилась кнопка сброса.",
