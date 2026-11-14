@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Ban, Check, ChevronDown, Clock, Eye, Heart, ListPlus, Pause, Star, Trash2, type LucideIcon } from "lucide-react";
-import { t, useT } from "../lib/i18n";
+import { Ban, Check, ChevronDown, Clock, Eye, Heart, ListPlus, Pause, Star, Trash2, X, type LucideIcon } from "lucide-react";
+import { t, useT, type MessageKey } from "../lib/i18n";
 import { maxRating, statusLabel, titleKey, useLibrary, watchStatuses, type TitleRef, type WatchStatus } from "../state/library";
 import { useUi } from "../state/ui";
 import { applyStatus } from "../state/titleStatus";
@@ -98,33 +98,79 @@ export function StatusMenu({ title }: { title: TitleRef }) {
   );
 }
 
+const ratingBurstMs = 700;
+
 export function RatingStars({ title }: { title: TitleRef }) {
   const rating = useLibrary((state) => state.tracked[titleKey(title.type, title.id)]?.rating ?? null);
   const setRating = useLibrary((state) => state.setRating);
   const { t } = useT();
   const [hover, setHover] = useState<number | null>(null);
+  const [burst, setBurst] = useState(false);
+  const burstTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => () => clearTimeout(burstTimer.current), []);
   const shown = hover ?? rating ?? 0;
 
+  const choose = (value: number | null) => {
+    setRating(title, value);
+    clearTimeout(burstTimer.current);
+    setBurst(value !== null);
+    if (value !== null) burstTimer.current = setTimeout(() => setBurst(false), ratingBurstMs);
+  };
+
+  const onKeyDown = (event: React.KeyboardEvent) => {
+    const step = event.key === "ArrowRight" || event.key === "ArrowUp" ? 1 : event.key === "ArrowLeft" || event.key === "ArrowDown" ? -1 : 0;
+    if (step === 0) return;
+    event.preventDefault();
+    const next = (rating ?? 0) + step;
+    choose(next < 1 ? null : Math.min(maxRating, next));
+  };
+
   return (
-    <div className="rating-stars" onMouseLeave={() => setHover(null)}>
+    <div className={`rating-stars ${rating !== null ? "is-rated" : ""} ${hover !== null ? "is-picking" : ""}`} onMouseLeave={() => setHover(null)} onKeyDown={onKeyDown}>
       <span className="rating-stars__label">{t("library.rating.mine")}</span>
-      <div className="rating-stars__row">
+      <div className={`rating-stars__row ${burst ? "is-burst" : ""}`}>
         {Array.from({ length: maxRating }, (_, index) => {
           const value = index + 1;
           return (
             <button
               key={value}
               aria-label={t("library.rating.value", { value })}
-              className={value <= shown ? "is-on" : ""}
+              aria-pressed={value === rating}
+              className={`${value <= shown ? "is-on" : ""} ${value === hover ? "is-aim" : ""}`}
+              style={{ "--i": index } as React.CSSProperties}
               onMouseEnter={() => setHover(value)}
-              onClick={() => setRating(title, value === rating ? null : value)}
+              onFocus={() => setHover(value)}
+              onBlur={() => setHover(null)}
+              onClick={() => choose(value === rating ? null : value)}
             >
-              <Star size={19} fill={value <= shown ? "currentColor" : "none"} />
+              <Star size={22} fill={value <= shown ? "currentColor" : "none"} strokeWidth={value <= shown ? 0 : 1.6} />
             </button>
           );
         })}
       </div>
-      <span className="rating-stars__value">{shown > 0 ? t("library.rating.outOf", { value: shown, max: maxRating }) : t("library.rating.none")}</span>
+      <span className="rating-stars__value">
+        {shown > 0 ? (
+          <>
+            <b key={shown}>{shown}</b>
+            <i>/{maxRating}</i>
+            <em>{t(`library.rating.word.${shown}` as MessageKey)}</em>
+          </>
+        ) : (
+          <em>{t("library.rating.none")}</em>
+        )}
+      </span>
+      <button
+        className="rating-stars__clear"
+        aria-label={t("library.rating.clear")}
+        title={t("library.rating.clear")}
+        disabled={rating === null}
+        onClick={() => {
+          setHover(null);
+          choose(null);
+        }}
+      >
+        <X size={14} />
+      </button>
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useParams, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   Check,
   CheckCheck,
@@ -7,6 +7,7 @@ import {
   Clapperboard,
   Cloud,
   Download,
+  LoaderCircle,
   Eye,
   EyeOff,
   FolderOpen,
@@ -30,6 +31,7 @@ import { t, useT } from "../lib/i18n";
 import { arcOf, episodeLayout, inLayout, type Arc, type EpisodeLayout } from "../lib/episodeLayout";
 import { localizedTexts, needsLocalizing } from "../lib/localized";
 import { imageUrl, tmdb, type Details, type Episode, type MediaType } from "../lib/tmdb";
+import { tagLabel } from "../lib/tags";
 import { useAsync } from "../lib/useAsync";
 import { checkAvailability, checkedOf, useAvailability } from "../state/availability";
 import { localDay } from "../state/calendar";
@@ -40,10 +42,13 @@ import { useUi, type AddSourceTarget } from "../state/ui";
 import { recordActivity, titleOf } from "../state/activity";
 import { sortSources } from "../lib/sources";
 import { useHoverWarm, warmTitleResume } from "../state/warmup";
-import { PickBar, PickNote, PlayerStage, StageEpisodes, playOnStage, useStagePick, useStageSession } from "../components/PlayerStage";
-import { commitPick, preparePick, type PickTarget } from "../state/autoPick";
+import { PickNote, PlayerStage, StageEpisodes, playOnStage, useStagePick, useStageSession } from "../components/PlayerStage";
+import { autoPlay, commitPick, preparePick, type PickTarget } from "../state/autoPick";
+
+type EpisodePickBase = Omit<PickTarget, "season" | "episode">;
 
 const specialsSeason = 0;
+const shownTagLimit = 6;
 const namedDirectorCount = 4;
 
 export { sortSources };
@@ -139,12 +144,13 @@ function QualityChip({ source, onRemove }: { source: Source; onRemove: () => voi
   );
 }
 
-function MovieSources({ title, target }: { title: TitleRef; target: AddSourceTarget }) {
+function MovieSources({ title, target, hideEmpty }: { title: TitleRef; target: AddSourceTarget; hideEmpty: boolean }) {
   const key = unitKey("movie", title.id);
   const stored = useLibrary((state) => state.sources[key]);
   const sources = useMemo(() => sortSources(stored ?? []), [stored]);
   const { openAddSource } = useUi.getState();
   const { t } = useT();
+  if (hideEmpty && sources.length === 0) return null;
 
   return (
     <section className="section">
@@ -230,11 +236,13 @@ function EpisodeRow({
   title,
   episode,
   target,
+  pickBase,
   onMarkUpTo,
 }: {
   title: TitleRef;
   episode: Episode;
   target: AddSourceTarget;
+  pickBase: EpisodePickBase | null;
   onMarkUpTo: (() => void) | null;
 }) {
   const key = unitKey("tv", title.id, episode.season, episode.episode);
@@ -254,6 +262,8 @@ function EpisodeRow({
   const playable = sources.length > 0;
   const aired = episode.airDate !== "" && episode.airDate <= localDay(new Date());
   const findSource = () => openAddSource({ target: { ...target, defaultSeason: episode.season, defaultEpisode: episode.episode } });
+  const [picking, setPicking] = useState(false);
+  const autoPickable = !playable && aired && pickBase !== null;
   const still = imageUrl(episode.still, "w300");
   const hoverWarm = useHoverWarm(playable ? key : null);
   const watchedShare = progress && progress.duration > 0 ? Math.min(1, progress.position / progress.duration) : 0;
@@ -268,27 +278,36 @@ function EpisodeRow({
       preferredSourceId,
     });
 
+  const pickAndPlay = () => {
+    if (!pickBase || picking) return;
+    setPicking(true);
+    autoPlay({ ...pickBase, season: episode.season, episode: episode.episode })
+      .then((found) => (found ? start() : findSource()))
+      .catch(() => findSource())
+      .finally(() => setPicking(false));
+  };
+
   return (
-    <div data-episode={episode.episode} className={`episode ${playable ? "is-playable" : ""} ${watched ? "is-watched" : ""} ${!playable && !aired ? "is-upcoming" : ""}`}>
+    <div data-episode={episode.episode} className={`episode ${playable || autoPickable ? "is-playable" : ""} ${picking ? "is-picking" : ""} ${watched ? "is-watched" : ""} ${!playable && !aired ? "is-upcoming" : ""}`}>
       <div className="episode__media">
         <button
           className="episode__still"
           {...hoverWarm}
           disabled={!playable && !aired}
-          onClick={() => (playable ? start() : findSource())}
-          aria-label={playable ? t("title.episode.watch") : t("title.episode.find")}
+          onClick={() => (playable ? start() : autoPickable ? pickAndPlay() : findSource())}
+          aria-label={playable || autoPickable ? t("title.episode.watch") : t("title.episode.find")}
         >
           {still ? (
             <img src={still} alt="" loading="lazy" draggable={false} className={stillGuarded ? "is-spoiler" : ""} />
           ) : (
             <div className="episode__blank" />
           )}
-          {playable && (
+          {(playable || autoPickable) && (
             <span className="episode__play">
-              <Play size={20} fill="currentColor" />
+              {picking ? <LoaderCircle size={20} className="spin" /> : <Play size={20} fill="currentColor" />}
             </span>
           )}
-          {!playable && aired && (
+          {!playable && !autoPickable && aired && (
             <span className="episode__find">
               <Search size={15} />
               {t("title.episode.find")}
@@ -392,6 +411,7 @@ function SeriesEpisodes({
   scrollToFocus,
   onSeasonChange,
   target,
+  pickBase,
 }: {
   details: Details;
   title: TitleRef;
@@ -401,6 +421,7 @@ function SeriesEpisodes({
   scrollToFocus: boolean;
   onSeasonChange: (season: number, episode?: number) => void;
   target: AddSourceTarget;
+  pickBase: EpisodePickBase | null;
 }) {
   const seasonEpisodes = useAsync(() => tmdb.season(details.id, season), [details.id, season]);
   const sectionRef = useRef<HTMLElement>(null);
@@ -596,6 +617,7 @@ function SeriesEpisodes({
               title={title}
               episode={episode}
               target={target}
+              pickBase={pickBase}
               onMarkUpTo={season !== specialsSeason && (episode.episode > 1 || season > 1) ? () => void markUpTo(episode) : null}
             />
           ))}
@@ -676,6 +698,7 @@ export default function TitlePage() {
   const id = Number(params.id);
   const [searchParams, setSearchParams] = useSearchParams();
   const { t, tn, language } = useT();
+  const navigate = useNavigate();
   const [trailerTitleId, setTrailerTitleId] = useState<number | null>(null);
 
   const details = useAsync(() => tmdb.details(type, id), [type, id]);
@@ -693,6 +716,20 @@ export default function TitlePage() {
   const shownTitle = texts?.title || data?.title || "";
   const shownOverview = texts?.overview || data?.overview || "";
   const shownGenres = texts?.genres ?? data?.genres ?? [];
+  const genreIds = data && data.genreIds.length === shownGenres.length ? data.genreIds : [];
+  const shownTags = useMemo(() => {
+    const seen = new Set(shownGenres.map((genre) => genre.toLowerCase()));
+    const tags: { id: number; name: string; label: string }[] = [];
+    for (const keyword of data?.keywords ?? []) {
+      const label = tagLabel(keyword.name, language);
+      if (!label || seen.has(label.toLowerCase())) continue;
+      seen.add(label.toLowerCase());
+      tags.push({ id: keyword.id, name: keyword.name, label });
+      if (tags.length >= shownTagLimit) break;
+    }
+    return tags;
+  }, [data, shownGenres, language]);
+  const browseKind = data?.isAnime ? "anime" : type;
   const shownRef = useMemo(() => (title ? { ...title, title: shownTitle || title.title } : null), [title, shownTitle]);
 
   const movieSources = useLibrary((state) => state.sources[unitKey("movie", id)]);
@@ -745,6 +782,13 @@ export default function TitlePage() {
   const stageSession = useStageSession(title);
   const stageOnPage = useSettings((state) => state.playerPlacement === "page");
   const autoPickOn = useSettings((state) => state.autoPick);
+  const episodePickBase = useMemo<EpisodePickBase | null>(
+    () =>
+      data && shownRef && autoPickOn && !layoutState.loading
+        ? { title: shownRef, originalTitle: data.originalTitle, originalLanguage: data.language, seasons: data.seasons, layout: layoutState.data ?? null, anime: data.isAnime }
+        : null,
+    [data, shownRef, autoPickOn, layoutState.loading, layoutState.data],
+  );
   const libraryProgress = useLibrary((state) => state.progress);
   const pickSeason = useAsync(
     () => (data && type === "tv" && !resume ? tmdb.season(data.id, season) : Promise.resolve([])),
@@ -854,12 +898,33 @@ export default function TitlePage() {
                 <span key={item}>{item}</span>
               ))}
             </div>
-            {shownGenres.length > 0 && (
+            {(shownGenres.length > 0 || shownTags.length > 0) && (
               <div className="title-hero__genres">
-                {shownGenres.map((genre) => (
-                  <span key={genre} className="tag">
-                    {genre}
-                  </span>
+                {shownGenres.map((genre, index) =>
+                  genreIds[index] ? (
+                    <button
+                      key={genre}
+                      className="tag tag--link"
+                      title={t("title.genre.browse", { genre })}
+                      onClick={() => navigate(`/browse?${new URLSearchParams({ kind: browseKind, genres: String(genreIds[index]) })}`)}
+                    >
+                      {genre}
+                    </button>
+                  ) : (
+                    <span key={genre} className="tag">
+                      {genre}
+                    </span>
+                  ),
+                )}
+                {shownTags.map((tag) => (
+                  <button
+                    key={tag.id}
+                    className="tag tag--link tag--theme"
+                    title={t("title.genre.browse", { genre: tag.label })}
+                    onClick={() => navigate(`/browse?${new URLSearchParams({ kind: browseKind, tag: String(tag.id), tagName: tag.name })}`)}
+                  >
+                    {tag.label}
+                  </button>
                 ))}
               </div>
             )}
@@ -915,11 +980,6 @@ export default function TitlePage() {
             busy={pickBusy}
             onIntent={!canPlay && pick.key ? () => void preparePick(pick.key!, true).catch(() => undefined) : undefined}
             note={!canPlay && pickTarget ? <PickNote entry={pick.entry} chosen={pick.chosen} /> : undefined}
-            under={
-              !canPlay && !stageSession && pickTarget && pick.key ? (
-                <PickBar pickKey={pick.key} entry={pick.entry} onManual={() => openAddSource({ target: pickTarget.season !== undefined ? { ...target, defaultSeason: pickTarget.season, defaultEpisode: pickTarget.episode } : target })} />
-              ) : undefined
-            }
             onPlay={canPlay ? playResume : startPick}
             side={
               type === "tv" ? (
@@ -928,11 +988,7 @@ export default function TitlePage() {
                   title={shownRef}
                   season={season}
                   layout={layout}
-                  pickBase={
-                    autoPickOn && !layoutState.loading
-                      ? { title: shownRef, originalTitle: data.originalTitle, originalLanguage: data.language, seasons: data.seasons, layout, anime: data.isAnime }
-                      : null
-                  }
+                  pickBase={episodePickBase}
                   onSeasonChange={(next) => setSearchParams({ s: String(next) }, { replace: true })}
                   onFind={(nextSeason, episode) => openAddSource({ target: { ...target, defaultSeason: nextSeason, defaultEpisode: episode } })}
                 />
@@ -941,7 +997,7 @@ export default function TitlePage() {
           />
         )}
         {type === "movie" ? (
-          <MovieSources title={shownRef} target={target} />
+          <MovieSources title={shownRef} target={target} hideEmpty={Boolean(pickTarget) && stageOnPage} />
         ) : (
           <SeriesEpisodes
             details={data}
@@ -951,6 +1007,7 @@ export default function TitlePage() {
             focusEpisode={focusEpisode ?? (resume && resume.season === season ? resume.episode : null)}
             scrollToFocus={focusEpisode !== null || !stageOnPage}
             target={target}
+            pickBase={episodePickBase}
             onSeasonChange={(next, episode) => {
               setFocusEpisode(episode ?? null);
               setSearchParams({ s: String(next) }, { replace: true });

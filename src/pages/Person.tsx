@@ -6,8 +6,10 @@ import { formatDate } from "../lib/format";
 import { useT, type MessageKey } from "../lib/i18n";
 import { imageUrl, tmdb, type MediaItem } from "../lib/tmdb";
 import { useAsync } from "../lib/useAsync";
+import { useGridColumns } from "../lib/useGridColumns";
 
-const collapsedCreditCount = 12;
+const collapsedRows = 2;
+const stepRows = 4;
 const actingDepartment = "Acting";
 
 const departmentLabels: Record<string, MessageKey> = {
@@ -57,19 +59,25 @@ function Biography({ text }: { text: string }) {
 
 function Credits({ title, items }: { title: string; items: MediaItem[] }) {
   const { t } = useT();
-  const [expanded, setExpanded] = useState(false);
+  const [rows, setRows] = useState(collapsedRows);
+  const gridRef = useRef<HTMLDivElement>(null);
+  const columns = useGridColumns(gridRef);
   if (items.length === 0) return null;
-  const visible = expanded ? items : items.slice(0, collapsedCreditCount);
+  const visible = items.slice(0, rows * columns);
+  const left = items.length - visible.length;
   return (
     <section className="section">
       <div className="section__head">
         <h2>{title}</h2>
         <span className="section__note">{items.length}</span>
       </div>
-      <PosterGrid items={visible} />
-      {visible.length < items.length && (
+      <PosterGrid items={visible} gridRef={gridRef} />
+      {left > 0 && (
         <div className="browse-more">
-          <button className="button button--large" onClick={() => setExpanded(true)}>
+          <button className="button button--large" onClick={() => setRows(rows + stepRows)}>
+            {t("person.credits.more", { count: Math.min(left, stepRows * columns) })}
+          </button>
+          <button className="text-button" onClick={() => setRows(Math.ceil(items.length / columns))}>
             {t("person.credits.all", { count: items.length })}
           </button>
         </div>

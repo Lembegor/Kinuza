@@ -106,6 +106,8 @@ export interface DiscoverFilters {
   kind: DiscoverKind;
   genres: number[];
   keywords: number[];
+  tag: number | null;
+  tagName: string;
   yearFrom: number | null;
   yearTo: number | null;
   country: string;
@@ -181,6 +183,8 @@ export interface ShowNames {
 export interface Details extends MediaItem {
   tagline: string;
   genres: string[];
+  genreIds: number[];
+  keywords: TitleKeyword[];
   runtimeMinutes: number | null;
   countries: string[];
   cast: CastMember[];
@@ -452,7 +456,8 @@ function discoverParams(filters: DiscoverFilters, page: number): Record<string, 
     "vote_count.gte": Math.max(discoverVoteFloor[filters.sort][type], filters.minRating > 0 ? ratedVoteFloor[type] : 0),
   };
   if (genres.length > 0) params.with_genres = genres.join(",");
-  if (filters.kind === "anime" && filters.keywords.length > 0) params.with_keywords = filters.keywords.join(",");
+  const keywords = [...(filters.kind === "anime" ? filters.keywords : []), ...(filters.tag ? [filters.tag] : [])];
+  if (keywords.length > 0) params.with_keywords = keywords.join(",");
   if (filters.kind === "anime" && filters.keywords.some((id) => adultThemeIds.has(id))) {
     params.include_adult = "true";
     params["vote_count.gte"] = Math.min(Number(params["vote_count.gte"]), adultVoteFloor);
@@ -540,7 +545,7 @@ export const tmdb = {
   async details(type: MediaType, id: number): Promise<Details> {
     const language = catalog.language.slice(0, 2);
     const raw = await request<Raw>(`/${type}/${id}`, {
-      append_to_response: "credits,recommendations,videos,external_ids,images",
+      append_to_response: "credits,recommendations,videos,external_ids,images,keywords",
       include_video_language: [...new Set([language, "en"])].join(","),
       include_image_language: `${language},null`,
     });
@@ -557,6 +562,11 @@ export const tmdb = {
       ...base,
       tagline: raw.tagline ?? "",
       genres: (raw.genres ?? []).map((genre: Raw) => genre.name),
+      genreIds: (raw.genres ?? []).map((genre: Raw) => genre.id as number),
+      keywords: ((raw.keywords?.keywords ?? raw.keywords?.results ?? []) as Raw[]).map((keyword) => ({
+        id: keyword.id as number,
+        name: (keyword.name as string) ?? "",
+      })),
       runtimeMinutes: runtime,
       countries: (raw.production_countries ?? []).map((country: Raw) => countryName(country.iso_3166_1, country.name)),
       cast: (raw.credits?.cast ?? []).slice(0, castLimit).map((person: Raw) => ({

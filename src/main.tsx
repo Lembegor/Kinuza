@@ -9,6 +9,7 @@ import "./styles/tools.css";
 import "./styles/dialog.css";
 import "./styles/player.css";
 import App from "./App";
+import { retryFailedImages } from "./lib/imageRetry";
 import { guardAppClose } from "./lib/lifecycle";
 import { startWatchedCleanup } from "./state/cleanup";
 import { flushLibrary } from "./state/library";
@@ -16,6 +17,7 @@ import { startDownloadNotifications, startEpisodeNotifications } from "./state/n
 import { useSettings } from "./state/settings";
 import { keepTrayInStep } from "./state/tray";
 
+retryFailedImages();
 startWatchedCleanup();
 startDownloadNotifications();
 startEpisodeNotifications();

@@ -301,9 +301,9 @@ export function PosterRow({
   );
 }
 
-export function PosterGrid({ items }: { items: CardItem[] }) {
+export function PosterGrid({ items, gridRef }: { items: CardItem[]; gridRef?: React.Ref<HTMLDivElement> }) {
   return (
-    <div className="poster-grid">
+    <div className="poster-grid" ref={gridRef}>
       {items.map((item) => (
         <PosterCard key={`${item.type}:${item.id}`} item={item} />
       ))}

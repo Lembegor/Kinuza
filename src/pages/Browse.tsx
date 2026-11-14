@@ -1,10 +1,12 @@
-import { useEffect, useMemo, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
-import { ChevronDown, RotateCcw, SearchX } from "lucide-react";
+import { ChevronDown, RotateCcw, SearchX, X } from "lucide-react";
 import { CatalogError, PosterCard } from "../components/Cards";
 import { useT, type MessageKey } from "../lib/i18n";
 import { animeThemes, tmdb, type Country, type DiscoverFilters, type DiscoverKind, type DiscoverSort, type MediaItem } from "../lib/tmdb";
+import { tagLabel } from "../lib/tags";
 import { useAsync } from "../lib/useAsync";
+import { useGridColumns, useNearEnd } from "../lib/useGridColumns";
 import { useBrowse } from "../state/browse";
 
 const kinds: { id: DiscoverKind; label: MessageKey }[] = [
@@ -23,6 +25,8 @@ const defaultFilters: DiscoverFilters = {
   kind: "movie",
   genres: [],
   keywords: [],
+  tag: null,
+  tagName: "",
   yearFrom: null,
   yearTo: null,
   country: "",
@@ -32,7 +36,8 @@ const defaultFilters: DiscoverFilters = {
 
 const ratingSteps = [5, 6, 7, 8, 9];
 const earliestYear = 1900;
-const pageSize = 20;
+const pagesPerStep = 3;
+const skeletonRows = 2;
 const majorCountries = ["US", "GB", "FR", "DE", "IT", "ES", "JP", "KR", "CN", "IN", "CA", "AU", "SE", "DK", "PL", "UA", "TR", "BR"];
 const countryCodePattern = /^[A-Z]{2}$/;
 
@@ -61,6 +66,8 @@ function readFilters(params: URLSearchParams): DiscoverFilters {
       .split(",")
       .map(Number)
       .filter((id) => animeThemes.some((theme) => theme.id === id)),
+    tag: Number.isInteger(Number(params.get("tag"))) && Number(params.get("tag")) > 0 ? Number(params.get("tag")) : null,
+    tagName: (params.get("tagName") ?? "").slice(0, 80),
     yearFrom,
     yearTo,
     country: countryCodePattern.test(country) ? country : "",
@@ -79,6 +86,10 @@ function toSearch(filters: DiscoverFilters, pageCount = 1): URLSearchParams {
   if (filters.kind !== defaultFilters.kind) params.set("kind", filters.kind);
   if (filters.genres.length > 0) params.set("genres", filters.genres.join(","));
   if (filters.kind === "anime" && filters.keywords.length > 0) params.set("themes", filters.keywords.join(","));
+  if (filters.tag) {
+    params.set("tag", String(filters.tag));
+    if (filters.tagName) params.set("tagName", filters.tagName);
+  }
   if (filters.yearFrom) params.set("from", String(filters.yearFrom));
   if (filters.yearTo) params.set("to", String(filters.yearTo));
   if (filters.country) params.set("country", filters.country);
@@ -140,7 +151,7 @@ function FilterSelect({
 }
 
 export default function Browse() {
-  const { t } = useT();
+  const { t, language } = useT();
   const [params, setParams] = useSearchParams();
   const filters = useMemo(() => readFilters(params), [params]);
   const pageCount = readPageCount(params);
@@ -158,12 +169,15 @@ export default function Browse() {
 
   const results = useAsync(async () => {
     if (!query) return null;
-    const pages = await Promise.all(Array.from({ length: pageCount }, (_, index) => tmdb.discover(query, index + 1)));
+    const first = await tmdb.discover(query, 1);
+    const wanted = Math.min(pageCount * pagesPerStep, first.totalPages);
+    const rest = await Promise.all(Array.from({ length: wanted - 1 }, (_, index) => tmdb.discover(query, index + 2)));
+    const pages = [first, ...rest];
     return {
       queryKey,
       pageCount,
       items: withoutRepeats(pages.flatMap((page) => page.items)),
-      hasMore: pageCount < pages[0].totalPages,
+      hasMore: wanted < first.totalPages,
     };
   }, [queryKey, pageCount], `browse:${queryKey}:${pageCount}`);
   const shown = results.data && results.data.queryKey === queryKey ? results.data : null;
@@ -172,7 +186,12 @@ export default function Browse() {
   useEffect(() => useBrowse.getState().remember(filterSearch), [filterSearch]);
 
   const update = (patch: Partial<DiscoverFilters>) => setParams(toSearch({ ...filters, ...patch }), { replace: true });
-  const showMore = () => setParams(toSearch(filters, pageCount + 1), { replace: true });
+  const showMore = useCallback(() => setParams(toSearch(filters, pageCount + 1), { replace: true }), [filters, pageCount, setParams]);
+  const gridRef = useRef<HTMLDivElement>(null);
+  const moreRef = useRef<HTMLDivElement>(null);
+  const columns = useGridColumns(gridRef);
+  useNearEnd(moreRef, Boolean(shown?.hasMore) && !results.loading && !results.error, showMore);
+  const shownItems = shown ? (shown.hasMore && shown.items.length > columns ? shown.items.slice(0, shown.items.length - (shown.items.length % columns)) : shown.items) : [];
   const reset = () => update({ ...defaultFilters, kind: filters.kind });
 
   const activeGenres = query?.genres ?? filters.genres;
@@ -266,6 +285,12 @@ export default function Browse() {
       </div>
 
       <div className="chips filters__genres">
+        {filters.tag !== null && (
+          <button className="chip chip--compact chip--tag is-active" title={t("browse.tag.remove")} onClick={() => update({ tag: null, tagName: "" })}>
+            {tagLabel(filters.tagName, language) || filters.tagName || `#${filters.tag}`}
+            <X size={13} />
+          </button>
+        )}
         {genres?.map((genre) => (
           <button
             key={genre.id}
@@ -302,13 +327,13 @@ export default function Browse() {
         </div>
       ) : (
         <>
-          <div className="poster-grid">
-            {shown?.items.map((item) => <PosterCard key={item.id} item={item} />)}
+          <div className="poster-grid" ref={gridRef}>
+            {shownItems.map((item) => <PosterCard key={item.id} item={item} />)}
             {(!shown || results.loading) &&
-              Array.from({ length: pageSize }, (_, index) => <div key={`skeleton-${index}`} className="poster-card poster-card--skeleton" />)}
+              Array.from({ length: columns * skeletonRows }, (_, index) => <div key={`skeleton-${index}`} className="poster-card poster-card--skeleton" />)}
           </div>
           {shown?.hasMore && !results.loading && (
-            <div className="browse-more">
+            <div className="browse-more" ref={moreRef}>
               <button className="button button--large" onClick={showMore}>
                 {t("browse.more")}
               </button>

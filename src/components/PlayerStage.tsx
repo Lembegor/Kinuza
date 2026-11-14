@@ -1,6 +1,6 @@
 import { pictureBadge, sourceName } from "../lib/releaseNames";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Check, LoaderCircle, Play, Search, SlidersHorizontal } from "lucide-react";
+import { Check, LoaderCircle, Play, Search } from "lucide-react";
 import { arcsOfSeason, inLayout, type EpisodeLayout } from "../lib/episodeLayout";
 import { formatRuntime } from "../lib/format";
 import { useT } from "../lib/i18n";
@@ -11,7 +11,7 @@ import { isWatched, titleKey, unitKey, useLibrary, type TitleRef } from "../stat
 import { usePlayerPlacement } from "../state/playerPlacement";
 import { useUi } from "../state/ui";
 import { useHoverWarm } from "../state/warmup";
-import { autoPlay, choosePick, pickKey, preparePick, requestPick, useAutoPick, type PickCandidate, type PickEntry, type PickTarget } from "../state/autoPick";
+import { autoPlay, pickKey, preparePick, requestPick, useAutoPick, type PickCandidate, type PickEntry, type PickTarget } from "../state/autoPick";
 
 const specialsSeason = 0;
 
@@ -279,12 +279,6 @@ export function useStagePick(target: PickTarget | null): { key: string | null; e
 
 const revealGap = 16;
 
-function candidateText(candidate: PickCandidate): string {
-  return [pictureBadge(candidate.resolution, candidate.quality).label, sourceName(candidate.quality).name, candidate.voiceText || candidate.voices, candidate.sizeText]
-    .filter(Boolean)
-    .join(" · ");
-}
-
 export function PickNote({ entry, chosen }: { entry: PickEntry | undefined; chosen: PickCandidate | null }) {
   const { t, tn } = useT();
   if (!entry || entry.status === "searching") {
@@ -307,32 +301,4 @@ export function PickNote({ entry, chosen }: { entry: PickEntry | undefined; chos
   }
   if (entry.status === "none") return <>{t("stage.pick.none")}</>;
   return <>{t(entry.problem === "login" || entry.problem === "down" || entry.problem === "auth" ? "stage.pick.serverDown" : "stage.pick.failed")}</>;
-}
-
-export function PickBar({ pickKey: key, entry, onManual }: { pickKey: string; entry: PickEntry | undefined; onManual: () => void }) {
-  const { t, tn } = useT();
-  return (
-    <div className="pick-bar">
-      {entry?.status === "ready" && (
-        <div className="pick-bar__list">
-          {entry.candidates.map((candidate) => (
-            <button
-              key={candidate.id}
-              className={`pick-chip ${candidate.id === entry.chosenId ? "is-chosen" : ""}`}
-              title={candidate.title}
-              onClick={() => choosePick(key, candidate.id)}
-            >
-              <i className={`health health--${candidate.health}`} />
-              <span className="pick-chip__text">{candidateText(candidate)}</span>
-              <span className="pick-chip__seeds">{tn("stage.pick.seeds", candidate.seeds)}</span>
-            </button>
-          ))}
-        </div>
-      )}
-      <button className="pick-bar__manual" onClick={onManual}>
-        <SlidersHorizontal size={14} />
-        {t("stage.pick.manual")}
-      </button>
-    </div>
-  );
 }

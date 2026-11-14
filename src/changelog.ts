@@ -5,6 +5,23 @@ export type ChangelogLine = string | { heading: string };
 export type Changelog = Record<AppLanguage, ChangelogLine[]>;
 
 export const changelog: Record<string, Changelog> = {
+  "0.5.4": {
+    ru: [
+      "Ставить оценку стало приятнее: звёзды крупнее, рядом число и слово к оценке, появилась кнопка сброса.",
+      "У тайтла стало больше тегов (зомби, постапокалипсис, путешествия во времени и другие), а нажатие на жанр или тег открывает каталог с такими же фильмами.",
+      "Каталог показывает больше фильмов сразу и сам подгружает следующие при прокрутке. На странице актёра фильмография открывается целыми рядами.",
+    ],
+    en: [
+      "Rating is nicer: bigger stars, the number with a word next to it, and a button to remove the rating.",
+      "Titles show more tags (zombie, post-apocalypse, time travel and others), and clicking a genre or a tag opens the catalog with similar titles.",
+      "The catalog shows more titles at once and loads more as you scroll. On a person's page the filmography opens in whole rows.",
+    ],
+    uk: [
+      "Ставити оцінку стало приємніше: зірки більші, поруч число і слово до оцінки, з'явилася кнопка скидання.",
+      "У тайтлу стало більше тегів (зомбі, постапокаліпсис, подорожі в часі та інші), а натискання на жанр або тег відкриває каталог з такими ж фільмами.",
+      "Каталог показує більше фільмів одразу й сам довантажує наступні під час прокручування. На сторінці актора фільмографія відкривається цілими рядами.",
+    ],
+  },
   "0.5.2": {
     ru: [
       "Плеер теперь открывается прямо на странице тайтла.",
