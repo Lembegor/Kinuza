@@ -1,5 +1,5 @@
 import { t, type MessageKey } from "./i18n";
-import { isDesktop } from "./platform";
+import { isDesktop, isMac } from "./platform";
 
 export { isDesktop, isLinux, isWindows } from "./platform";
 
@@ -108,7 +108,10 @@ export async function thumbnailUrl(infoHash: string, fileIndex: number, at: numb
 
 export async function convertedStreamUrl(infoHash: string, fileIndex: number, audio: number, start: number): Promise<string> {
   const info = await getAppInfo();
-  return `${info.streamBaseUrl}/video/${infoHash}/${fileIndex}?audio=${audio}&start=${start.toFixed(3)}`;
+  const query = `audio=${audio}&start=${start.toFixed(3)}`;
+  // WebKit plays converted video only as HLS: it rejects a piped stream without byte ranges.
+  if (isMac) return `${info.streamBaseUrl}/hls/${infoHash}/${fileIndex}/index.m3u8?${query}`;
+  return `${info.streamBaseUrl}/video/${infoHash}/${fileIndex}?${query}`;
 }
 
 export async function audioStreamUrl(infoHash: string, fileIndex: number, track: number, start: number): Promise<string> {

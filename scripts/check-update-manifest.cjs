@@ -1,7 +1,7 @@
 const fs = require("fs");
 
 const [file, version, fromPrefix, toPrefix] = process.argv.slice(2);
-const required = (process.env.KINUZA_PLATFORMS ?? "windows-x86_64,linux-x86_64,linux-x86_64-deb,linux-x86_64-rpm")
+const required = (process.env.KINUZA_PLATFORMS ?? "windows-x86_64,linux-x86_64,linux-x86_64-deb,linux-x86_64-rpm,darwin-aarch64")
   .split(",")
   .map((name) => name.trim())
   .filter(Boolean);
@@ -45,6 +45,7 @@ const expectations = [
   ["linux-x86_64-deb", /\.deb$/],
   ["linux-x86_64-rpm", /\.rpm$/],
   ["linux-x86_64", /\.AppImage$/],
+  ["darwin-aarch64", /\.app\.tar\.gz$/],
 ];
 for (const [name, pattern] of expectations) {
   const entry = known[name];

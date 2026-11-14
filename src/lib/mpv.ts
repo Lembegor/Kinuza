@@ -1,5 +1,5 @@
 import type { AudioMode } from "../state/settings";
-import { isWindows } from "./platform";
+import { isMac, isWindows } from "./platform";
 
 export interface MpvStatus {
   installed: boolean;
@@ -42,8 +42,11 @@ async function invoke<T>(command: string, args?: Record<string, unknown>): Promi
 }
 
 export const mpv = {
-  supported: isWindows,
+  supported: isWindows || isMac,
+  // macOS draws through libmpv's render API with audio-timed video, where interpolation does nothing.
+  smoothMotion: isWindows,
   status: () => invoke<MpvStatus>("mpv_status"),
+  surface: (shown: boolean) => invoke<void>("mpv_surface", { shown }),
   install: () => invoke<void>("mpv_install"),
   warm: () => invoke<void>("mpv_warm"),
   quit: () => invoke<void>("mpv_quit"),

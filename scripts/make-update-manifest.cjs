@@ -16,6 +16,7 @@ const kinds = [
   { pattern: /\.AppImage$/, platforms: ["linux-x86_64", "linux-x86_64-appimage"] },
   { pattern: /\.deb$/, platforms: ["linux-x86_64-deb"] },
   { pattern: /\.rpm$/, platforms: ["linux-x86_64-rpm"] },
+  { pattern: /\.app\.tar\.gz$/, platforms: ["darwin-aarch64", "darwin-aarch64-app"] },
 ];
 
 const signatures = fs.readdirSync(folder).filter((name) => name.endsWith(".sig"));

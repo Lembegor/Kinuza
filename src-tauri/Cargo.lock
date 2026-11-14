@@ -2723,6 +2723,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "bytes",
+ "cc",
  "ed25519-dalek",
  "encoding_rs",
  "flate2",

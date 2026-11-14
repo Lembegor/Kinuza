@@ -1,0 +1,56 @@
+name: macOS check
+
+on:
+  workflow_dispatch:
+  push:
+    branches-ignore: [master]
+    paths:
+      - "src/**"
+      - "src-tauri/**"
+      - "scripts/fetch-libmpv.sh"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/macos-check.yml"
+
+concurrency:
+  group: macos-check-${{ github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      - run: npm run prepare:libmpv
+
+      - name: Run the Rust tests
+        working-directory: src-tauri
+        run: cargo test --locked
+
+      - name: Build the app
+        env:
+          VITE_TMDB_API_KEY: ${{ secrets.VITE_TMDB_API_KEY }}
+          VITE_OPENSUBTITLES_API_KEY: ${{ secrets.VITE_OPENSUBTITLES_API_KEY }}
+          VITE_REPORT_BOT_TOKEN: ${{ secrets.VITE_REPORT_BOT_TOKEN }}
+          VITE_REPORT_CHAT_ID: ${{ secrets.VITE_REPORT_CHAT_ID }}
+        run: npx tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kinuza-macos
+          retention-days: 7
+          path: src-tauri/target/release/bundle/dmg/*.dmg

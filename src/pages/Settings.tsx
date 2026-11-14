@@ -358,7 +358,7 @@ export default function Settings() {
           </div>
           <Toggle label={t("settings.player.soundSegments")} checked={settings.soundSegments} onChange={(value) => settings.patch({ soundSegments: value })} />
         </div>
-        {mpv.supported && (
+        {mpv.smoothMotion && (
           <div className="setting">
             <div>
               <strong>{t("settings.player.smooth")}</strong>

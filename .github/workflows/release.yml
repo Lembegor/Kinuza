@@ -135,8 +135,42 @@ jobs:
           releaseId: ${{ needs.draft.outputs.release_id }}
           includeUpdaterJson: false
 
+  macos:
+    needs: draft
+    runs-on: macos-14
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm ci
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+          VITE_TMDB_API_KEY: ${{ secrets.VITE_TMDB_API_KEY }}
+          VITE_OPENSUBTITLES_API_KEY: ${{ secrets.VITE_OPENSUBTITLES_API_KEY }}
+          VITE_REPORT_BOT_TOKEN: ${{ secrets.VITE_REPORT_BOT_TOKEN }}
+          VITE_REPORT_CHAT_ID: ${{ secrets.VITE_REPORT_CHAT_ID }}
+        with:
+          releaseId: ${{ needs.draft.outputs.release_id }}
+          includeUpdaterJson: false
+
   publish:
-    needs: [draft, windows, linux]
+    needs: [draft, windows, linux, macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write

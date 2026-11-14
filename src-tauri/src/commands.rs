@@ -189,7 +189,11 @@ pub fn torrent_hold(state: State<'_, AppState>, info_hash: String) {
 
 #[tauri::command]
 pub async fn torrent_release(state: State<'_, AppState>, info_hash: String) -> CommandResult<()> {
-    state.engine.release_online(&info_hash).await.map_err(to_message)
+    let released = state.engine.release_online(&info_hash).await;
+    if !state.engine.held(&info_hash) {
+        crate::server::stop_hls(&info_hash);
+    }
+    released.map_err(to_message)
 }
 
 #[tauri::command]

@@ -1,0 +1,52 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "build": {
+    "beforeDevCommand": "npm run prepare:libmpv && npm run dev",
+    "beforeBuildCommand": "npm run prepare:libmpv && npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Kinuza",
+        "width": 1400,
+        "height": 880,
+        "minWidth": 1040,
+        "minHeight": 660,
+        "center": true,
+        "decorations": false,
+        "shadow": true,
+        "transparent": false,
+        "dragDropEnabled": true
+      }
+    ]
+  },
+  "bundle": {
+    "targets": ["app", "dmg"],
+    "resources": ["macos/THIRD-PARTY-NOTICES.txt"],
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "signingIdentity": "-",
+      "frameworks": [
+        "resources/bin/libmpv/lib/libmpv.dylib",
+        "resources/bin/libmpv/lib/libass.dylib",
+        "resources/bin/libmpv/lib/libavcodec.dylib",
+        "resources/bin/libmpv/lib/libavfilter.dylib",
+        "resources/bin/libmpv/lib/libavformat.dylib",
+        "resources/bin/libmpv/lib/libavutil.dylib",
+        "resources/bin/libmpv/lib/libdav1d.dylib",
+        "resources/bin/libmpv/lib/libfreetype.dylib",
+        "resources/bin/libmpv/lib/libfribidi.dylib",
+        "resources/bin/libmpv/lib/libharfbuzz.dylib",
+        "resources/bin/libmpv/lib/libmbedcrypto.dylib",
+        "resources/bin/libmpv/lib/libmbedtls.dylib",
+        "resources/bin/libmpv/lib/libmbedx509.dylib",
+        "resources/bin/libmpv/lib/libpng16.dylib",
+        "resources/bin/libmpv/lib/libswresample.dylib",
+        "resources/bin/libmpv/lib/libswscale.dylib",
+        "resources/bin/libmpv/lib/libuchardet.dylib",
+        "resources/bin/libmpv/lib/libxml2.dylib"
+      ]
+    }
+  }
+}
