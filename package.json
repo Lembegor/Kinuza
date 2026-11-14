@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "prepare:mpv": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/fetch-mpv.ps1",
+    "prepare:libmpv": "bash scripts/fetch-libmpv.sh",
     "tauri": "tauri",
     "app:dev": "tauri dev",
     "app:build": "tauri build"

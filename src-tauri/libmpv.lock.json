@@ -1,0 +1,8 @@
+{
+  "tag": "v0.7.3",
+  "libs": "libmpv-libs_v0.7.3_macos-arm64-video-full.tar.gz",
+  "libsSha256": "9bb168ec908b4801f4231f411e3278a0aea644a2b03ce375c880d2813ab7f949",
+  "headers": "libmpv-xcframeworks_v0.7.3_macos-universal-video-full_Mpv.zip",
+  "headersSha256": "e45674bf6769ce1894f547d650ecd766d4d7d8c425a5f57ab47cf79e39dc45e9",
+  "pinnedAt": "2026-11-14"
+}

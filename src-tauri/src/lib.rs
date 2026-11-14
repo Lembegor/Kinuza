@@ -152,6 +152,7 @@ pub fn run() {
             mpv::mpv_command,
             mpv::mpv_set,
             mpv::mpv_warm,
+            mpv::mpv_surface,
             mpv::mpv_quit,
             mpv::mpv_add_subtitle_text,
             mpv::mpv_audio_filter,

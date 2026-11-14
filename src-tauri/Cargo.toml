@@ -10,6 +10,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+cc = "1"
 
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
@@ -37,7 +38,6 @@ rustfft = "6"
 percent-encoding = "2.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-sevenz-rust2 = { version = "0.25.0", default-features = false, features = ["util"] }
 souvlaki = { version = "0.9.3", default-features = false, features = ["use_zbus"] }
 
 [target.'cfg(windows)'.dependencies]
@@ -45,11 +45,10 @@ windows-sys = { version = "0.59", features = ["Win32_Storage_FileSystem", "Win32
 winreg = "0.55"
 webview2-com = "0.39"
 windows-core = "0.62"
+sevenz-rust2 = { version = "0.25.0", default-features = false, features = ["util"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-
-[target.'cfg(target_os = "linux")'.dependencies]
 lzma-rust2 = { version = "0.25", default-features = false, features = ["std", "optimization", "xz"] }
 tar = { version = "0.4", default-features = false }
 

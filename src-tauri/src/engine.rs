@@ -1180,6 +1180,10 @@ impl Engine {
         StreamLease { engine: self.clone(), info_hash: info_hash.to_owned() }
     }
 
+    pub fn held(&self, info_hash: &str) -> bool {
+        self.usage.lock().unwrap().get(info_hash).is_some_and(|usage| usage.holders > 0)
+    }
+
     pub fn hold_online(&self, info_hash: &str) {
         let mut usage = self.usage.lock().unwrap();
         let entry = usage.entry(info_hash.to_owned()).or_default();

@@ -79,7 +79,7 @@ import { useMpvMode, useMpvVideo, type MediaHandlers } from "./useMpvVideo";
 import { useAudioEffects } from "./player/audioEffects";
 import { useMediaSession } from "./player/mediaSession";
 import { StatsPanel } from "./player/StatsPanel";
-import { isLinux } from "../lib/platform";
+import { isLinux, isMac } from "../lib/platform";
 
 const controlsHideDelayMs = 3000;
 const progressSaveIntervalMs = 5000;
@@ -113,10 +113,13 @@ const qualityProperties: Record<VideoQuality, [string, unknown][]> = {
   fast: [["scale", "bilinear"], ["dscale", "bilinear"], ["cscale", "bilinear"], ["deband", false]],
 };
 const subtitleFonts: Record<SubtitleFont, { mpv: string; css: string }> = {
-  sans: { mpv: "Segoe UI Semibold", css: "system-ui, 'Segoe UI', 'Noto Sans', sans-serif" },
+  sans: { mpv: isMac ? "Helvetica Neue Medium" : "Segoe UI Semibold", css: "system-ui, 'Segoe UI', 'Noto Sans', sans-serif" },
   serif: { mpv: "Georgia", css: "Georgia, 'Noto Serif', 'DejaVu Serif', serif" },
   rounded: { mpv: "Trebuchet MS", css: "'Trebuchet MS', 'Nunito', 'Ubuntu', sans-serif" },
-  condensed: { mpv: "Bahnschrift SemiCondensed", css: "'Bahnschrift SemiCondensed', 'Roboto Condensed', 'Arial Narrow', sans-serif" },
+  condensed: {
+    mpv: isMac ? "Avenir Next Condensed Demi Bold" : "Bahnschrift SemiCondensed",
+    css: "'Bahnschrift SemiCondensed', 'Roboto Condensed', 'Arial Narrow', sans-serif",
+  },
 };
 const subtitleColors: Record<SubtitleColor, string> = { white: "#FFFFFF", yellow: "#FFE45C", cyan: "#8FE6FF", green: "#A6FF8F" };
 const seekRunGapMs = 1000;
@@ -722,13 +725,24 @@ function PlayerView({ session }: { session: PlayerSession }) {
     };
   }, [conversionStart, audioTrack, source?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    const video = videoRef.current;
+    // WebKit keeps a detached <video> loading (and re-polling an HLS playlist, which restarts the conversion) until its source is cleared.
+    return () => {
+      video?.removeAttribute("src");
+      video?.load();
+    };
+  }, [url]);
+
   const startConversion = useCallback(() => {
     setFailed(false);
     setBuffering(true);
     setConversionStart(resumeAt.current > 0 ? resumeAt.current : filmTime());
   }, [filmTime]);
 
-  const unplayablePicture = convertedVideoCodecs.has(media.tracks?.videoCodec ?? "");
+  // WebKit on macOS stalls on containers it can't open (MKV, AVI...) instead of firing an error, so convert those up front.
+  const unplayablePicture =
+    convertedVideoCodecs.has(media.tracks?.videoCodec ?? "") || (isMac && !/\.(mp4|m4v|mov)$/i.test(source?.fileName ?? ""));
   useEffect(() => {
     if (!usingMpv && conversionStart === null && media.tracks && (unplayablePicture || failed)) startConversion();
   }, [media.tracks, unplayablePicture, failed]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -776,7 +790,7 @@ function PlayerView({ session }: { session: PlayerSession }) {
 
   const generation = mpvPlayer.generation;
   useEffect(() => {
-    if (usingMpv) void mpv.set("interpolation", settings.smoothMotion).catch(() => undefined);
+    if (usingMpv && mpv.smoothMotion) void mpv.set("interpolation", settings.smoothMotion).catch(() => undefined);
   }, [usingMpv, settings.smoothMotion, generation]);
 
   useEffect(() => {
@@ -1973,6 +1987,10 @@ function PlayerView({ session }: { session: PlayerSession }) {
           onPlaying={handlers.onPlaying}
           onCanPlay={() => setBuffering(false)}
           onLoadedMetadata={handlers.onLoadedMetadata}
+          onLoadedData={(event) => {
+            // The converted HLS playlist grows while it plays, so WebKit treats it as live and starts at its newest segment.
+            if (conversionRef.current !== null && event.currentTarget.currentTime > 1) event.currentTarget.currentTime = 0;
+          }}
           onDurationChange={handlers.onDurationChange}
           onTimeUpdate={handlers.onTimeUpdate}
           onProgress={handlers.onProgress}

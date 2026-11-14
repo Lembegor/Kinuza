@@ -82,6 +82,30 @@ struct ServerState {
 
 static NEXT_CONVERSION: AtomicU64 = AtomicU64::new(1);
 
+// WebKit's <video> refuses streams without byte ranges, so on macOS converted video goes out as HLS.
+const HLS_FOLDER: &str = "hls";
+const HLS_PLAYLIST: &str = "index.m3u8";
+const HLS_SEGMENT_SECONDS: &str = "2";
+const HLS_READY_TIMEOUT: Duration = Duration::from_secs(45);
+
+struct HlsConversion {
+    info_hash: String,
+    params: String,
+    folder: std::path::PathBuf,
+    _stop: oneshot::Sender<()>,
+}
+
+// ponytail: one HLS conversion at a time, the player shows one video.
+static HLS: Mutex<Option<HlsConversion>> = Mutex::new(None);
+static HLS_STARTING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+pub fn stop_hls(info_hash: &str) {
+    let mut slot = HLS.lock().unwrap();
+    if slot.as_ref().is_some_and(|hls| hls.info_hash == info_hash) {
+        *slot = None;
+    }
+}
+
 #[derive(Deserialize)]
 struct StreamQuery {
     until: Option<u64>,
@@ -99,6 +123,7 @@ pub async fn start(engine: Arc<Engine>, token: String, data_dir: std::path::Path
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
     let port = listener.local_addr()?.port();
     let base_url = format!("http://127.0.0.1:{port}/{token}");
+    let _ = std::fs::remove_dir_all(data_dir.join(HLS_FOLDER));
 
     let state = ServerState {
         engine,
@@ -117,6 +142,7 @@ pub async fn start(engine: Arc<Engine>, token: String, data_dir: std::path::Path
         .route("/{token}/audio/{info_hash}/{file_index}", get(stream_audio))
         .route("/{token}/subtitles/{info_hash}/{file_index}", get(read_subtitles))
         .route("/{token}/video/{info_hash}/{file_index}", get(stream_converted))
+        .route("/{token}/hls/{info_hash}/{file_index}/{name}", get(stream_hls))
         .layer(middleware::from_fn_with_state(state.clone(), guard))
         .with_state(state);
 
@@ -278,6 +304,115 @@ async fn stream_converted(
         .args(["-g", CONVERTED_KEYFRAME_GAP, "-c:a", "aac", "-ac", "2", "-b:a", AUDIO_BITRATE])
         .args(["-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]);
     pipe_conversion(&state, format!("video:{info_hash}:{file_index}"), command, STREAM_CHUNK_BYTES, "video/mp4")
+}
+
+async fn stream_hls(
+    State(state): State<ServerState>,
+    Path((token, info_hash, file_index, name)): Path<(String, String, usize, String)>,
+    Query(query): Query<ConvertedQuery>,
+) -> Response {
+    if token != *state.token {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    if name != HLS_PLAYLIST {
+        let folder = HLS.lock().unwrap().as_ref().filter(|hls| hls.info_hash == info_hash).map(|hls| hls.folder.clone());
+        let segment = name.starts_with("seg") && name.ends_with(".ts") && !name.contains(['/', '\\']);
+        let (Some(folder), true) = (folder, segment) else {
+            return StatusCode::NOT_FOUND.into_response();
+        };
+        return match tokio::fs::read(folder.join(&name)).await {
+            Ok(bytes) => ([(header::CONTENT_TYPE, "video/mp2t")], bytes).into_response(),
+            Err(_) => StatusCode::NOT_FOUND.into_response(),
+        };
+    }
+
+    // WebKit asks for the playlist again every few seconds: keep the running conversion unless the request changed.
+    let params = format!("{file_index}:{}:{:.3}", query.audio, query.start.max(0.0));
+    let folder = {
+        let _starting = HLS_STARTING.lock().await;
+        let running = HLS
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|hls| hls.info_hash == info_hash && hls.params == params)
+            .map(|hls| hls.folder.clone());
+        match running {
+            Some(folder) => folder,
+            None => match start_hls(&state, &info_hash, file_index, &query, params).await {
+                Ok(folder) => folder,
+                Err(response) => return response,
+            },
+        }
+    };
+
+    // ponytail: if ffmpeg dies before the first segment, the player waits out the timeout; watch the child if that hurts.
+    let deadline = tokio::time::Instant::now() + HLS_READY_TIMEOUT;
+    loop {
+        if let Ok(playlist) = tokio::fs::read_to_string(folder.join(HLS_PLAYLIST)).await {
+            if playlist.contains(".ts") {
+                let mut headers = HeaderMap::new();
+                headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/vnd.apple.mpegurl"));
+                headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+                return (headers, playlist).into_response();
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return StatusCode::GATEWAY_TIMEOUT.into_response();
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+}
+
+async fn start_hls(
+    state: &ServerState,
+    info_hash: &str,
+    file_index: usize,
+    query: &ConvertedQuery,
+    params: String,
+) -> Result<std::path::PathBuf, Response> {
+    let Some(executable) = ffmpeg::executable(&state.data_dir) else {
+        return Err((StatusCode::SERVICE_UNAVAILABLE, "ffmpeg_missing").into_response());
+    };
+    let Some((encoder, quality)) = ffmpeg::video_encoder(&executable).await else {
+        return Err((StatusCode::SERVICE_UNAVAILABLE, "no_video_encoder").into_response());
+    };
+    let folder = state.data_dir.join(HLS_FOLDER).join(NEXT_CONVERSION.fetch_add(1, Ordering::Relaxed).to_string());
+    std::fs::create_dir_all(&folder).map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response())?;
+    let input = format!("{}/stream/{}/{}", state.base_url, info_hash, file_index);
+    let start = format!("{:.3}", query.start.max(0.0));
+    let audio = format!("0:a:{}?", query.audio);
+
+    let mut command = ffmpeg::command(&executable);
+    command
+        .args(["-loglevel", "error", "-ss", &start, "-i", &input, "-map", "0:v:0", "-map", &audio, "-sn", "-dn"])
+        .args(["-vf", CONVERTED_PICTURE, "-pix_fmt", "yuv420p", "-c:v", encoder])
+        .args(quality)
+        .args(["-g", CONVERTED_KEYFRAME_GAP, "-c:a", "aac", "-ac", "2", "-b:a", AUDIO_BITRATE])
+        .args(["-f", "hls", "-hls_time", HLS_SEGMENT_SECONDS, "-hls_playlist_type", "event", "-hls_segment_filename"])
+        .arg(folder.join("seg%05d.ts"))
+        .arg(folder.join(HLS_PLAYLIST))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let mut child =
+        crate::children::spawn(&mut command).map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response())?;
+
+    // Dropping the sender (a newer conversion or stop_hls) kills ffmpeg and removes its segments.
+    let (stop, mut stopped) = oneshot::channel::<()>();
+    let segments = folder.clone();
+    tokio::spawn(async move {
+        let stopped_early = tokio::select! {
+            _ = &mut stopped => true,
+            _ = child.wait() => false,
+        };
+        if stopped_early {
+            let _ = child.kill().await;
+        } else {
+            let _ = stopped.await;
+        }
+        let _ = tokio::fs::remove_dir_all(&segments).await;
+    });
+    *HLS.lock().unwrap() = Some(HlsConversion { info_hash: info_hash.to_owned(), params, folder: folder.clone(), _stop: stop });
+    Ok(folder)
 }
 
 #[derive(Deserialize)]

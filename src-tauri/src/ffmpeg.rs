@@ -102,6 +102,7 @@ const VIDEO_ENCODERS: &[(&str, &[&str])] = &[
     ("h264_amf", &["-quality", "balanced", "-rc", "cqp", "-qp_i", "22", "-qp_p", "24"]),
     ("h264_mf", &["-b:v", "8M"]),
     ("libopenh264", &["-b:v", "6M"]),
+    ("h264_videotoolbox", &["-b:v", "8M"]),
 ];
 
 static VIDEO_ENCODER: tokio::sync::OnceCell<Option<usize>> = tokio::sync::OnceCell::const_new();
@@ -141,11 +142,19 @@ pub fn executable(data_dir: &Path) -> Option<PathBuf> {
     if installed.is_file() {
         return Some(installed);
     }
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths)
-            .map(|folder| folder.join(EXECUTABLE_NAME))
-            .find(|candidate| candidate.is_file())
-    })
+    std::env::var_os("PATH")
+        .and_then(|paths| {
+            std::env::split_paths(&paths)
+                .map(|folder| folder.join(EXECUTABLE_NAME))
+                .find(|candidate| candidate.is_file())
+        })
+        // ponytail: apps opened from Finder don't get Homebrew's PATH; bundle ffmpeg in the .app when this isn't enough.
+        .or_else(|| {
+            ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"]
+                .into_iter()
+                .map(PathBuf::from)
+                .find(|candidate| cfg!(target_os = "macos") && candidate.is_file())
+        })
 }
 
 pub fn command(executable: &Path) -> Command {
@@ -202,6 +211,9 @@ async fn install(folder: &Path, progress: &FfmpegState) -> anyhow::Result<()> {
 }
 
 async fn download_and_unpack(folder: &Path, progress: &FfmpegState) -> anyhow::Result<()> {
+    if cfg!(target_os = "macos") {
+        bail!("there is no macOS FFmpeg build to download; install it with `brew install ffmpeg`");
+    }
     tokio::fs::create_dir_all(folder).await?;
     let client = reqwest::Client::builder()
         .user_agent(concat!("Kinuza/", env!("CARGO_PKG_VERSION")))

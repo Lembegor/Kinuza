@@ -1,41 +1,84 @@
-#![cfg_attr(not(windows), allow(dead_code, unused_imports, unused_variables))]
+#![cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code, unused_imports, unused_variables))]
+
+//! The mpv player as every platform sees it: the commands the interface calls, the whitelists that guard them and
+//! mpv's JSON IPC protocol. How mpv runs and where it draws lives in the platform modules.
+
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(windows)]
+mod windows;
+
+#[cfg(target_os = "macos")]
+use macos as platform;
+#[cfg(windows)]
+use windows as platform;
+
+#[cfg(windows)]
+pub use windows::{executable, has_bundled};
 
 use std::{
+    collections::HashMap,
     path::{Path, PathBuf},
-    process::Stdio,
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
-    time::Duration,
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+    },
+    time::{Duration, Instant},
 };
 
-use anyhow::{anyhow, bail, Context};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
-use std::{collections::HashMap, sync::Arc, time::Instant};
-
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    process::{Child, Command},
+    io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
     sync::{mpsc, oneshot, Mutex},
 };
 
 use crate::{files::FileGrants, AppState};
 
-const DOWNLOAD_BASE: &str = "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download";
-const PINNED_BUILD: &str = include_str!("../mpv.lock.json");
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
-const READ_TIMEOUT: Duration = Duration::from_secs(30);
-const INSTALL_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const REPLY_WAIT: Duration = Duration::from_secs(5);
 const TIME_EVENT_EVERY: Duration = Duration::from_millis(200);
-const FOLDER_NAME: &str = "mpv";
-const EXECUTABLE_NAME: &str = "mpv.exe";
 const APPROXIMATE_ARCHIVE_BYTES: u64 = 33 * 1024 * 1024;
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-const PIPE_WAIT: Duration = Duration::from_secs(8);
 const EVENT_NAME: &str = "mpv-event";
 const SUBTITLES_FOLDER_NAME: &str = "mpv-subtitles";
+
+/// Options mpv gets on every platform; the platform modules add how it draws and how we talk to it.
+const OPTIONS: &[(&str, &str)] = &[
+    ("config", "no"),
+    ("idle", "yes"),
+    ("keep-open", "yes"),
+    ("force-window", "no"),
+    ("osc", "no"),
+    ("osd-level", "0"),
+    ("input-default-bindings", "no"),
+    ("media-controls", "no"),
+    ("input-vo-keyboard", "no"),
+    ("input-cursor", "no"),
+    ("cursor-autohide", "no"),
+    ("terminal", "no"),
+    ("hwdec", "auto-safe"),
+    ("interpolation", "no"),
+    ("audio-channels", "auto"),
+    ("audio-exclusive", "no"),
+    ("sub-auto", "no"),
+    ("audio-file-auto", "no"),
+    ("hr-seek", "yes"),
+    ("volume-max", "150"),
+    ("screenshot-format", "png"),
+    ("screenshot-png-compression", "4"),
+    ("cache", "yes"),
+    ("cache-secs", "300"),
+    ("demuxer-max-bytes", "1500MiB"),
+    ("demuxer-max-back-bytes", "150MiB"),
+    ("demuxer-readahead-secs", "300"),
+    ("cache-pause-initial", "yes"),
+    ("cache-pause-wait", "2"),
+    ("network-timeout", "600"),
+    ("stream-lavf-o", "reconnect=1,reconnect_streamed=1,reconnect_delay_max=5"),
+    ("sub-border-size", "2.5"),
+    ("sub-shadow-offset", "1"),
+    ("sub-margin-y", "54"),
+];
 
 const ALLOWED_PROPERTIES: &[&str] = &[
     "volume",
@@ -122,12 +165,54 @@ const OBSERVED: &[&str] = &[
     "speed",
 ];
 
+#[cfg(not(any(windows, target_os = "macos")))]
+mod platform {
+    use std::path::Path;
+
+    use serde_json::Value;
+    use tauri::AppHandle;
+
+    pub struct Process;
+
+    impl Process {
+        pub fn alive(&mut self) -> bool {
+            false
+        }
+    }
+
+    pub fn available(_app: &AppHandle, _data_dir: &Path) -> bool {
+        false
+    }
+
+    pub async fn start(_app: &AppHandle, _data_dir: &Path, _surface: bool) -> anyhow::Result<super::Player> {
+        anyhow::bail!("embedding mpv is not supported on this system")
+    }
+
+    pub async fn stop(_player: super::Player) {}
+
+    pub fn surface(_process: &Process, _shown: bool) {}
+
+    pub fn on_event(_app: &AppHandle, _message: &Value) {}
+}
+
+#[cfg(not(windows))]
+pub fn executable(_app: &AppHandle, _data_dir: &Path) -> Option<PathBuf> {
+    None
+}
+
+#[cfg(not(windows))]
+pub fn has_bundled(_app: &AppHandle) -> bool {
+    false
+}
+
 #[derive(Default)]
 pub struct MpvState {
+    #[cfg_attr(not(windows), allow(dead_code))]
     install: Mutex<()>,
     installing: AtomicBool,
     downloaded_bytes: AtomicU64,
     total_bytes: AtomicU64,
+    surface: AtomicBool,
     player: Mutex<Option<Player>>,
 }
 
@@ -136,7 +221,7 @@ type Replies = Arc<std::sync::Mutex<HashMap<u64, oneshot::Sender<Result<Value, S
 static NEXT_REQUEST: AtomicU64 = AtomicU64::new(1);
 
 struct Player {
-    child: Child,
+    process: platform::Process,
     commands: mpsc::UnboundedSender<String>,
     replies: Replies,
 }
@@ -150,35 +235,11 @@ pub struct MpvStatus {
     total_bytes: u64,
 }
 
-pub fn has_bundled(app: &AppHandle) -> bool {
-    bundled(app).is_some()
-}
-
-fn bundled(app: &AppHandle) -> Option<PathBuf> {
-    let path = app.path().resource_dir().ok()?.join(FOLDER_NAME).join(EXECUTABLE_NAME);
-    path.is_file().then_some(path)
-}
-
-fn downloaded(data_dir: &Path) -> Option<PathBuf> {
-    let installed = data_dir.join(FOLDER_NAME).join(EXECUTABLE_NAME);
-    installed.is_file().then_some(installed)
-}
-
-#[cfg(windows)]
-pub fn executable(app: &AppHandle, data_dir: &Path) -> Option<PathBuf> {
-    bundled(app).or_else(|| downloaded(data_dir))
-}
-
-#[cfg(not(windows))]
-pub fn executable(_app: &AppHandle, _data_dir: &Path) -> Option<PathBuf> {
-    None
-}
-
 #[tauri::command]
 pub fn mpv_status(handle: AppHandle, app: State<'_, AppState>, mpv: State<'_, MpvState>) -> MpvStatus {
     let total = mpv.total_bytes.load(Ordering::Relaxed);
     MpvStatus {
-        installed: executable(&handle, &app.data_dir).is_some(),
+        installed: platform::available(&handle, &app.data_dir),
         installing: mpv.installing.load(Ordering::Relaxed),
         downloaded_bytes: mpv.downloaded_bytes.load(Ordering::Relaxed),
         total_bytes: if total > 0 { total } else { APPROXIMATE_ARCHIVE_BYTES },
@@ -187,211 +248,21 @@ pub fn mpv_status(handle: AppHandle, app: State<'_, AppState>, mpv: State<'_, Mp
 
 #[tauri::command]
 pub async fn mpv_install(handle: AppHandle, app: State<'_, AppState>, mpv: State<'_, MpvState>) -> Result<(), String> {
-    if cfg!(not(windows)) {
-        return Err("mpv_unsupported".to_owned());
-    }
-    let _installing = mpv.install.lock().await;
-    if executable(&handle, &app.data_dir).is_some() {
-        return Ok(());
-    }
-    mpv.downloaded_bytes.store(0, Ordering::Relaxed);
-    mpv.total_bytes.store(0, Ordering::Relaxed);
-    mpv.installing.store(true, Ordering::Relaxed);
-    let result = install(&app.data_dir.join(FOLDER_NAME), &mpv).await;
-    mpv.installing.store(false, Ordering::Relaxed);
-    result.map_err(|error| {
-        tracing::warn!("mpv: install failed: {error:#}");
-        "mpv_install_failed".to_owned()
-    })
-}
-
-#[derive(Deserialize)]
-struct PinnedBuild {
-    tag: String,
-    asset: String,
-    sha256: String,
-}
-
-fn pinned_build() -> anyhow::Result<PinnedBuild> {
-    serde_json::from_str(PINNED_BUILD).context("src-tauri/mpv.lock.json is not valid")
-}
-
-async fn install(folder: &Path, progress: &MpvState) -> anyhow::Result<()> {
-    let outcome = tokio::time::timeout(INSTALL_TIMEOUT, download_and_unpack(folder, progress))
-        .await
-        .unwrap_or_else(|_| Err(anyhow!("the mpv download took longer than {} minutes", INSTALL_TIMEOUT.as_secs() / 60)));
-    if outcome.is_err() {
-        let _ = tokio::fs::remove_file(folder.with_extension("download.tmp")).await;
-        let _ = tokio::fs::remove_dir_all(folder.with_extension("new")).await;
-    }
-    outcome
-}
-
-async fn download_and_unpack(folder: &Path, progress: &MpvState) -> anyhow::Result<()> {
-    tokio::fs::create_dir_all(folder.parent().unwrap_or(folder)).await?;
-    let build = pinned_build()?;
-    let client = reqwest::Client::builder()
-        .user_agent(concat!("Kinuza/", env!("CARGO_PKG_VERSION")))
-        .connect_timeout(CONNECT_TIMEOUT)
-        .read_timeout(READ_TIMEOUT)
-        .build()?;
-    let url = format!("{DOWNLOAD_BASE}/{}/{}", build.tag, build.asset);
-
-    let archive = folder.with_extension("download.tmp");
-    let mut response = client.get(&url).send().await?.error_for_status()?;
-    progress.total_bytes.store(response.content_length().unwrap_or(0), Ordering::Relaxed);
-    let mut file = tokio::fs::File::create(&archive).await?;
-    let mut hasher = Sha256::new();
-    let downloaded = async {
-        while let Some(chunk) = response.chunk().await? {
-            hasher.update(&chunk);
-            file.write_all(&chunk).await?;
-            progress.downloaded_bytes.fetch_add(chunk.len() as u64, Ordering::Relaxed);
-        }
-        file.flush().await?;
-        anyhow::Ok(())
-    }
-    .await;
-    drop(file);
-    if let Err(error) = downloaded {
-        let _ = tokio::fs::remove_file(&archive).await;
-        return Err(error);
-    }
-
-    let actual = hasher.finalize().iter().map(|byte| format!("{byte:02x}")).collect::<String>();
-    if actual != build.sha256.to_ascii_lowercase() {
-        let _ = tokio::fs::remove_file(&archive).await;
-        bail!("the downloaded mpv does not match the pinned checksum");
-    }
-
-    let unpacked = {
-        let (archive, folder) = (archive.clone(), folder.to_path_buf());
-        tauri::async_runtime::spawn_blocking(move || unpack(&archive, &folder)).await?
-    };
-    let _ = tokio::fs::remove_file(&archive).await;
-    unpacked?;
-
-    let version = background(Command::new(folder.join(EXECUTABLE_NAME)).arg("--version")).output().await?;
-    anyhow::ensure!(version.status.success(), "the unpacked mpv does not run");
-    tracing::info!("mpv: installed {}", build.asset);
-    Ok(())
-}
-
-fn unpack(archive: &Path, target: &Path) -> anyhow::Result<()> {
-    let staging = target.with_extension("new");
-    let _ = std::fs::remove_dir_all(&staging);
-    std::fs::create_dir_all(&staging)?;
-    sevenz_rust2::decompress_file(archive, &staging).map_err(|error| anyhow!("could not unpack mpv: {error}"))?;
-    anyhow::ensure!(staging.join(EXECUTABLE_NAME).is_file(), "the archive has no {EXECUTABLE_NAME}");
-    let _ = std::fs::remove_dir_all(target);
-    std::fs::rename(&staging, target).context("could not put the unpacked files in place")?;
-    Ok(())
-}
-
-fn background(command: &mut Command) -> &mut Command {
-    command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true);
     #[cfg(windows)]
-    command.creation_flags(CREATE_NO_WINDOW);
-    command
-}
-
-fn pipe_name() -> String {
-    format!(r"\\.\pipe\kinuza-mpv-{}", std::process::id())
-}
-
-fn main_window_handle(app: &AppHandle) -> anyhow::Result<isize> {
-    let window = app.get_webview_window("main").ok_or_else(|| anyhow!("the main window is gone"))?;
-    #[cfg(windows)]
-    {
-        Ok(window.hwnd()?.0 as isize)
-    }
+    return windows::install(&handle, &app.data_dir, &mpv).await;
     #[cfg(not(windows))]
     {
-        let _ = window;
-        bail!("embedding mpv is supported on Windows only")
+        let _ = (handle, app, mpv);
+        Err("mpv_unsupported".to_owned())
     }
 }
 
-fn mpv_arguments(window: isize, pipe: &str) -> Vec<String> {
-    [
-        format!("--wid={window}"),
-        format!("--input-ipc-server={pipe}"),
-        "--no-config".into(),
-        "--idle=yes".into(),
-        "--keep-open=yes".into(),
-        "--force-window=no".into(),
-        "--osc=no".into(),
-        "--osd-level=0".into(),
-        "--input-default-bindings=no".into(),
-        "--media-controls=no".into(),
-        "--input-vo-keyboard=no".into(),
-        "--input-cursor=no".into(),
-        "--cursor-autohide=no".into(),
-        "--terminal=no".into(),
-        "--vo=gpu-next".into(),
-        "--gpu-api=d3d11".into(),
-        "--hwdec=auto-safe".into(),
-        "--profile=high-quality".into(),
-        "--video-sync=display-resample".into(),
-        "--interpolation=no".into(),
-        "--audio-channels=auto".into(),
-        "--audio-exclusive=no".into(),
-        "--sub-auto=no".into(),
-        "--audio-file-auto=no".into(),
-        "--hr-seek=yes".into(),
-        "--volume-max=150".into(),
-        "--screenshot-format=png".into(),
-        "--screenshot-png-compression=4".into(),
-        "--cache=yes".into(),
-        "--cache-secs=300".into(),
-        "--demuxer-max-bytes=1500MiB".into(),
-        "--demuxer-max-back-bytes=150MiB".into(),
-        "--demuxer-readahead-secs=300".into(),
-        "--cache-pause-initial=yes".into(),
-        "--cache-pause-wait=2".into(),
-        "--network-timeout=600".into(),
-        "--stream-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_delay_max=5".into(),
-        "--sub-border-size=2.5".into(),
-        "--sub-shadow-offset=1".into(),
-        "--sub-margin-y=54".into(),
-        "--background-color=#000000".into(),
-    ]
-    .into_iter()
-    .collect()
-}
-
-#[cfg(windows)]
-async fn open_pipe(name: &str) -> anyhow::Result<tokio::net::windows::named_pipe::NamedPipeClient> {
-    let deadline = tokio::time::Instant::now() + PIPE_WAIT;
-    loop {
-        match tokio::net::windows::named_pipe::ClientOptions::new().open(name) {
-            Ok(pipe) => return Ok(pipe),
-            Err(error) if tokio::time::Instant::now() < deadline => {
-                let _ = error;
-                tokio::time::sleep(Duration::from_millis(80)).await;
-            }
-            Err(error) => return Err(anyhow!("mpv did not open its control pipe: {error}")),
-        }
-    }
-}
-
-#[cfg(not(windows))]
-async fn spawn(_app: &AppHandle, _data_dir: &Path) -> anyhow::Result<Player> {
-    bail!("embedding mpv is supported on Windows only")
-}
-
-#[cfg(windows)]
-async fn spawn(app: &AppHandle, data_dir: &Path) -> anyhow::Result<Player> {
-    let executable = executable(app, data_dir).ok_or_else(|| anyhow!("mpv_missing"))?;
-    let window = main_window_handle(app)?;
-    let pipe = pipe_name();
-    let mut command = Command::new(&executable);
-    command.args(mpv_arguments(window, &pipe));
-    background(&mut command);
-    let child = crate::children::spawn(&mut command).context("could not start mpv")?;
-
-    let pipe = open_pipe(&pipe).await?;
-    let (reader, mut writer) = tokio::io::split(pipe);
+/// Talks mpv's JSON IPC over `stream`: replies go back to whoever sent the request, events go to the interface.
+fn attach_ipc<S>(app: &AppHandle, stream: S) -> (mpsc::UnboundedSender<String>, Replies)
+where
+    S: AsyncRead + AsyncWrite + Send + 'static,
+{
+    let (reader, mut writer) = tokio::io::split(stream);
     let (commands, mut queue) = mpsc::unbounded_channel::<String>();
 
     tokio::spawn(async move {
@@ -427,13 +298,10 @@ async fn spawn(app: &AppHandle, data_dir: &Path) -> anyhow::Result<Player> {
                 }
                 last_time = Instant::now();
             }
-            match message.get("event").and_then(Value::as_str) {
-                Some("end-file") if message.get("reason").and_then(Value::as_str) == Some("error") => {
-                    tracing::warn!("mpv: playback failed: {}", message.get("file_error").and_then(|error| error.as_str()).unwrap_or("unknown error"));
-                }
-                Some("video-reconfig") | Some("file-loaded") => place_below_interface(&events),
-                _ => {}
+            if message.get("event").and_then(Value::as_str) == Some("end-file") && message.get("reason").and_then(Value::as_str) == Some("error") {
+                tracing::warn!("mpv: playback failed: {}", message.get("file_error").and_then(|error| error.as_str()).unwrap_or("unknown error"));
             }
+            platform::on_event(&events, &message);
             let _ = events.emit(EVENT_NAME, message);
         }
         if let Ok(mut waiting) = waiting.lock() {
@@ -447,35 +315,19 @@ async fn spawn(app: &AppHandle, data_dir: &Path) -> anyhow::Result<Player> {
     for (id, name) in OBSERVED.iter().enumerate() {
         let _ = commands.send(json!({ "command": ["observe_property", id + 1, name] }).to_string());
     }
-    tracing::info!("mpv: started");
-    Ok(Player { child, commands, replies })
+    (commands, replies)
 }
-
-#[cfg(windows)]
-fn place_below_interface(app: &AppHandle) {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowExW, SetWindowPos, HWND_BOTTOM, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE};
-    let Ok(parent) = main_window_handle(app) else { return };
-    let class: Vec<u16> = "mpv".encode_utf16().chain(std::iter::once(0)).collect();
-    unsafe {
-        let child = FindWindowExW(parent as _, std::ptr::null_mut(), class.as_ptr(), std::ptr::null());
-        if !child.is_null() {
-            SetWindowPos(child, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-        }
-    }
-}
-
-#[cfg(not(windows))]
-fn place_below_interface(_app: &AppHandle) {}
 
 async fn send(app: &AppHandle, state: &MpvState, data_dir: &Path, command: Value) -> Result<Value, String> {
     let (commands, replies) = {
         let mut player = state.player.lock().await;
         let alive = match player.as_mut() {
-            Some(running) => matches!(running.child.try_wait(), Ok(None)) && !running.commands.is_closed(),
+            Some(running) => running.process.alive() && !running.commands.is_closed(),
             None => false,
         };
         if !alive {
-            *player = Some(spawn(app, data_dir).await.map_err(|error| {
+            drop(player.take());
+            *player = Some(platform::start(app, data_dir, state.surface.load(Ordering::Relaxed)).await.map_err(|error| {
                 tracing::warn!("mpv: could not start: {error:#}");
                 "mpv_start_failed".to_owned()
             })?);
@@ -552,10 +404,20 @@ pub async fn mpv_command(
 
 #[tauri::command]
 pub async fn mpv_warm(app: AppHandle, state: State<'_, AppState>, mpv: State<'_, MpvState>) -> Result<(), String> {
-    if executable(&app, &state.data_dir).is_none() {
+    if !platform::available(&app, &state.data_dir) {
         return Ok(());
     }
     send(&app, &mpv, &state.data_dir, json!(["get_property", "idle-active"])).await.map(|_| ())
+}
+
+/// Shows or hides mpv's picture behind the interface while the player is open.
+#[tauri::command]
+pub async fn mpv_surface(mpv: State<'_, MpvState>, shown: bool) -> Result<(), String> {
+    mpv.surface.store(shown, Ordering::Relaxed);
+    if let Some(player) = mpv.player.lock().await.as_ref() {
+        platform::surface(&player.process, shown);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -645,11 +507,8 @@ pub async fn mpv_quit(mpv: State<'_, MpvState>) -> Result<(), String> {
 }
 
 pub async fn shutdown(mpv: &MpvState) {
-    if let Some(mut player) = mpv.player.lock().await.take() {
-        let _ = player.commands.send(json!({ "command": ["quit"] }).to_string());
-        if tokio::time::timeout(Duration::from_secs(2), player.child.wait()).await.is_err() {
-            let _ = player.child.kill().await;
-        }
+    if let Some(player) = mpv.player.lock().await.take() {
+        platform::stop(player).await;
     }
 }
 
@@ -683,14 +542,6 @@ mod tests {
         assert!(!allowed(json!(["load-script", "evil.lua"])));
         assert!(allowed(json!(["seek", 12.5, "absolute+exact"])));
         assert!(allowed(json!(["stop"])));
-    }
-
-    #[test]
-    fn pinned_build_is_valid() {
-        let build = pinned_build().unwrap();
-        assert!(build.asset.starts_with("mpv-x86_64-") && build.asset.ends_with(".7z"));
-        assert_eq!(build.sha256.len(), 64);
-        assert!(!build.tag.is_empty());
     }
 
     #[test]

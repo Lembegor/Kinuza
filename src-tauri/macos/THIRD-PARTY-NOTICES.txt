@@ -1,0 +1,26 @@
+Kinuza for macOS plays video with libmpv and FFmpeg.
+
+The libraries in Kinuza.app/Contents/Frameworks come unchanged from
+media-kit/libmpv-darwin-build v0.7.3 (macos-arm64-video-full):
+https://github.com/media-kit/libmpv-darwin-build/releases/tag/v0.7.3
+Their source code and build scripts are available at that address.
+
+They are linked dynamically, so each of them can be replaced with another
+compatible build of the same library.
+
+  libmpv (mpv 0.36, built with -Dgpl=false)      LGPL-2.1-or-later   https://mpv.io
+  libavcodec, libavformat, libavfilter,
+  libavutil, libswresample, libswscale (FFmpeg,
+  built without --enable-gpl / --enable-nonfree) LGPL-2.1-or-later   https://ffmpeg.org
+  libass                                         ISC                 https://github.com/libass/libass
+  libfribidi                                     LGPL-2.1-or-later   https://github.com/fribidi/fribidi
+  libharfbuzz                                    MIT                 https://harfbuzz.github.io
+  libfreetype                                    FreeType License    https://freetype.org
+  libpng16                                       libpng License      http://www.libpng.org
+  libxml2                                        MIT                 https://gitlab.gnome.org/GNOME/libxml2
+  libuchardet                                    MPL-1.1             https://www.freedesktop.org/wiki/Software/uchardet
+  libdav1d                                       BSD-2-Clause        https://code.videolan.org/videolan/dav1d
+  mbedtls, mbedcrypto, mbedx509                  Apache-2.0          https://www.trustedfirmware.org/projects/mbed-tls
+
+The GNU Lesser General Public License v2.1:
+https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html

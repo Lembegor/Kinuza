@@ -367,6 +367,7 @@ export function useMpvVideo(enabled: boolean): { video: MpvVideo; tracks: MediaT
       else stop = unlisten;
     });
     document.documentElement.classList.add("is-mpv");
+    void mpv.surface(true).catch(() => undefined);
     return () => {
       cancelled = true;
       stop?.();
@@ -375,6 +376,7 @@ export function useMpvVideo(enabled: boolean): { video: MpvVideo; tracks: MediaT
       video.stop();
       document.documentElement.classList.remove("is-mpv");
       showPicture(false);
+      void mpv.surface(false).catch(() => undefined);
     };
   }, [enabled, video]);
 
