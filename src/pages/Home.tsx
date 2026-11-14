@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Check, ChevronLeft, ChevronRight, Info, Play, Star, X } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, Info, Play, X } from "lucide-react";
 import { CatalogError, PosterRow, Row, typeLabel, type DismissDetail } from "../components/Cards";
 import { t, useT } from "../lib/i18n";
 import { imageUrl, tmdb, type MediaItem } from "../lib/tmdb";
@@ -12,6 +12,7 @@ import { useSettings } from "../state/settings";
 import { homeRefreshEvent, useUi } from "../state/ui";
 import { useUpNext, type UpNextEpisode } from "../state/upNext";
 import { useHoverWarm, warmRecentResume } from "../state/warmup";
+import { CatalogRating } from "../components/CatalogRating";
 
 const heroRotationMs = 10000;
 const heroItemCount = 6;
@@ -62,12 +63,7 @@ function Hero({ items }: { items: MediaItem[] }) {
           <span>{t("home.hero.trending")}</span>
           <span>{typeLabel(current)}</span>
           {current.year && <span>{current.year}</span>}
-          {current.rating > 0 && (
-            <span className="rating">
-              <Star size={12} fill="currentColor" />
-              {current.rating.toFixed(1)}
-            </span>
-          )}
+          <CatalogRating type={current.type} id={current.id} rating={current.rating} className="rating" size={12} />
         </div>
         <h1>
           <button onClick={open}>{current.title}</button>

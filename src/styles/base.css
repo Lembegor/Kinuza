@@ -529,3 +529,6 @@ html[data-density="large"] {
   gap: 6px;
 }
 
+.rating-pending {
+  opacity: 0;
+}

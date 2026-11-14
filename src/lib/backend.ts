@@ -365,6 +365,7 @@ export const backend = {
   setAssociations: (enabled: boolean) => call<AssociationStatus>("associations_set", { enabled }),
   openDefaultAppsSettings: () => call<void>("open_default_apps_settings"),
   imdbRating: (imdbId: string) => call<ImdbRating | null>("imdb_rating", { imdbId }),
+  imdbRatings: (imdbIds: string[]) => call<Record<string, ImdbRating>>("imdb_ratings", { imdbIds }),
   storeGet: (name: string) => call<StoredDocument | null>("store_get", { name }),
   storeSet: (name: string, value: string, allowShrink = false) => call<void>("store_set", { name, value, allowShrink }),
   appLog: (message: string) => (isDesktop ? call<void>("app_log", { message }).catch(() => undefined) : Promise.resolve()),

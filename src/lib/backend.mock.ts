@@ -204,6 +204,8 @@ export async function mockInvoke(command: string, args: Record<string, unknown> 
       return { installed: (globalThis as { __kinuzaMockFfmpeg?: boolean }).__kinuzaMockFfmpeg === true, installing: false, downloadedBytes: 0, totalBytes: 82 * 1024 * 1024 };
     case "imdb_rating":
       return { rating: 8.8, votes: 2_600_000 };
+    case "imdb_ratings":
+      return Object.fromEntries(((args.imdbIds as string[]) ?? []).map((imdbId) => [imdbId, { rating: 8.8, votes: 2_600_000 }]));
     case "gateway_status":
       return { state: mockGatewayFailure() ? "login_required" : "ready" };
     case "gateway_search":

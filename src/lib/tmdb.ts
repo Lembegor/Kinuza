@@ -319,6 +319,8 @@ async function fetchWithRetry(url: string): Promise<unknown> {
   }
 }
 
+const imdbIdMaxAgeMs = 30 * 24 * 60 * 60 * 1000;
+
 function request<T>(path: string, params: Record<string, string | number> = {}, maxAgeMs = defaultMaxAgeMs): Promise<T> {
   const query = new URLSearchParams({
     api_key: apiKeyOverride ?? import.meta.env.VITE_TMDB_API_KEY ?? "",
@@ -529,6 +531,12 @@ export const tmdb = {
     if (options.language) params.language = options.language;
     const data = await request<Raw>(`/search/${type}`, params);
     return toPlainItems(data.results, type);
+  },
+
+  async imdbId(type: MediaType, id: number): Promise<string> {
+    const raw = await request<Raw>(`/${type}/${id}/external_ids`, {}, imdbIdMaxAgeMs);
+    const found = typeof raw.imdb_id === "string" ? raw.imdb_id : "";
+    return /^tt\d+$/.test(found) ? found : "";
   },
 
   async findByImdbId(imdbId: string): Promise<MediaItem[]> {

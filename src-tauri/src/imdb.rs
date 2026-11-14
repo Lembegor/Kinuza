@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     fs::{self, File},
     io::{BufRead, BufReader, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
@@ -32,17 +33,54 @@ pub struct ImdbState {
     last_failure: Mutex<Option<SystemTime>>,
 }
 
+const MAX_BATCH: usize = 400;
+
+fn numeric_id(imdb_id: &str) -> Option<u32> {
+    imdb_id.strip_prefix("tt").and_then(|digits| digits.parse::<u32>().ok())
+}
+
 #[tauri::command]
 pub async fn imdb_rating(
     app: State<'_, AppState>,
     imdb: State<'_, ImdbState>,
     imdb_id: String,
 ) -> Result<Option<ImdbRating>, String> {
-    let Some(id) = imdb_id.strip_prefix("tt").and_then(|digits| digits.parse::<u32>().ok()) else {
+    let Some(id) = numeric_id(&imdb_id) else {
         return Ok(None);
     };
-    let index = app.data_dir.join(FOLDER_NAME).join(INDEX_FILE_NAME);
+    let index = fresh_index(&app, &imdb).await;
+    tauri::async_runtime::spawn_blocking(move || lookup(&index, id))
+        .await
+        .map_err(|e| e.to_string())
+}
 
+#[tauri::command]
+pub async fn imdb_ratings(
+    app: State<'_, AppState>,
+    imdb: State<'_, ImdbState>,
+    imdb_ids: Vec<String>,
+) -> Result<HashMap<String, ImdbRating>, String> {
+    let wanted: Vec<(String, u32)> = imdb_ids
+        .into_iter()
+        .take(MAX_BATCH)
+        .filter_map(|imdb_id| numeric_id(&imdb_id).map(|id| (imdb_id, id)))
+        .collect();
+    if wanted.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let index = fresh_index(&app, &imdb).await;
+    tauri::async_runtime::spawn_blocking(move || {
+        wanted
+            .into_iter()
+            .filter_map(|(imdb_id, id)| lookup(&index, id).map(|rating| (imdb_id, rating)))
+            .collect()
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+async fn fresh_index(app: &AppState, imdb: &ImdbState) -> PathBuf {
+    let index = app.data_dir.join(FOLDER_NAME).join(INDEX_FILE_NAME);
     {
         let mut last_failure = imdb.last_failure.lock().await;
         let failed_recently = last_failure
@@ -58,10 +96,7 @@ pub async fn imdb_rating(
             }
         }
     }
-
-    tauri::async_runtime::spawn_blocking(move || lookup(&index, id))
-        .await
-        .map_err(|e| e.to_string())
+    index
 }
 
 fn is_stale(index: &Path) -> bool {
@@ -139,4 +174,29 @@ fn lookup(index: &Path, id: u32) -> Option<ImdbRating> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod batch_tests {
+    use super::*;
+
+    #[test]
+    fn finds_several_ratings_in_one_index() {
+        let folder = std::env::temp_dir().join(format!("kinuza-imdb-test-{}", std::process::id()));
+        let index = folder.join(INDEX_FILE_NAME);
+        let mut archive = Vec::new();
+        {
+            use std::io::Write;
+            let mut encoder = flate2::write::GzEncoder::new(&mut archive, flate2::Compression::fast());
+            encoder.write_all(b"tconst\taverageRating\tnumVotes\ntt0000002\t5.6\t300\ntt0816692\t8.7\t2500000\ntt0092991\t7.7\t180000\n").unwrap();
+            encoder.finish().unwrap();
+        }
+        write_index(&archive, &index).unwrap();
+        assert_eq!(lookup(&index, 816692).map(|rating| rating.rating), Some(8.7));
+        assert_eq!(lookup(&index, 92991).map(|rating| rating.votes), Some(180000));
+        assert!(lookup(&index, 1).is_none());
+        assert_eq!(numeric_id("tt0092991"), Some(92991));
+        assert_eq!(numeric_id("0092991"), None);
+        let _ = fs::remove_dir_all(&folder);
+    }
 }

@@ -9,6 +9,7 @@ import { hasApiKey, imageUrl, tmdb, type MediaItem } from "../lib/tmdb";
 import { maxRating, titleKey, unitKey, useLibrary, type TitleRef, type WatchStatus } from "../state/library";
 import { TrackBadge } from "./TrackControls";
 import { applyStatus } from "../state/titleStatus";
+import { CatalogRating } from "./CatalogRating";
 
 type CardItem = TitleRef & Partial<Pick<MediaItem, "rating" | "isAnime">> & { note?: string };
 
@@ -127,12 +128,7 @@ export function PosterCard({ item }: { item: CardItem }) {
       <button className="poster-card__open" onClick={() => navigate(`/title/${item.type}/${item.id}`)}>
       <div className="poster-card__art">
         {poster ? <img src={poster} alt="" loading="lazy" draggable={false} /> : <div className="poster-card__blank">{title}</div>}
-        {item.rating ? (
-          <span className="poster-card__rating">
-            <Star size={11} fill="currentColor" />
-            {item.rating.toFixed(1)}
-          </span>
-        ) : null}
+        <CatalogRating type={item.type} id={item.id} rating={item.rating ?? 0} className="poster-card__rating" size={11} />
         <TrackBadge type={item.type} id={item.id} />
       </div>
       <div className="poster-card__title">{title}</div>

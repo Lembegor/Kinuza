@@ -146,6 +146,7 @@ pub fn run() {
             activity::activity_append,
             activity::activity_read,
             imdb::imdb_rating,
+            imdb::imdb_ratings,
             tray::tray_configure,
             online_subtitles::online_subtitles_search,
             metadata::wikidata_links,

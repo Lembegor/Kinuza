@@ -1,11 +1,12 @@
 import { useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { Check, Star } from "lucide-react";
+import { Check } from "lucide-react";
 import { useT } from "../lib/i18n";
 import { imageUrl, tmdb, type CollectionPart } from "../lib/tmdb";
 import { useAsync } from "../lib/useAsync";
 import { isWatched, titleKey, unitKey, useLibrary } from "../state/library";
 import { QuickActions, Row } from "./Cards";
+import { CatalogRating } from "./CatalogRating";
 
 const minParts = 2;
 const skeletonCount = 5;
@@ -41,12 +42,7 @@ function FranchiseCard({ part, current }: { part: CollectionPart; current: boole
       >
       <div className="poster-card__art">
         {poster ? <img src={poster} alt="" loading="lazy" draggable={false} /> : <div className="poster-card__blank">{part.title}</div>}
-        {released && part.rating > 0 && (
-          <span className="poster-card__rating">
-            <Star size={11} fill="currentColor" />
-            {part.rating.toFixed(1)}
-          </span>
-        )}
+        {released && <CatalogRating type="movie" id={part.id} rating={part.rating} className="poster-card__rating" size={11} />}
         {watched && (
           <span className="franchise-card__seen" title={t("collection.watched")}>
             <Check size={13} />

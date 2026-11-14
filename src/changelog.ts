@@ -7,19 +7,28 @@ export type Changelog = Record<AppLanguage, ChangelogLine[]>;
 export const changelog: Record<string, Changelog> = {
   "0.5.4": {
     ru: [
+      "Kinuza теперь есть на Mac (M1 и новее)!",
       "Ставить оценку стало приятнее: звёзды крупнее, рядом число и слово к оценке, появилась кнопка сброса.",
       "У тайтла стало больше тегов (зомби, постапокалипсис, путешествия во времени и другие), а нажатие на жанр или тег открывает каталог с такими же фильмами.",
       "Каталог показывает больше фильмов сразу и сам подгружает следующие при прокрутке. На странице актёра фильмография открывается целыми рядами.",
+      "Серии без раздачи в списке серий запускаются сразу - Kinuza сама подбирает раздачу.",
+      "Если картинки не загрузились с первого раза, Kinuza догружает их сама.",
     ],
     en: [
+      "Kinuza is now on Mac (M1 and newer)!",
       "Rating is nicer: bigger stars, the number with a word next to it, and a button to remove the rating.",
       "Titles show more tags (zombie, post-apocalypse, time travel and others), and clicking a genre or a tag opens the catalog with similar titles.",
       "The catalog shows more titles at once and loads more as you scroll. On a person's page the filmography opens in whole rows.",
+      "Episodes without a release start right from the episode list - Kinuza picks a release by itself.",
+      "If pictures fail to load the first time, Kinuza loads them again by itself.",
     ],
     uk: [
+      "Kinuza тепер є на Mac (M1 і новіші)!",
       "Ставити оцінку стало приємніше: зірки більші, поруч число і слово до оцінки, з'явилася кнопка скидання.",
       "У тайтлу стало більше тегів (зомбі, постапокаліпсис, подорожі в часі та інші), а натискання на жанр або тег відкриває каталог з такими ж фільмами.",
       "Каталог показує більше фільмів одразу й сам довантажує наступні під час прокручування. На сторінці актора фільмографія відкривається цілими рядами.",
+      "Серії без роздачі у списку серій запускаються одразу - Kinuza сама підбирає роздачу.",
+      "Якщо картинки не завантажилися з першого разу, Kinuza довантажує їх сама.",
     ],
   },
   "0.5.2": {
