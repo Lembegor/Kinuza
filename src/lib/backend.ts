@@ -366,6 +366,7 @@ export const backend = {
   storeSet: (name: string, value: string, allowShrink = false) => call<void>("store_set", { name, value, allowShrink }),
   appLog: (message: string) => (isDesktop ? call<void>("app_log", { message }).catch(() => undefined) : Promise.resolve()),
   warm: (infoHash: string, fileIndex: number, full: boolean) => call<void>("torrent_warm", { infoHash, fileIndex, full }),
+  stopEngine: () => call<void>("engine_stop"),
   activityAppend: (events: object[]) => call<number>("activity_append", { events }),
   activityRead: (since?: number) => call<object[]>("activity_read", { since: since ?? null }),
 };

@@ -348,3 +348,10 @@ pub fn open_default_apps_settings() -> CommandResult<()> {
         .map(|_| ())
         .map_err(|_| "settings_unavailable".to_owned())
 }
+
+#[tauri::command]
+pub async fn engine_stop(state: State<'_, AppState>) -> Result<(), String> {
+    state.engine.stop().await;
+    Ok(())
+}
+

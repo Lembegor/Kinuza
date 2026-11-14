@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { ChangelogLine } from "../changelog";
-import { getAppInfo, isDesktop } from "../lib/backend";
+import { backend, getAppInfo, isDesktop } from "../lib/backend";
 import { isAppLanguage, type AppLanguage } from "../lib/languages";
 import { report } from "../lib/journal";
 import { runBeforeClose } from "../lib/lifecycle";
@@ -113,6 +113,7 @@ export const useUpdater = create<UpdaterState>((set, get) => ({
       await runBeforeClose();
       await flushLibrary().catch((error) => report("updates", "journal.close.failed", error));
       if (mpv.supported) await mpv.quit().catch((error) => report("updates", "journal.close.failed", error));
+      if (isDesktop) await backend.stopEngine().catch((error) => report("updates", "journal.close.failed", error));
       await pending.install();
       const { relaunch } = await import("@tauri-apps/plugin-process");
       await relaunch();

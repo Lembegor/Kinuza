@@ -117,6 +117,7 @@ pub fn run() {
             commands::torrent_select_files,
             commands::torrent_hold,
             commands::torrent_warm,
+            commands::engine_stop,
             commands::app_log,
             commands::torrent_exclude_files,
             commands::torrent_focus,
