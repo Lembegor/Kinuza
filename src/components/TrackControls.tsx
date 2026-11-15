@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Ban, Check, ChevronDown, Clock, Eye, Heart, ListPlus, Pause, Star, Trash2, X, type LucideIcon } from "lucide-react";
+import { Ban, Check, ChevronDown, Clock, Eye, Heart, ListPlus, Minus, Pause, Plus, Repeat, Star, Trash2, X, type LucideIcon } from "lucide-react";
 import { t, useT, type MessageKey } from "../lib/i18n";
 import { maxRating, statusLabel, titleKey, useLibrary, watchStatuses, type TitleRef, type WatchStatus } from "../state/library";
 import { useUi } from "../state/ui";
@@ -53,12 +53,15 @@ export function StatusMenu({ title }: { title: TitleRef }) {
 
   const status = entry?.status ?? null;
   const Icon = status ? statusIcons[status] : ListPlus;
+  const rewatches = entry?.rewatches ?? 0;
+  const setRewatches = (value: number) => useLibrary.getState().setRewatches(title, value);
 
   return (
     <div className="status-menu" ref={ref}>
       <button className={`button button--large ${status ? `status-button status-button--${status}` : ""}`} onClick={() => setOpen(!open)}>
         <Icon size={18} />
         {status ? statusLabel(status) : t("library.add")}
+        {rewatches > 0 && <span className="status-button__times">{t("library.rewatch.times", { count: rewatches + 1 })}</span>}
         <ChevronDown size={16} />
       </button>
       {open && (
@@ -80,6 +83,19 @@ export function StatusMenu({ title }: { title: TitleRef }) {
               </button>
             );
           })}
+          {(status === "completed" || rewatches > 0) && (
+            <div className="popover__counter">
+              <Repeat size={16} />
+              <span>{t("library.rewatch.label")}</span>
+              <button className="popover__step" aria-label={t("library.rewatch.less")} disabled={rewatches === 0} onClick={() => setRewatches(rewatches - 1)}>
+                <Minus size={14} />
+              </button>
+              <b>{rewatches}</b>
+              <button className="popover__step" aria-label={t("library.rewatch.more")} onClick={() => setRewatches(rewatches + 1)}>
+                <Plus size={14} />
+              </button>
+            </div>
+          )}
           {entry && (
             <button
               className="popover__item popover__item--danger"

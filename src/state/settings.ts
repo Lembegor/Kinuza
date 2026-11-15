@@ -11,6 +11,7 @@ const storeName = "settings";
 const currentVersion = 4;
 const fallbackCatalogLanguage = "en";
 
+export type CreditsSort = "rating" | "popular" | "newest" | "oldest";
 export type TrackerSort = "best" | "seeds" | "sizeDesc" | "sizeAsc";
 
 export interface TrackerPrefs {
@@ -45,6 +46,7 @@ export interface Settings {
   handleLinks: boolean;
   linksPrompted: boolean;
   trackerPrefs: TrackerPrefs;
+  creditsSort: CreditsSort;
   language: AppLanguage | "";
   audioLanguage: string;
   subtitleLanguage: string;
@@ -90,6 +92,7 @@ const defaults: Settings = {
   handleLinks: false,
   linksPrompted: false,
   trackerPrefs: { resolutions: [], voices: [], videoOnly: true, sort: "best" },
+  creditsSort: "rating",
   language: "",
   audioLanguage: "",
   subtitleLanguage: "",

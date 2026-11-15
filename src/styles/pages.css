@@ -1636,6 +1636,54 @@
   color: var(--text);
 }
 
+.popover__counter {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 40px;
+  margin-top: 4px;
+  padding: 0 4px 0 10px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.popover__counter span {
+  flex: 1;
+}
+
+.popover__counter b {
+  min-width: 18px;
+  color: var(--text);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.popover__step {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-s);
+  color: var(--text);
+}
+
+.popover__step:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.popover__step:disabled {
+  opacity: 0.35;
+}
+
+.status-button__times {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
 .popover__item--danger {
   margin-top: 4px;
   border-top: 1px solid var(--line);
@@ -4056,12 +4104,27 @@ html.is-mpv-picture .stage.is-playing .stage__slot {
   }
 }
 
+.person__sort {
+  margin: 28px 0 -8px;
+}
 
+.query-picks__understood {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+}
 
+.query-picks__understood svg {
+  color: var(--accent);
+}
 
-
-
-
-
-
+.chip--static {
+  cursor: default;
+  pointer-events: none;
+}
 

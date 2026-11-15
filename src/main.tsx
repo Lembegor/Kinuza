@@ -8,6 +8,7 @@ import "./styles/pages.css";
 import "./styles/tools.css";
 import "./styles/dialog.css";
 import "./styles/player.css";
+import "./styles/profile.css";
 import App from "./App";
 import { retryFailedImages } from "./lib/imageRetry";
 import { mpv } from "./lib/mpv";

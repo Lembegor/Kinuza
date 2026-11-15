@@ -1,6 +1,6 @@
 import { useMemo } from "react";
-import { useSearchParams } from "react-router-dom";
-import { ListVideo } from "lucide-react";
+import { Link, useSearchParams } from "react-router-dom";
+import { ChartColumn, ListVideo } from "lucide-react";
 import { EmptyState, PosterGrid } from "../components/Cards";
 import { currentLocale, tn, useT, type MessageKey } from "../lib/i18n";
 import { entryToRef, useLibrary, watchedEpisodeCount, watchStatuses, type Progress, type TrackEntry, type WatchStatus } from "../state/library";
@@ -77,6 +77,10 @@ export default function Library() {
     <div className="page">
       <div className="page__head">
         <h1>{t("library.title")}</h1>
+        <Link className="button" to="/profile">
+          <ChartColumn size={16} />
+          {t("profile.stats")}
+        </Link>
         <select className="select select--large" value={sort} onChange={(event) => setSort(event.target.value as Sort)}>
           {sorts.map((item) => (
             <option key={item.id} value={item.id}>

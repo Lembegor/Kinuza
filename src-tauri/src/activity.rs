@@ -93,6 +93,86 @@ pub fn read(data_dir: &Path, since: i64) -> Vec<Value> {
         .collect()
 }
 
+fn event_id(event: &Value) -> Option<&str> {
+    event.get("id").and_then(Value::as_str).filter(|id| !id.is_empty())
+}
+
+fn month_files(folder: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(folder) else { return Vec::new() };
+    let mut files: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "jsonl"))
+        .collect();
+    files.sort();
+    files
+}
+
+fn rewrite(path: &Path, keep: impl Fn(&Value) -> bool) -> Result<usize, String> {
+    let Ok(file) = fs::File::open(path) else { return Ok(0) };
+    let lines: Vec<String> = BufReader::new(file).lines().map_while(Result::ok).collect();
+    let mut kept = String::new();
+    let mut dropped = 0;
+    for line in &lines {
+        let keep_line = match serde_json::from_str::<Value>(line) {
+            Ok(event) => keep(&event),
+            Err(_) => true,
+        };
+        if keep_line {
+            kept.push_str(line);
+            kept.push('\n');
+        } else {
+            dropped += 1;
+        }
+    }
+    if dropped == 0 {
+        return Ok(0);
+    }
+    if kept.is_empty() {
+        fs::remove_file(path).map_err(|error| error.to_string())?;
+    } else {
+        crate::store::write_atomic(path, kept.as_bytes()).map_err(|error| error.to_string())?;
+    }
+    Ok(dropped)
+}
+
+pub fn edit(data_dir: &Path, remove: &[String], upsert: &[Value]) -> Result<usize, String> {
+    let folder = folder(data_dir);
+    let mut gone: std::collections::HashSet<&str> = remove.iter().map(String::as_str).collect();
+    gone.extend(upsert.iter().filter_map(event_id));
+    let mut dropped = 0;
+    if !gone.is_empty() {
+        let _guard = WRITE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        for path in month_files(&folder) {
+            dropped += rewrite(&path, |event| event_id(event).is_none_or(|id| !gone.contains(id)))?;
+        }
+    }
+    if !upsert.is_empty() {
+        append(data_dir, upsert)?;
+    }
+    Ok(dropped)
+}
+
+pub fn prune(data_dir: &Path, before: i64) -> Result<usize, String> {
+    let folder = folder(data_dir);
+    let _guard = WRITE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut dropped = 0;
+    for path in month_files(&folder) {
+        dropped += rewrite(&path, |event| valid(event).is_none_or(|at| at >= before))?;
+    }
+    Ok(dropped)
+}
+
+#[tauri::command]
+pub fn activity_edit(state: State<'_, AppState>, remove: Vec<String>, upsert: Vec<Value>) -> Result<usize, String> {
+    edit(&state.data_dir, &remove, &upsert)
+}
+
+#[tauri::command]
+pub fn activity_prune(state: State<'_, AppState>, before: i64) -> Result<usize, String> {
+    prune(&state.data_dir, before)
+}
+
 #[tauri::command]
 pub fn activity_append(state: State<'_, AppState>, events: Vec<Value>) -> Result<usize, String> {
     append(&state.data_dir, &events)
@@ -123,6 +203,43 @@ mod tests {
         assert!(dir.join(ACTIVITY_FOLDER_NAME).join("2026-02.jsonl").exists());
         assert_eq!(read(&dir, 0).len(), 2);
         assert_eq!(read(&dir, february).len(), 1);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn edit_removes_and_replaces_events_by_id() {
+        let dir = std::env::temp_dir().join(format!("kinuza-activity-{}", crate::store::random_u64()));
+        let january = 1_767_225_600_000_i64;
+        let february = 1_769_904_000_000_i64;
+        let events = vec![
+            serde_json::json!({ "id": "a", "type": "play", "at": january }),
+            serde_json::json!({ "id": "b", "type": "play", "at": january + 1 }),
+            serde_json::json!({ "id": "c", "type": "watched", "at": february }),
+        ];
+        append(&dir, &events).unwrap();
+        let moved = serde_json::json!({ "id": "c", "type": "watched", "at": january + 2, "earlier": false });
+        assert_eq!(edit(&dir, &["a".to_owned()], &[moved]).unwrap(), 2);
+        let after = read(&dir, 0);
+        let ids: Vec<&str> = after.iter().filter_map(event_id).collect();
+        assert_eq!(ids, vec!["b", "c"]);
+        assert_eq!(after[1]["earlier"], serde_json::json!(false));
+        assert!(!dir.join(ACTIVITY_FOLDER_NAME).join("2026-02.jsonl").exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn prune_drops_events_before_the_cutoff() {
+        let dir = std::env::temp_dir().join(format!("kinuza-activity-{}", crate::store::random_u64()));
+        let january = 1_767_225_600_000_i64;
+        let february = 1_769_904_000_000_i64;
+        let events = vec![
+            serde_json::json!({ "id": "a", "type": "play", "at": january }),
+            serde_json::json!({ "id": "b", "type": "play", "at": february }),
+            serde_json::json!({ "id": "c", "type": "play", "at": february + 10 }),
+        ];
+        append(&dir, &events).unwrap();
+        assert_eq!(prune(&dir, february + 5).unwrap(), 2);
+        assert_eq!(read(&dir, 0).len(), 1);
         let _ = fs::remove_dir_all(dir);
     }
 }

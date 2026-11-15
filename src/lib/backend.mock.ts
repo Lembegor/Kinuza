@@ -156,11 +156,13 @@ export async function mockInvoke(command: string, args: Record<string, unknown> 
       return [];
     case "catalog_lookup": {
       const keys = (args.keys as { kind: string; id: number }[] | undefined) ?? [];
-      return demoCatalog.filter((record) => keys.some((key) => key.id === record.id && key.kind.startsWith(record.k))).map((record) => JSON.stringify(record));
+      const added = (globalThis as { __kinuzaMockCatalog?: typeof demoCatalog }).__kinuzaMockCatalog ?? [];
+      return [...demoCatalog, ...added].filter((record) => keys.some((key) => key.id === record.id && key.kind.startsWith(record.k))).map((record) => JSON.stringify(record));
     }
     case "catalog_search": {
       const words = demoWords(String(args.query ?? ""));
-      return demoCatalog
+      const added = (globalThis as { __kinuzaMockCatalog?: typeof demoCatalog }).__kinuzaMockCatalog ?? [];
+      return [...demoCatalog, ...added]
         .filter((record) => {
           const names = demoWords([record.o, ...Object.values(record.t), record.s ?? "", ...record.n].join(" "));
           return words.length > 0 && words.every((word) => names.some((name) => name.startsWith(word)));
@@ -383,11 +385,30 @@ export async function mockInvoke(command: string, args: Record<string, unknown> 
     case "activity_append": {
       const saved = JSON.parse(localStorage.getItem(storagePrefix + "activity") ?? "[]") as object[];
       const events = args.events as object[];
-      localStorage.setItem(storagePrefix + "activity", JSON.stringify([...saved, ...events].slice(-2000)));
+      localStorage.setItem(storagePrefix + "activity", JSON.stringify([...saved, ...events].slice(-20000)));
       return events.length;
     }
     case "activity_read":
       return JSON.parse(localStorage.getItem(storagePrefix + "activity") ?? "[]");
+    case "activity_edit": {
+      const saved = JSON.parse(localStorage.getItem(storagePrefix + "activity") ?? "[]") as { id?: string }[];
+      const upsert = args.upsert as { id?: string }[];
+      const gone = new Set([...(args.remove as string[]), ...upsert.map((event) => event.id ?? "")]);
+      const kept = saved.filter((event) => !gone.has(event.id ?? ""));
+      localStorage.setItem(storagePrefix + "activity", JSON.stringify([...kept, ...upsert]));
+      return saved.length - kept.length;
+    }
+    case "activity_prune": {
+      const saved = JSON.parse(localStorage.getItem(storagePrefix + "activity") ?? "[]") as { at: number }[];
+      const kept = saved.filter((event) => event.at >= Number(args.before));
+      localStorage.setItem(storagePrefix + "activity", JSON.stringify(kept));
+      return saved.length - kept.length;
+    }
+    case "taste_recommend": {
+      const custom = (globalThis as { __kinuzaMockTaste?: (request: unknown) => unknown }).__kinuzaMockTaste;
+      if (custom) return custom(args.request);
+      return { ready: false, titles: 0, clusters: [], candidates: [], seedsFound: 0, missing: [], profile: { movie: 0, tv: 0, anime: 0, languages: [], genres: [] }, people: [] };
+    }
     case "take_launch_request":
       return null;
     case "associations_status":

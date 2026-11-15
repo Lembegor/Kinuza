@@ -1,5 +1,5 @@
-import { useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { FolderOpen, RefreshCw } from "lucide-react";
 import { HotkeyList } from "../components/HotkeyList";
 import { ImportSetting } from "../components/ImportSetting";
@@ -14,6 +14,8 @@ import { report } from "../lib/journal";
 import { appLanguages, languageName } from "../lib/languages";
 import { useAsync } from "../lib/useAsync";
 import { useLibrary } from "../state/library";
+import { addActivity, pruneActivity, readActivity, type ActivityEvent } from "../state/activity";
+import { useProfile, type HistoryRetention } from "../state/profile";
 import { useSettings, type AudioMode, type SpoilerMode, type SubtitleBackground, type SubtitleColor, type SubtitleFont, type VideoQuality } from "../state/settings";
 import { accentColors } from "../lib/appearance";
 import { useUi } from "../state/ui";
@@ -45,6 +47,84 @@ function Toggle({ label, checked, onChange }: { label: string; checked: boolean;
     <button role="switch" aria-checked={checked} aria-label={label} className={`toggle ${checked ? "is-on" : ""}`} onClick={() => onChange(!checked)}>
       <i />
     </button>
+  );
+}
+
+function HistorySettings() {
+  const { t, tn } = useT();
+  const paused = useProfile((state) => state.historyPaused);
+  const retention = useProfile((state) => state.retention);
+  const hidden = useProfile((state) => state.hidden);
+  const hiddenCount = Object.keys(hidden).length;
+  const retentions: { id: HistoryRetention; label: MessageKey }[] = [
+    { id: "forever", label: "profile.settings.retention.forever" },
+    { id: "year", label: "profile.settings.retention.year" },
+    { id: "quarter", label: "profile.settings.retention.quarter" },
+  ];
+  const clear = () =>
+    useUi.getState().askConfirm({
+      title: t("profile.settings.clear.title"),
+      message: t("profile.settings.clear.message"),
+      confirmLabel: t("profile.settings.clear.confirm"),
+      danger: true,
+      onConfirm: () =>
+        void (async () => {
+          const events = await readActivity();
+          await pruneActivity(Date.now() + 1);
+          useLibrary.getState().noteRemovedEvents(events.map((event) => event.id));
+          useProfile.getState().patch({ archive: {} });
+          useUi.getState().toast(t("profile.settings.clear.done"), "success");
+        })().catch((error) => useUi.getState().toast(describeError(error), "error")),
+    });
+  return (
+    <section className="settings-group" data-section="settings-history" id="settings-history">
+      <h2>{t("profile.settings.title")}</h2>
+      <div className="setting">
+        <div>
+          <strong>{t("profile.paused.pause")}</strong>
+          <p>{t("profile.paused.hint")}</p>
+        </div>
+        <Toggle label={t("profile.paused.pause")} checked={paused} onChange={(value) => useProfile.getState().patch({ historyPaused: value })} />
+      </div>
+      <div className="setting">
+        <div>
+          <strong>{t("profile.settings.retention")}</strong>
+          <p>{t("profile.settings.retention.note")}</p>
+        </div>
+        <select
+          className="select"
+          aria-label={t("profile.settings.retention")}
+          value={retention}
+          onChange={(event) => useProfile.getState().patch({ retention: event.target.value as HistoryRetention })}
+        >
+          {retentions.map((item) => (
+            <option key={item.id} value={item.id}>
+              {t(item.label)}
+            </option>
+          ))}
+        </select>
+      </div>
+      {hiddenCount > 0 && (
+        <div className="setting">
+          <div>
+            <strong>{t("profile.settings.hidden")}</strong>
+            <p>{tn("profile.settings.hidden.count", hiddenCount)}</p>
+          </div>
+          <button className="button" onClick={() => useProfile.getState().patch({ hidden: {} })}>
+            {t("profile.settings.hidden.restore")}
+          </button>
+        </div>
+      )}
+      <div className="setting">
+        <div>
+          <strong>{t("profile.settings.clear.title")}</strong>
+          <p>{t("profile.settings.clear.note")}</p>
+        </div>
+        <button className="button button--danger" onClick={clear}>
+          {t("profile.settings.clear.button")}
+        </button>
+      </div>
+    </section>
   );
 }
 
@@ -127,6 +207,8 @@ export default function Settings() {
         createdAt: new Date().toISOString(),
         account: useLibrary.getState().exportAccountData(),
         settings: currentSettings,
+        profile: useProfile.getState().exportProfile(),
+        activity: await readActivity(),
       };
       await backend.writeTextFile(path, JSON.stringify(backup, null, 2));
       toast(t("settings.backup.saved"), "success");
@@ -150,19 +232,30 @@ export default function Settings() {
         toast(t("settings.backup.newer"), "error");
         return;
       }
-      confirmRestore(parsed.data, parsed.dropped, typeof backup.createdAt === "string" ? backup.createdAt : null, backup.settings);
+      confirmRestore(parsed.data, parsed.dropped, typeof backup.createdAt === "string" ? backup.createdAt : null, backup.settings, backup.profile, backup.activity);
     } catch {
       toast(t("settings.backup.invalid"), "error");
     }
   };
 
-  const confirmRestore = (data: AccountData, dropped: number, createdAt: string | null, savedSettings: unknown) => {
+  const restoreHistory = async (savedProfile: unknown, savedActivity: unknown) => {
+    if (savedProfile) useProfile.getState().mergeProfile(savedProfile);
+    if (!Array.isArray(savedActivity)) return;
+    const removed = useLibrary.getState().removed;
+    const events = (savedActivity as ActivityEvent[]).filter(
+      (event) => event && typeof event === "object" && typeof event.id === "string" && !removed[`activity:${event.id}`],
+    );
+    await addActivity(events);
+  };
+
+  const confirmRestore = (data: AccountData, dropped: number, createdAt: string | null, savedSettings: unknown, savedProfile?: unknown, savedActivity?: unknown) => {
     const incoming = describeAccountData(data);
     const current = describeAccountData(useLibrary.getState().exportAccountData());
     const date = createdAt ? new Date(createdAt).toLocaleDateString(locale, { day: "numeric", month: "long", year: "numeric" }) : null;
     const restore = async (mode: "merge" | "replace") => {
       try {
         await useLibrary.getState().restoreAccountData(data, mode);
+        await restoreHistory(savedProfile, savedActivity);
         if (mode === "replace" && savedSettings && typeof savedSettings === "object") {
           const { downloadDir: _downloadDir, handleLinks: _handleLinks, linksPrompted: _linksPrompted, ...portable } = savedSettings as Record<string, unknown>;
           settings.patch(portable as Partial<typeof settings>);
@@ -215,12 +308,21 @@ export default function Settings() {
   const showSection = (id: string) =>
     pageRef.current?.querySelector<HTMLElement>(`[data-section="${id}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" });
 
+  const { hash } = useLocation();
+  useEffect(() => {
+    if (!hash) return;
+    const timer = setTimeout(() => showSection(hash.slice(1)), 60);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hash]);
+
   const sections: { id: string; label: MessageKey }[] = [
     { id: "settings-viewing", label: "settings.viewing" },
     { id: "settings-look", label: "settings.look" },
     { id: "settings-downloads", label: "settings.downloads" },
     { id: "settings-system", label: "settings.system" },
     { id: "settings-accounts", label: "settings.accounts" },
+    { id: "settings-history", label: "profile.settings.title" },
     { id: "settings-data", label: "settings.data" },
     { id: "settings-help", label: "settings.help" },
   ];
@@ -751,6 +853,8 @@ export default function Settings() {
         <h2>{t("settings.accounts")}</h2>
         <TrackerAccount />
       </section>
+
+      <HistorySettings />
 
       <section className="settings-group" data-section="settings-data">
         <h2>{t("settings.data")}</h2>

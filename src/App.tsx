@@ -20,6 +20,7 @@ import CalendarPage from "./pages/Calendar";
 import Downloads from "./pages/Downloads";
 import Home from "./pages/Home";
 import Library from "./pages/Library";
+import Profile from "./pages/Profile";
 import PersonPage from "./pages/Person";
 import Search from "./pages/Search";
 import Settings from "./pages/Settings";
@@ -27,6 +28,8 @@ import Storage from "./pages/Storage";
 import TitlePage from "./pages/Title";
 import { useInbox } from "./state/inbox";
 import { useLibrary } from "./state/library";
+import { useProfile } from "./state/profile";
+import { applyRetention } from "./state/stats";
 import { useSettings } from "./state/settings";
 import { startTorrentPolling } from "./state/torrents";
 import { scheduleSourceRepair } from "./state/sourceRepair";
@@ -36,6 +39,7 @@ import { useUpdater } from "./state/updater";
 import { warmRecentResume } from "./state/warmup";
 
 const startupWarmDelayMs = 5000;
+const retentionDelayMs = 15000;
 
 const updateCheckDelayMs = 4000;
 const mpvWarmDelayMs = 2500;
@@ -158,6 +162,8 @@ const pageRoutes = (
     <Route path="/title/:type/:id" element={<TitlePage />} />
     <Route path="/person/:id" element={<PersonPage />} />
     <Route path="/library" element={<Library />} />
+    <Route path="/profile" element={<Profile />} />
+    <Route path="/profile/:tab" element={<Profile />} />
     <Route path="/calendar" element={<CalendarPage />} />
     <Route path="/downloads" element={<Downloads />} />
     <Route path="/settings" element={<Settings />} />
@@ -192,9 +198,18 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [libraryLoaded, settingsLoaded]);
 
+  const profileLoaded = useProfile((state) => state.loaded);
+  const retention = useProfile((state) => state.retention);
+  useEffect(() => {
+    if (!libraryLoaded || !profileLoaded || retention === "forever") return;
+    const timer = setTimeout(() => void applyRetention().catch((error) => report("library", "journal.library.save", error)), retentionDelayMs);
+    return () => clearTimeout(timer);
+  }, [libraryLoaded, profileLoaded, retention]);
+
   useEffect(() => {
     void useSettings.getState().load();
     void useLibrary.getState().load();
+    void useProfile.getState().load();
     void useInbox.getState().load();
     void getAppInfo().then((info) => {
       if (info.sessionReset) useUi.getState().toast(t("shell.sessionReset"), "info");

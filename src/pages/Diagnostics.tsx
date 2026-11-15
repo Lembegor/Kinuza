@@ -6,8 +6,15 @@ import { formatBytes, formatMoment } from "../lib/format";
 import { t, useT, type MessageKey } from "../lib/i18n";
 import { clearJournal, loadJournal, useJournal, type JournalArea, type JournalEntry } from "../lib/journal";
 import { isServerError, rutracker, rutrackerErrors, serverProblemOf } from "../lib/rutracker";
-import { catalogHealth } from "../lib/tmdb";
-import { restoreFeed, tuneWeights, useFeed } from "../state/feed";
+import { catalogHealth, catalogRoute } from "../lib/tmdb";
+import { classicHoldout, restoreFeed, tuneWeights, useFeed, type FeedItem } from "../state/feed";
+import { engineHoldout, type HoldoutResult } from "../state/engineFeed";
+import { readBehaviour } from "../lib/behaviour";
+import { feedMetrics, type FeedMetrics } from "../lib/learning";
+import { canonicalGenres } from "../lib/taste";
+import { readActivity } from "../state/activity";
+import { loadImpressions } from "../state/impressions";
+import { useLibrary } from "../state/library";
 import { ReportProblem } from "../components/ReportProblem";
 import { useSettings } from "../state/settings";
 import { useUi } from "../state/ui";
@@ -40,7 +47,7 @@ function settingsLink(): CheckResult["link"] {
 
 async function checkCatalog(): Promise<CheckResult> {
   const health = await catalogHealth();
-  if (health === "ok") return { status: "ok", text: t("diagnostics.catalog.ok") };
+  if (health === "ok") return { status: "ok", text: `${t("diagnostics.catalog.ok")} · ${t(`diagnostics.catalog.route.${catalogRoute()}`)}` };
   if (health === "unreachable") {
     return { status: "problem", text: t("diagnostics.catalog.unreachable"), hint: t("diagnostics.catalog.unreachable.hint") };
   }
@@ -329,6 +336,122 @@ function TasteCheck() {
   );
 }
 
+const engineCheckStore = "taste-check";
+const metricsHistoryMs = 2 * 365 * 86_400_000;
+const noveltyFloor = 0.02;
+
+function percent(value: number | null): string {
+  return value === null ? "-" : String(Math.round(value * 100));
+}
+
+function diversityOf(items: FeedItem[]): { genres: number; countries: number; decades: number; novelty: number | null } {
+  const top = items.slice(0, 20);
+  const genres = new Set(top.flatMap((item) => canonicalGenres(item.genreIds)));
+  const countries = new Set(top.flatMap((item) => (item as FeedItem & { countries?: string[] }).countries ?? []));
+  const decades = new Set(top.flatMap((item) => (Number(item.year) ? [Math.floor(Number(item.year) / 10)] : [])));
+  const known = top.filter((item) => item.signals && item.signals.length > 5);
+  const novelty = known.length > 0 ? known.filter((item) => (item.signals?.[5] ?? 0) > noveltyFloor).length / known.length : null;
+  return { genres: genres.size, countries: countries.size, decades: decades.size, novelty };
+}
+
+function EngineCheck() {
+  const { t } = useT();
+  const rows = useFeed((state) => state.rows);
+  const [ready, setReady] = useState<boolean | null>(null);
+  const [result, setResult] = useState<HoldoutResult | null>(null);
+  const [metrics, setMetrics] = useState<FeedMetrics | null>(null);
+  const [running, setRunning] = useState(false);
+  const [note, setNote] = useState("");
+
+  useEffect(() => {
+    void restoreFeed();
+    void backend
+      .tasteRecommend({ seeds: [], limit: 1 })
+      .then((response) => setReady(response.ready))
+      .catch(() => setReady(false));
+    void backend
+      .storeGet(engineCheckStore)
+      .then((document) => {
+        if (document) setResult(JSON.parse(document.text) as HoldoutResult);
+      })
+      .catch(() => undefined);
+    void (async () => {
+      const now = Date.now();
+      const { tracked, progress, dismissed } = useLibrary.getState();
+      const [impressions, events] = await Promise.all([loadImpressions(), readActivity(now - metricsHistoryMs).catch(() => [])]);
+      setMetrics(feedMetrics(impressions, { tracked, progress, dismissed, behaviour: readBehaviour(events, now), now }));
+    })().catch(() => undefined);
+  }, []);
+
+  const run = async () => {
+    setRunning(true);
+    setNote("");
+    try {
+      const { tracked, progress, dismissed } = useLibrary.getState();
+      const found = await engineHoldout(tracked, progress, dismissed, classicHoldout);
+      if (!found) setNote(t("diagnostics.engine.note"));
+      else {
+        setResult(found);
+        void backend.storeSet(engineCheckStore, JSON.stringify(found)).catch(() => undefined);
+      }
+    } catch (error) {
+      setNote(describeError(error));
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const forYou = rows?.find((row) => row.id === "for-you")?.items ?? [];
+  const diversity = diversityOf(forYou);
+  const learned = metrics?.learned ?? null;
+  return (
+    <section className="settings-group">
+      <h2>{t("diagnostics.taste")}</h2>
+      <div className="setting">
+        <div>
+          <strong>
+            {result
+              ? result.classic !== null
+                ? t("diagnostics.engine.result", { engine: result.engine, hidden: result.hidden, classic: result.classic })
+                : t("diagnostics.engine.resultOnly", { engine: result.engine, hidden: result.hidden })
+              : t("diagnostics.engine.never")}
+          </strong>
+          <p>{result ? t("diagnostics.engine.detail", { date: formatMoment(result.testedAt) }) : t("diagnostics.engine.note")}</p>
+          {ready === false && <p>{t("diagnostics.engine.notReady")}</p>}
+          {note && <p>{note}</p>}
+        </div>
+        <div className="setting__actions">
+          <button className="button" disabled={running || ready === false} onClick={() => void run()}>
+            <RefreshCw size={16} className={running ? "spin" : ""} />
+            {t("diagnostics.taste.run")}
+          </button>
+        </div>
+      </div>
+      <div className="setting">
+        <div>
+          <strong>{t("diagnostics.engine.metrics")}</strong>
+          {metrics && metrics.titles > 0 ? (
+            <>
+              <p>{t("diagnostics.engine.started", { share: percent(metrics.startShare) })}</p>
+              <p>{t("diagnostics.engine.finished", { share: percent(metrics.finishShare) })}</p>
+              <p>{t("diagnostics.engine.complaints", { count: metrics.complaintsPer100 === null ? "-" : metrics.complaintsPer100.toFixed(1) })}</p>
+            </>
+          ) : (
+            <p>{t("diagnostics.engine.noData")}</p>
+          )}
+          {forYou.length > 0 && (
+            <>
+              <p>{t("diagnostics.engine.diversity", { genres: diversity.genres, countries: diversity.countries, decades: diversity.decades })}</p>
+              {diversity.novelty !== null && <p>{t("diagnostics.engine.novelty", { share: percent(diversity.novelty) })}</p>}
+            </>
+          )}
+          <p>{learned && learned.mix > 0 && learned.examples > 0 ? t("diagnostics.engine.learned", { count: learned.examples }) : t("diagnostics.engine.default")}</p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export default function Diagnostics() {
   const { t } = useT();
   const { results, running, run } = useChecks();
@@ -353,7 +476,7 @@ export default function Diagnostics() {
         ))}
       </section>
 
-      <TasteCheck />
+      {isDesktop ? <EngineCheck /> : <TasteCheck />}
 
       <Journal />
     </div>

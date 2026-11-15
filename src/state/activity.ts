@@ -1,7 +1,10 @@
 import { backend } from "../lib/backend";
 import { beforeAppClose } from "../lib/lifecycle";
 import type { Dismissal } from "../lib/account";
+import { t } from "../lib/i18n";
 import type { Progress, Source, TitleRef, TrackEntry } from "./library";
+import { useProfile } from "./profile";
+import { useUi } from "./ui";
 
 export type ActivityType =
   | "list.add"
@@ -20,6 +23,9 @@ export type ActivityType =
   | "release.forget"
   | "onboarding"
   | "title.open"
+  | "title.view"
+  | "trailer"
+  | "feed.open"
   | "search"
   | "tracker.search"
   | "tracker.pick";
@@ -41,7 +47,25 @@ interface Snapshot {
 }
 
 const flushDelayMs = 4000;
+const earlierShare = 0.5;
+const earlierToastDelayMs = 400;
+const recentToastMs = 2000;
 const pending: ActivityEvent[] = [];
+const listeners = new Set<() => void>();
+const pausedTypes: ReadonlySet<ActivityType> = new Set([
+  "play",
+  "watched",
+  "unwatched",
+  "title.open",
+  "title.view",
+  "trailer",
+  "feed.open",
+  "search",
+  "tracker.search",
+  "tracker.pick",
+]);
+let earlierMarks: ActivityEvent[] = [];
+let earlierTimer: ReturnType<typeof setTimeout> | undefined;
 let flushTimer: ReturnType<typeof setTimeout> | undefined;
 let flushing: Promise<void> | null = null;
 let removeCloseTask: (() => void) | null = null;
@@ -81,15 +105,90 @@ export function flushActivity(): Promise<void> {
   return flushing;
 }
 
-export function recordActivity(type: ActivityType, fields: Record<string, unknown> = {}, at = Date.now()): void {
-  pending.push({ ...fields, id: eventId(), type, at });
+function notifyChange(): void {
+  for (const listener of listeners) listener();
+}
+
+export function onActivityChange(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+export function historyPaused(): boolean {
+  return useProfile.getState().historyPaused;
+}
+
+export function recordActivity(type: ActivityType, fields: Record<string, unknown> = {}, at = Date.now()): ActivityEvent | null {
+  if (pausedTypes.has(type) && historyPaused()) return null;
+  const device = useProfile.getState().deviceId;
+  const event: ActivityEvent = { ...fields, ...(device ? { device } : {}), id: eventId(), type, at };
+  pending.push(event);
   removeCloseTask?.();
   removeCloseTask = beforeAppClose(flushActivity);
   if (flushTimer === undefined) flushTimer = setTimeout(() => void flushActivity(), flushDelayMs);
+  notifyChange();
+  return event;
 }
 
-export function readActivity(since?: number): Promise<ActivityEvent[]> {
-  return backend.activityRead(since) as Promise<ActivityEvent[]>;
+export async function readActivity(since?: number): Promise<ActivityEvent[]> {
+  const stored = (await backend.activityRead(since)) as ActivityEvent[];
+  const known = new Set(stored.map((event) => event.id));
+  const fresh = pending.filter((event) => !known.has(event.id) && (since === undefined || event.at >= since));
+  return fresh.length > 0 ? [...stored, ...fresh] : stored;
+}
+
+export async function editActivity(remove: string[], upsert: ActivityEvent[]): Promise<void> {
+  const gone = new Set([...remove, ...upsert.map((event) => event.id)]);
+  const queued = pending.filter((event) => gone.has(event.id));
+  for (const event of queued) pending.splice(pending.indexOf(event), 1);
+  const queuedUpserts = upsert.filter((event) => queued.some((item) => item.id === event.id));
+  pending.push(...queuedUpserts);
+  const stored = upsert.filter((event) => !queuedUpserts.includes(event));
+  const storedRemovals = remove.filter((id) => !queued.some((item) => item.id === id));
+  if (storedRemovals.length > 0 || stored.length > 0) await backend.activityEdit(storedRemovals, stored);
+  notifyChange();
+}
+
+export async function addActivity(events: ActivityEvent[]): Promise<number> {
+  if (events.length === 0) return 0;
+  await flushActivity();
+  const known = new Set((await readActivity()).map((event) => event.id));
+  const fresh = events.filter((event) => typeof event.id === "string" && typeof event.at === "number" && typeof event.type === "string" && !known.has(event.id));
+  for (let index = 0; index < fresh.length; index += 400) await backend.activityAppend(fresh.slice(index, index + 400));
+  if (fresh.length > 0) notifyChange();
+  return fresh.length;
+}
+
+export async function pruneActivity(before: number): Promise<number> {
+  await flushActivity();
+  const dropped = await backend.activityPrune(before);
+  if (dropped > 0) notifyChange();
+  return dropped;
+}
+
+function noteEarlierMark(event: ActivityEvent): void {
+  earlierMarks.push(event);
+  clearTimeout(earlierTimer);
+  earlierTimer = setTimeout(() => {
+    const marks = earlierMarks;
+    earlierMarks = [];
+    if (marks.length === 0) return;
+    const name = String((marks[0].title as { name?: string } | undefined)?.name ?? "");
+    const text = marks.length === 1 ? t("profile.earlier.one", { title: name }) : t("profile.earlier.many", { count: marks.length });
+    const today = { label: t("profile.earlier.today"), run: () => void editActivity([], marks.map((mark) => ({ ...mark, earlier: false }))) };
+    const ui = useUi.getState();
+    const recent = ui.toasts.at(-1);
+    if (recent?.action && recent.kind !== "error" && Date.now() - recent.at < recentToastMs) {
+      ui.toast(text, recent.kind, recent.action, today);
+      return;
+    }
+    ui.toast(text, "info", today);
+  }, earlierToastDelayMs);
+}
+
+function watchedBefore(progress: Progress | undefined): number {
+  if (!progress) return 0;
+  return progress.played ?? progress.position;
 }
 
 if (typeof document !== "undefined") {
@@ -123,7 +222,22 @@ export function noteLibraryChange(before: Snapshot, after: Snapshot, watched: (p
       if (old === item) continue;
       const now = watched(item);
       if (now && !watched(old)) {
-        recordActivity("watched", { unit: key, ...unitFields(item), marked: item.duration <= 1, duration: item.duration > 1 ? Math.round(item.duration) : undefined }, at);
+        const marked = item.duration <= 1;
+        const played = marked ? watchedBefore(old) : 0;
+        const length = old && old.duration > 1 ? old.duration : 0;
+        const earlier = marked && !(length > 0 && played >= length * earlierShare);
+        const event = recordActivity(
+          "watched",
+          {
+            unit: key,
+            ...unitFields(item),
+            marked,
+            duration: item.duration > 1 ? Math.round(item.duration) : undefined,
+            ...(marked ? { earlier, played: played > 0 ? Math.round(played) : undefined, length: length > 0 ? Math.round(length) : undefined } : {}),
+          },
+          at,
+        );
+        if (event && earlier) noteEarlierMark(event);
       } else if (!now && old && watched(old)) {
         recordActivity("unwatched", { unit: key, ...unitFields(item) }, at);
       }

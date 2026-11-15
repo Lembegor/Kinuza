@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { backend, isDesktop, type ImdbRating } from "./backend";
+import { catalogRecord } from "./catalog";
 import { tmdb, type MediaType } from "./tmdb";
 
 const storeName = "imdb-ids";
@@ -66,6 +67,11 @@ async function imdbIdOf(type: MediaType, id: number): Promise<string> {
   if (stored !== undefined) return stored;
   const known = idRequests.get(key);
   if (known) return known;
+  const local = await catalogRecord(type, id).catch(() => null);
+  if (local?.imdb && /^tt\d+$/.test(local.imdb)) {
+    remember(key, local.imdb);
+    return local.imdb;
+  }
   const request = limited(() => tmdb.imdbId(type, id))
     .then((imdbId) => {
       remember(key, imdbId);
@@ -102,6 +108,12 @@ function ratingOf(imdbId: string): Promise<ImdbRating | null> {
     clearTimeout(batchTimer);
     batchTimer = setTimeout(flush, batchDelayMs);
   });
+}
+
+export async function imdbRatingOf(type: MediaType, id: number): Promise<ImdbRating | null> {
+  if (!isDesktop) return null;
+  const imdbId = await imdbIdOf(type, id);
+  return imdbId ? ratingOf(imdbId) : null;
 }
 
 export function useImdbRating(

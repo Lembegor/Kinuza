@@ -6,6 +6,14 @@ import { useT, type MessageKey } from "../lib/i18n";
 import type { TitleVideo } from "../lib/tmdb";
 
 const embedBase = "https://www.youtube-nocookie.com/embed";
+const playerOrigins = ["https://www.youtube-nocookie.com", "https://www.youtube.com"];
+
+export interface TrailerWatch {
+  seconds: number;
+  watched: number;
+  length: number;
+  external: boolean;
+}
 const watchBase = "https://www.youtube.com/watch";
 
 const kindLabels: Record<TitleVideo["kind"], MessageKey> = {
@@ -24,12 +32,52 @@ async function openOnYouTube(key: string): Promise<void> {
   await openUrl(url);
 }
 
-export function TrailerOverlay({ title, videos, onClose }: { title: string; videos: TitleVideo[]; onClose: () => void }) {
+export function TrailerOverlay({
+  title,
+  videos,
+  onClose,
+  onWatched,
+}: {
+  title: string;
+  videos: TitleVideo[];
+  onClose: () => void;
+  onWatched?: (watch: TrailerWatch) => void;
+}) {
   const { t } = useT();
   const [currentKey, setCurrentKey] = useState(videos[0]?.key);
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const current = videos.find((video) => video.key === currentKey) ?? videos[0];
+  const frameRef = useRef<HTMLIFrameElement>(null);
+  const watch = useRef({ openedAt: Date.now(), watched: 0, length: 0, external: false });
+  const reportRef = useRef(onWatched);
+  reportRef.current = onWatched;
+
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      if (!playerOrigins.includes(event.origin) || typeof event.data !== "string") return;
+      try {
+        const data = JSON.parse(event.data) as { event?: string; info?: { currentTime?: number; duration?: number } };
+        if (data.event !== "infoDelivery" || !data.info) return;
+        if (typeof data.info.currentTime === "number") watch.current.watched = Math.max(watch.current.watched, data.info.currentTime);
+        if (typeof data.info.duration === "number" && data.info.duration > 0) watch.current.length = data.info.duration;
+      } catch {
+        return;
+      }
+    };
+    window.addEventListener("message", onMessage);
+    return () => {
+      window.removeEventListener("message", onMessage);
+      const { openedAt, watched, length, external } = watch.current;
+      reportRef.current?.({ seconds: Math.round((Date.now() - openedAt) / 1000), watched: Math.round(watched), length: Math.round(length), external });
+    };
+  }, []);
+
+  const listen = () => {
+    const frame = frameRef.current?.contentWindow;
+    if (!frame) return;
+    for (const origin of playerOrigins) frame.postMessage(JSON.stringify({ event: "listening", id: 1, channel: "widget" }), origin);
+  };
 
   useEffect(() => {
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -86,6 +134,7 @@ export function TrailerOverlay({ title, videos, onClose }: { title: string; vide
           <button
             className="text-button"
             onClick={() => {
+              watch.current.external = true;
               onClose();
               void openOnYouTube(current.key);
             }}
@@ -100,8 +149,10 @@ export function TrailerOverlay({ title, videos, onClose }: { title: string; vide
 
         <div className="trailer__frame">
           <iframe
+            ref={frameRef}
             key={current.key}
-            src={`${embedBase}/${encodeURIComponent(current.key)}?autoplay=1&rel=0`}
+            onLoad={listen}
+            src={`${embedBase}/${encodeURIComponent(current.key)}?autoplay=1&rel=0&enablejsapi=1&origin=${encodeURIComponent(window.location.origin)}`}
             title={labelOf(current)}
             allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
             allowFullScreen

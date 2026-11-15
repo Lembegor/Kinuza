@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import {
   accountDataVersion,
+  activityRemovalKey,
   dismissedRemovalKey,
   freshTombstones,
   isProgress,
@@ -69,7 +70,10 @@ export interface TrackEntry extends TitleRef {
   status: WatchStatus | null;
   rating: number | null;
   liked?: boolean;
+  rewatches?: number;
+  finishedAt?: number;
   totalEpisodes?: number;
+  runtime?: number;
   addedAt: number;
   updatedAt: number;
   fieldsUpdatedAt?: Partial<Record<TrackedField, number>>;
@@ -133,11 +137,15 @@ interface LibraryState extends LibraryData {
   load: () => Promise<void>;
   setStatus: (title: TitleRef, status: WatchStatus | null) => void;
   setRating: (title: TitleRef, rating: number | null) => void;
+  setRewatches: (title: TitleRef, rewatches: number) => void;
   removeTracked: (key: string) => void;
   restoreTracked: (key: string, entry: TrackEntry) => void;
   restoreProgress: (key: string, progress: Progress) => void;
   forgetProgress: (key: string) => void;
-  noteTitleDetails: (title: TitleRef, totalEpisodes: number | undefined) => void;
+  noteTitleDetails: (title: TitleRef, totalEpisodes: number | undefined, runtime?: number | null) => void;
+  noteRuntimes: (runtimes: Record<string, number>) => void;
+  noteRemovedEvents: (ids: string[]) => void;
+  forgetRemovedEvents: (ids: string[]) => void;
   addSources: (entries: { unitKey: string; source: Source }[]) => void;
   removeSource: (unitKey: string, sourceId: string) => void;
   removeTorrent: (infoHash: string) => void;
@@ -213,6 +221,31 @@ function withAutoStatus(
   if (entry) return { ...tracked, [key]: { ...entry, status } };
   const now = Date.now();
   return { ...tracked, [key]: { ...title, status, rating: null, addedAt: now, updatedAt: now } };
+}
+
+const maxRewatches = 99;
+const rewatchGapMs = 6 * 60 * 60 * 1000;
+
+function withFinishCount(
+  tracked: Record<string, TrackEntry>,
+  before: Record<string, TrackEntry>,
+  previous: Progress | undefined,
+  progress: Progress,
+): Record<string, TrackEntry> {
+  if (progress.title.type !== "movie" || !isWatched(progress) || isWatched(previous)) return tracked;
+  const key = titleKey(progress.title.type, progress.title.id);
+  const entry = tracked[key];
+  if (!entry) return tracked;
+  const now = Date.now();
+  const earlier = before[key];
+  const seenBefore = earlier?.finishedAt !== undefined || (earlier?.status === "completed" && now - earlier.updatedAt > rewatchGapMs);
+  const lastFinish = earlier?.finishedAt ?? 0;
+  if (seenBefore && now - lastFinish > rewatchGapMs) {
+    const rewatches = Math.min(maxRewatches, (entry.rewatches ?? 0) + 1);
+    const stamps = { ...entry.fieldsUpdatedAt, rewatches: now };
+    return { ...tracked, [key]: { ...entry, rewatches, finishedAt: now, fieldsUpdatedAt: stamps, updatedAt: now } };
+  }
+  return { ...tracked, [key]: { ...entry, finishedAt: entry.finishedAt ?? now } };
 }
 
 function readLegacy<T>(key: string): T | undefined {
@@ -518,6 +551,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
 
     setStatus: (title, status) => patchEntry(title, { status }),
     setRating: (title, rating) => patchEntry(title, { rating }),
+    setRewatches: (title, rewatches) => patchEntry(title, { rewatches: Math.max(0, Math.min(maxRewatches, Math.round(rewatches))) }),
 
     removeTracked(key) {
       update((state) => {
@@ -554,17 +588,50 @@ export const useLibrary = create<LibraryState>((set, get) => {
       });
     },
 
-    noteTitleDetails(title, totalEpisodes) {
+    noteTitleDetails(title, totalEpisodes, runtime) {
       const key = titleKey(title.type, title.id);
       const entry = get().tracked[key];
       if (!entry) return;
-      const unchanged = entry.totalEpisodes === totalEpisodes && entry.poster === title.poster && entry.title === title.title;
+      const minutes = runtime && runtime > 0 ? Math.round(runtime) : entry.runtime;
+      const unchanged =
+        entry.totalEpisodes === totalEpisodes && entry.poster === title.poster && entry.title === title.title && entry.runtime === minutes;
       if (unchanged) return;
       update((state) => {
-        const refreshed = { ...state.tracked, [key]: { ...entry, ...title, totalEpisodes } };
+        const refreshed = { ...state.tracked, [key]: { ...entry, ...title, totalEpisodes, ...(minutes ? { runtime: minutes } : {}) } };
         const finished = isFinished(title, refreshed[key], state.progress);
         return { tracked: finished ? withAutoStatus(refreshed, state.progress, title) : refreshed };
       });
+    },
+
+    noteRuntimes(runtimes) {
+      const tracked = get().tracked;
+      const changed = Object.entries(runtimes).filter(([key, minutes]) => tracked[key] && minutes > 0 && tracked[key].runtime !== minutes);
+      if (changed.length === 0) return;
+      update((state) => {
+        const next = { ...state.tracked };
+        for (const [key, minutes] of changed) if (next[key]) next[key] = { ...next[key], runtime: Math.round(minutes) };
+        return { tracked: next };
+      }, true);
+    },
+
+    noteRemovedEvents(ids) {
+      if (ids.length === 0) return;
+      update((state) => {
+        const removed = { ...state.removed };
+        const now = Date.now();
+        for (const id of ids) removed[activityRemovalKey(id)] = now;
+        return { removed };
+      }, true);
+    },
+
+    forgetRemovedEvents(ids) {
+      const known = get().removed;
+      if (!ids.some((id) => known[activityRemovalKey(id)])) return;
+      update((state) => {
+        const removed = { ...state.removed };
+        for (const id of ids) delete removed[activityRemovalKey(id)];
+        return { removed };
+      }, true);
     },
 
     addSources(entries) {
@@ -616,7 +683,8 @@ export const useLibrary = create<LibraryState>((set, get) => {
     setProgress(key, progress) {
       update((state) => {
         const next = { ...state.progress, [key]: progress };
-        return { progress: next, tracked: withAutoStatus(state.tracked, next, progress.title) };
+        const tracked = withAutoStatus(state.tracked, next, progress.title);
+        return { progress: next, tracked: withFinishCount(tracked, state.tracked, state.progress[key], progress) };
       });
     },
 

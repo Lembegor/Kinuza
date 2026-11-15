@@ -15,6 +15,8 @@ export interface Toast {
   kind: ToastKind;
   text: string;
   action?: ToastAction;
+  secondary?: ToastAction;
+  at: number;
 }
 
 export interface AddSourceTarget {
@@ -65,7 +67,7 @@ interface UiState {
   player: PlayerSession | null;
   pageTarget: AddSourceTarget | null;
   setPageTarget: (target: AddSourceTarget | null) => void;
-  toast: (text: string, kind?: ToastKind, action?: ToastAction) => void;
+  toast: (text: string, kind?: ToastKind, action?: ToastAction, secondary?: ToastAction) => void;
   dismissToast: (id: number) => void;
   openAddSource: (request: AddSourceRequest) => void;
   closeAddSource: () => void;
@@ -88,9 +90,9 @@ export const useUi = create<UiState>((set) => ({
   pageTarget: null,
   setPageTarget: (target) => set({ pageTarget: target }),
 
-  toast(text, kind = "info", action) {
+  toast(text, kind = "info", action, secondary) {
     const id = nextToastId++;
-    set((state) => ({ toasts: [...state.toasts.filter((toast) => toast.kind === "error"), { id, kind, text, action }].slice(-maxToasts) }));
+    set((state) => ({ toasts: [...state.toasts.filter((toast) => toast.kind === "error"), { id, kind, text, action, secondary, at: Date.now() }].slice(-maxToasts) }));
   },
   dismissToast: (id) => set((state) => ({ toasts: state.toasts.filter((toast) => toast.id !== id) })),
 

@@ -5,6 +5,29 @@ export type ChangelogLine = string | { heading: string };
 export type Changelog = Record<AppLanguage, ChangelogLine[]>;
 
 export const changelog: Record<string, Changelog> = {
+  "0.5.7": {
+    ru: [
+      "Профиль со статистикой: аватар справа в шапке открывает общее время на фильмы, сериалы и аниме, активность за год, часы по месяцам, оценки, жанры и привычки. Всё считается только на этом компьютере.",
+      "Полностью обновленная логика рекомендаций (еще в доработке)",
+      "Добавлен аккаунт и подробная статистика в профиле.",
+      "Детальная статистика по просмотренным часам и минутам.",
+      "Итоги месяца и итоги года.",
+    ],
+    en: [
+      "A profile with stats: the avatar at the top right opens total watch time for movies, TV shows and anime, activity over the year, hours by month, ratings, genres and habits. Everything is counted on this computer only.",
+      "Completely reworked recommendation logic (still in progress)",
+      "Added an account and detailed stats in the profile.",
+      "Detailed stats on hours and minutes watched.",
+      "Monthly and yearly recaps.",
+    ],
+    uk: [
+      "Профіль зі статистикою: аватар праворуч у шапці відкриває загальний час на фільми, серіали й аніме, активність за рік, години за місяцями, оцінки, жанри та звички. Усе рахується лише на цьому комп'ютері.",
+      "Повністю оновлена логіка рекомендацій (ще в доопрацюванні)",
+      "Додано акаунт і докладну статистику в профілі.",
+      "Детальна статистика за переглянутими годинами й хвилинами.",
+      "Підсумки місяця й підсумки року.",
+    ],
+  },
   "0.5.6": {
     ru: [
       "Если TMDB недоступен, каталог, страницы фильмов и картинки открываются через сервер Kinuza.",

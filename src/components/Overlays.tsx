@@ -56,6 +56,17 @@ function ToastItem({ toast }: { toast: Toast }) {
           {toast.action.label}
         </button>
       )}
+      {toast.secondary && (
+        <button
+          className="toast__action"
+          onClick={() => {
+            toast.secondary?.run();
+            dismiss(toast.id);
+          }}
+        >
+          {toast.secondary.label}
+        </button>
+      )}
       <button className="toast__close" aria-label={t("common.close")} onClick={() => dismiss(toast.id)}>
         <X size={14} />
       </button>

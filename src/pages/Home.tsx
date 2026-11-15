@@ -13,6 +13,7 @@ import { homeRefreshEvent, useUi } from "../state/ui";
 import { useUpNext, type UpNextEpisode } from "../state/upNext";
 import { useHoverWarm, warmRecentResume } from "../state/warmup";
 import { CatalogRating } from "../components/CatalogRating";
+import { MonthCard } from "../components/profile/MonthCard";
 
 const heroRotationMs = 10000;
 const heroItemCount = 6;
@@ -374,8 +375,9 @@ export default function Home() {
         <ContinueRow />
         <UpNextRow />
         <NewEpisodesRow />
+        <MonthCard />
         {feed.available && feed.rows === null && <PosterRow title={t("feed.forYou")} items={null} />}
-        {feed.rows?.map((row) => <PosterRow key={row.id} title={row.title} items={row.items} onDismiss={dismissRecommendation} />)}
+        {feed.rows?.map((row) => <PosterRow key={row.id} title={row.title} items={row.items} onDismiss={dismissRecommendation} rowId={row.id} />)}
         {planned.length > 0 && <PosterRow title={t("home.row.planned")} items={planned} />}
         <PosterRow title={t("home.row.trending")} items={trending.data} />
         <PosterRow title={t("home.row.nowPlaying")} items={nowPlaying.data} />

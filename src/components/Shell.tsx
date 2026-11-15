@@ -6,6 +6,7 @@ import { useT } from "../lib/i18n";
 import { useBrowse } from "../state/browse";
 import { homeRefreshEvent, useUi } from "../state/ui";
 import { InboxButton } from "./InboxButton";
+import { ProfileButton } from "./ProfileButton";
 import { isActiveDownload, useTorrents } from "../state/torrents";
 
 const searchDebounceMs = 350;
@@ -145,6 +146,7 @@ export function Titlebar() {
       <SearchBox />
       <div className="titlebar__spacer" data-tauri-drag-region />
       <InboxButton />
+      <ProfileButton />
       <WindowButtons />
     </header>
   );

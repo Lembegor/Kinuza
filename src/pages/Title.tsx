@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import {
   Check,
   CheckCheck,
@@ -24,6 +24,7 @@ import { AnimeOrder } from "../components/AnimeOrder";
 import { FranchiseRow } from "../components/Franchise";
 import { Gallery } from "../components/Gallery";
 import { RatingStars, StatusMenu } from "../components/TrackControls";
+import { TitleTime } from "../components/profile/TitleTime";
 import { TrailerOverlay } from "../components/TrailerOverlay";
 import { backend, describeError, isDesktop } from "../lib/backend";
 import { formatBytes, formatDate, formatRuntime, formatSpeed } from "../lib/format";
@@ -49,6 +50,7 @@ type EpisodePickBase = Omit<PickTarget, "season" | "episode">;
 
 const specialsSeason = 0;
 const shownTagLimit = 6;
+const minViewSeconds = 3;
 const namedDirectorCount = 4;
 
 export { sortSources };
@@ -708,6 +710,17 @@ export default function TitlePage() {
   useEffect(() => {
     if (title) recordActivity("title.open", { title: titleOf(title) });
   }, [title?.type, title?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const location = useLocation();
+  const pageShown = location.pathname === `/title/${type}/${id}`;
+  useEffect(() => {
+    if (!title || !pageShown) return;
+    const shownAt = Date.now();
+    const viewed = titleOf(title);
+    return () => {
+      const seconds = Math.round((Date.now() - shownAt) / 1000);
+      if (seconds >= minViewSeconds) recordActivity("title.view", { title: viewed, seconds });
+    };
+  }, [title?.type, title?.id, pageShown]); // eslint-disable-line react-hooks/exhaustive-deps
   const localized = useAsync(
     async () => (data && needsLocalizing(data, language) ? { id: data.id, type: data.type, ...(await localizedTexts(data, language)) } : null),
     [data, language],
@@ -774,7 +787,7 @@ export default function TitlePage() {
     const regularEpisodes = data.seasons
       .filter((item) => item.seasonNumber !== specialsSeason)
       .reduce((sum, item) => sum + item.episodeCount, 0);
-    useLibrary.getState().noteTitleDetails(shownRef, data.type === "tv" ? regularEpisodes : undefined);
+    useLibrary.getState().noteTitleDetails(shownRef, data.type === "tv" ? regularEpisodes : undefined, data.runtimeMinutes);
   }, [data, shownRef, localized.loading]);
 
   const heroUnit = type === "movie" ? unitKey("movie", id) : resume ? unitKey("tv", id, resume.season, resume.episode) : null;
@@ -962,6 +975,7 @@ export default function TitlePage() {
             </div>
             {(type === "tv" || !bestMovieSource) && <TrackerHint details={data} onFind={() => openAddSource({ target })} />}
             <RatingStars title={shownRef} />
+            <TitleTime title={shownRef} />
           </div>
         </div>
       </section>
@@ -1045,7 +1059,14 @@ export default function TitlePage() {
       </div>
 
       {trailerTitleId === id && data.videos.length > 0 && (
-        <TrailerOverlay title={data.title} videos={data.videos} onClose={() => setTrailerTitleId(null)} />
+        <TrailerOverlay
+          title={data.title}
+          videos={data.videos}
+          onClose={() => setTrailerTitleId(null)}
+          onWatched={(watch) => {
+            if (title) recordActivity("trailer", { title: titleOf(title), ...watch });
+          }}
+        />
       )}
     </div>
   );

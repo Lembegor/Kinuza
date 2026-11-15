@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { noteOpened, noteShown, type ShownItem } from "../state/impressions";
 import { useNavigate } from "react-router-dom";
 import { Check, ChevronLeft, ChevronRight, Clock, CloudOff, LoaderCircle, Star, ThumbsDown } from "lucide-react";
 import type { Dismissal } from "../lib/account";
@@ -150,12 +151,42 @@ export function PosterCard({ item }: { item: CardItem }) {
 
 const shownPeople = 4;
 
-function DismissibleCard({ item, onDismiss }: { item: CardItem; onDismiss: (item: CardItem, detail: DismissDetail) => void }) {
+const seenShare = 0.6;
+const seenAfterMs = 1000;
+
+function useShownOnce(slotRef: React.RefObject<HTMLDivElement | null>, item: CardItem, rowId: string | undefined): void {
+  useEffect(() => {
+    const slot = slotRef.current;
+    if (!slot || !rowId) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries.some((entry) => entry.isIntersecting && entry.intersectionRatio >= seenShare);
+        clearTimeout(timer);
+        if (!visible) return;
+        timer = setTimeout(() => {
+          if (document.visibilityState !== "visible") return;
+          noteShown(item as ShownItem, rowId);
+          observer.disconnect();
+        }, seenAfterMs);
+      },
+      { threshold: [seenShare] },
+    );
+    observer.observe(slot);
+    return () => {
+      clearTimeout(timer);
+      observer.disconnect();
+    };
+  }, [slotRef, item, rowId]);
+}
+
+function DismissibleCard({ item, onDismiss, rowId }: { item: CardItem; onDismiss: (item: CardItem, detail: DismissDetail) => void; rowId?: string }) {
   const { t } = useT();
   const [open, setOpen] = useState(false);
   const [people, setPeople] = useState<{ id: number; name: string }[] | null>(null);
   const [loadingPeople, setLoadingPeople] = useState(false);
   const slotRef = useRef<HTMLDivElement>(null);
+  useShownOnce(slotRef, item, rowId);
 
   useEffect(() => {
     if (!open) return;
@@ -194,7 +225,13 @@ function DismissibleCard({ item, onDismiss }: { item: CardItem; onDismiss: (item
   };
 
   return (
-    <div className={`poster-slot ${open ? "is-asking" : ""}`} ref={slotRef}>
+    <div
+      className={`poster-slot ${open ? "is-asking" : ""}`}
+      ref={slotRef}
+      onClickCapture={(event) => {
+        if (rowId && (event.target as HTMLElement).closest(".poster-card__open")) noteOpened(item as ShownItem, rowId);
+      }}
+    >
       <PosterCard item={item} />
       <button
         className="poster-slot__dismiss"
@@ -276,10 +313,12 @@ export function PosterRow({
   title,
   items,
   onDismiss,
+  rowId,
 }: {
   title: string;
   items: CardItem[] | null;
   onDismiss?: (item: TitleRef, detail: DismissDetail) => void;
+  rowId?: string;
 }) {
   if (items && items.length === 0) return null;
   return (
@@ -287,7 +326,7 @@ export function PosterRow({
       {items
         ? items.map((item) =>
             onDismiss ? (
-              <DismissibleCard key={`${item.type}:${item.id}`} item={item} onDismiss={onDismiss} />
+              <DismissibleCard key={`${item.type}:${item.id}`} item={item} onDismiss={onDismiss} rowId={rowId} />
             ) : (
               <PosterCard key={`${item.type}:${item.id}`} item={item} />
             ),

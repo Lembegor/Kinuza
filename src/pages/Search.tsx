@@ -2,6 +2,9 @@ import { useEffect, useMemo } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { SearchX, UserRound } from "lucide-react";
 import { CatalogError, EmptyState, PosterGrid } from "../components/Cards";
+import { QueryPicks } from "../components/QueryPicks";
+import { parseQuery } from "../lib/queryIntent";
+import { engineAvailable } from "../lib/recommender";
 import { useT, type MessageKey } from "../lib/i18n";
 import { imageUrl, tmdb, type FoundPerson, type MediaItem } from "../lib/tmdb";
 import { isWatched, titleKey, unitKey, useLibrary } from "../state/library";
@@ -132,6 +135,7 @@ export default function Search() {
   }, [query, results.data, extraMatches, filter, hideWatched, tracked, progress]);
   const people = filter === "people" ? (results.data?.people ?? []) : filter === "all" ? (results.data?.people ?? []).slice(0, peopleInAll) : [];
   const nothing = visible.length === 0 && people.length === 0;
+  const phrase = useMemo(() => query !== "" && filter !== "people" && engineAvailable() && parseQuery(query).meaningful, [query, filter]);
   const peopleFirst = filter === "people" || (() => {
     const personTier = bestPersonTier(query, people);
     return personTier <= 1 && !extraMatches.some((match) => match.exact) && bestTitleTier(query, visible) >= 3;
@@ -165,6 +169,8 @@ export default function Search() {
         </div>
       </div>
 
+      {query && filter !== "people" && <QueryPicks query={query} />}
+
       {results.error ? (
         <CatalogError onRetry={results.reload} />
       ) : results.loading && !results.data ? (
@@ -173,7 +179,7 @@ export default function Search() {
             <div key={index} className="poster-card poster-card--skeleton" />
           ))}
         </div>
-      ) : nothing ? (
+      ) : nothing && phrase ? null : nothing ? (
         <EmptyState
           icon={<SearchX size={40} />}
           title={query ? t("search.empty.title") : t("search.prompt.title")}

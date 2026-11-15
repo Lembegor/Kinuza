@@ -8,6 +8,7 @@ import logging
 import math
 import os
 import random
+import re
 import signal
 import sqlite3
 import time
@@ -16,6 +17,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import httpx
+import snowballstemmer
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
@@ -46,6 +48,55 @@ NAME_LIMIT = 8
 READABLE_SCRIPTS = {"LATIN", "CYRILLIC"}
 ANIME_EVERY = 7 * 86400
 FAILED = -1_000_000
+FEATURE_VOTES = int(os.environ.get("CATALOG_FEATURE_VOTES", "10"))
+FEATURE_VERSION = "1"
+ANIME_VERSION = "2"
+ANILIST = "https://graphql.anilist.co"
+ANILIST_RATE = float(os.environ.get("ANILIST_RATE", "0.4"))
+ANILIST_QUERY = """
+query ($ids: [Int], $page: Int) {
+  Page(page: $page, perPage: 50) {
+    pageInfo { hasNextPage }
+    media(idMal_in: $ids, type: ANIME) {
+      idMal
+      averageScore
+      tags { id rank isMediaSpoiler isGeneralSpoiler }
+      recommendations(sort: RATING_DESC, perPage: 10) { nodes { rating mediaRecommendation { idMal } } }
+    }
+  }
+}"""
+KEYWORD_LIMIT = 20
+CAST_LIMIT = 8
+WRITER_LIMIT = 4
+COMPANY_LIMIT = 4
+RECOMMENDATION_LIMIT = 12
+STEM_LIMIT = 16
+TAG_LIMIT = 15
+TAG_RANK = 40
+ANIME_RECOMMENDATION_LIMIT = 10
+WRITER_JOBS = {
+    "Screenplay", "Writer", "Novel", "Story", "Original Story", "Author", "Characters", "Comic Book",
+    "Original Concept", "Book", "Graphic Novel", "Teleplay", "Manga", "Original Series Creator", "Story By",
+}
+COMPOSER_JOBS = {"Original Music Composer", "Music", "Composer"}
+CAMERA_JOBS = {"Director of Photography", "Cinematography"}
+STOPWORDS = set("""
+a about above after again against all almost alone along already also although always am among an and another any
+anyone anything are around as at away back be became because become becomes been before begin begins being below
+best better between beyond both but by can cannot could did do does doing done down during each either else even
+ever every everyone everything find finds for found from further get gets getting give given gives go goes going
+gone got had has have having he her here hers herself him himself his how however i if in into is it its itself
+just keep last later least less let like made make makes making many may me meanwhile might more most much must my
+myself never new next no nor not nothing now of off often on once one only onto or other others our ours ourselves
+out over own part people put rather really s same see seems set several she should since so some someone something
+soon still such take takes than that the their theirs them themselves then there these they thing things this those
+though through throughout thus to together too toward towards two under until up upon us use very was way we well
+were what whatever when where whether which while who whole whom whose why will with within without would year years
+yet you your yours yourself yourselves first second third time life world day days story film movie series season
+episode tells told follows follow young old man men woman women
+""".split())
+WORD = re.compile(r"[A-Za-z][A-Za-z'\-]+")
+stemmer = snowballstemmer.stemmer("english")
 
 log = logging.getLogger("catalog")
 stopping = asyncio.Event()
@@ -80,14 +131,20 @@ def connect() -> sqlite3.Connection:
         CREATE TABLE IF NOT EXISTS anime(
             kind TEXT NOT NULL, id INTEGER NOT NULL, mal INTEGER NOT NULL,
             PRIMARY KEY(kind, id)) WITHOUT ROWID;
+        CREATE INDEX IF NOT EXISTS anime_mal ON anime(mal);
         CREATE TABLE IF NOT EXISTS shikimori(
             mal INTEGER PRIMARY KEY, russian TEXT NOT NULL, name TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS anilist(
+            mal INTEGER PRIMARY KEY, score INTEGER NOT NULL, tags TEXT NOT NULL, recommendations TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS publishes(
             version INTEGER PRIMARY KEY, created INTEGER NOT NULL, seq INTEGER NOT NULL,
             delta TEXT, delta_sha TEXT, delta_size INTEGER, delta_count INTEGER);
         CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
         """
     )
+    columns = {row[1] for row in db.execute("PRAGMA table_info(shikimori)")}
+    if "score" not in columns:
+        db.execute("ALTER TABLE shikimori ADD COLUMN score REAL NOT NULL DEFAULT 0")
     return db
 
 
@@ -215,6 +272,96 @@ def translated_title(raw: dict, kind: str, language: str) -> str:
     return best
 
 
+def unique(values, limit: int) -> list:
+    seen = []
+    for value in values:
+        if value is None or value in seen:
+            continue
+        seen.append(value)
+        if len(seen) >= limit:
+            break
+    return seen
+
+
+def overview_stems(text: str) -> list[str]:
+    stems = []
+    sentence_start = True
+    position = 0
+    for match in WORD.finditer(text or ""):
+        between = text[position:match.start()]
+        position = match.end()
+        if any(mark in between for mark in ".!?:;\n\"(") or not between.strip() and match.start() == 0:
+            sentence_start = True
+        word = match.group(0).strip("'-")
+        initial = sentence_start
+        sentence_start = False
+        if len(word) < 3 or (word[0].isupper() and not initial):
+            continue
+        lower = word.lower()
+        if lower in STOPWORDS or "'" in lower:
+            continue
+        stem = stemmer.stemWord(lower)
+        if len(stem) < 3 or stem in STOPWORDS or stem in stems:
+            continue
+        stems.append(stem)
+        if len(stems) >= STEM_LIMIT:
+            break
+    return stems
+
+
+def crew_jobs(person: dict, kind: str) -> list[str]:
+    if kind == "m":
+        return [person.get("job") or ""]
+    return [job.get("job") or "" for job in person.get("jobs") or []]
+
+
+def crew_with(crew: list, kind: str, jobs: set[str]) -> list[dict]:
+    found = [person for person in crew if isinstance(person.get("id"), int) and jobs & set(crew_jobs(person, kind))]
+    if kind == "t":
+        found.sort(key=lambda person: -(person.get("total_episode_count") or 0))
+    return found
+
+
+def title_features(kind: str, raw: dict) -> dict:
+    credits = (raw.get("credits") if kind == "m" else raw.get("aggregate_credits")) or {}
+    crew = credits.get("crew") or []
+    cast = sorted((person for person in credits.get("cast") or [] if isinstance(person.get("id"), int)),
+                  key=lambda person: person.get("order") if isinstance(person.get("order"), int) else 9999)
+    keywords = (raw.get("keywords") or {}).get("keywords" if kind == "m" else "results") or []
+    if kind == "m":
+        directors = [person["id"] for person in crew_with(crew, kind, {"Director"})]
+        countries = [country.get("iso_3166_1") for country in raw.get("production_countries") or []]
+        runtime = raw.get("runtime") or 0
+    else:
+        directors = [person.get("id") for person in raw.get("created_by") or []]
+        directors = directors or [person["id"] for person in crew_with(crew, kind, {"Director"})][:2]
+        countries = list(raw.get("origin_country") or [])
+        runtime = next((value for value in raw.get("episode_run_time") or [] if value), 0)
+        runtime = runtime or ((raw.get("last_episode_to_air") or {}).get("runtime") or 0)
+    features = {
+        "w": unique((keyword.get("id") for keyword in keywords), KEYWORD_LIMIT),
+        "d": unique(directors, 3),
+        "s": unique((person["id"] for person in crew_with(crew, kind, WRITER_JOBS)), WRITER_LIMIT),
+        "a": unique((person["id"] for person in cast), CAST_LIMIT),
+        "u": unique((person["id"] for person in crew_with(crew, kind, COMPOSER_JOBS)), 2),
+        "h": unique((person["id"] for person in crew_with(crew, kind, CAMERA_JOBS)), 1),
+        "p": unique((company.get("id") for company in raw.get("production_companies") or []), COMPANY_LIMIT),
+        "e": unique((network.get("id") for network in raw.get("networks") or []), 2) if kind == "t" else [],
+        "r": unique((item.get("id") for item in (raw.get("recommendations") or {}).get("results") or []), RECOMMENDATION_LIMIT),
+        "n": unique((country for country in countries if isinstance(country, str) and country), 3),
+        "o": overview_stems(raw.get("overview") or ""),
+    }
+    features = {name: value for name, value in features.items() if value}
+    if isinstance(runtime, (int, float)) and runtime > 0:
+        features["m"] = int(runtime)
+    if kind == "t" and isinstance(raw.get("number_of_episodes"), int) and raw["number_of_episodes"] > 0:
+        features["z"] = raw["number_of_episodes"]
+    collection = (raw.get("belongs_to_collection") or {}).get("id") if kind == "m" else None
+    if isinstance(collection, int):
+        features["j"] = collection
+    return features
+
+
 def build_base(kind: str, raw: dict) -> dict:
     original = clean(raw.get("original_title") if kind == "m" else raw.get("original_name"))
     english = clean(raw.get("title") if kind == "m" else raw.get("name"))
@@ -274,6 +421,10 @@ def build_base(kind: str, raw: dict) -> dict:
     imdb = ((raw.get("external_ids") or {}).get("imdb_id") or raw.get("imdb_id") or "").strip()
     if imdb:
         base["imdb"] = imdb
+    if "keywords" in raw and base["c"] >= FEATURE_VOTES:
+        features = title_features(kind, raw)
+        if features:
+            base["f"] = features
     return base
 
 
@@ -281,15 +432,42 @@ def has_cyrillic(text: str) -> bool:
     return any("Ѐ" <= ch <= "ӿ" for ch in text)
 
 
+def anime_features(db: sqlite3.Connection, kind: str, mal: int, shikimori_score) -> dict:
+    features = {}
+    row = db.execute("SELECT score, tags, recommendations FROM anilist WHERE mal = ?", (mal,)).fetchone()
+    if row:
+        score, tags, recommendations = row
+        if score:
+            features["sa"] = score
+        tags = json.loads(tags)
+        if tags:
+            features["t"] = tags
+        linked = []
+        for other, rating in json.loads(recommendations):
+            for (other_id,) in db.execute("SELECT id FROM anime WHERE mal = ? AND kind = ? ORDER BY id", (other, kind)):
+                if all(entry[0] != other_id for entry in linked):
+                    linked.append([other_id, rating])
+            if len(linked) >= ANIME_RECOMMENDATION_LIMIT:
+                break
+        if linked:
+            features["q"] = linked
+    if shikimori_score:
+        features["sk"] = round(float(shikimori_score), 2)
+    return features
+
+
 def build_record(db: sqlite3.Connection, base: dict) -> dict:
     record = dict(base)
     row = db.execute(
-        "SELECT a.mal, s.russian, s.name FROM anime a LEFT JOIN shikimori s ON s.mal = a.mal WHERE a.kind = ? AND a.id = ?",
+        "SELECT a.mal, s.russian, s.name, s.score FROM anime a LEFT JOIN shikimori s ON s.mal = a.mal WHERE a.kind = ? AND a.id = ?",
         (base["k"], base["id"]),
     ).fetchone()
     if row:
-        mal, russian, name = row
+        mal, russian, name, shikimori_score = row
         record["mal"] = mal
+        extra = anime_features(db, base["k"], mal, shikimori_score)
+        if extra:
+            record["f"] = {**(record.get("f") or {}), **extra}
         if russian and has_cyrillic(russian):
             record["s"] = clean(russian)
         if name:
@@ -452,6 +630,18 @@ async def sync_changes(db: sqlite3.Connection, client: httpx.AsyncClient, limite
     meta_set(db, "changes_day", end.isoformat())
 
 
+def queue_features(db: sqlite3.Connection) -> None:
+    if meta_get(db, "features_version") == FEATURE_VERSION:
+        return
+    queued = db.execute(
+        "INSERT INTO queue(kind, id, priority) SELECT kind, id, 2 + votes FROM titles WHERE votes >= ? "
+        "ON CONFLICT(kind, id) DO UPDATE SET priority = MAX(priority, excluded.priority)",
+        (FEATURE_VOTES,),
+    ).rowcount
+    meta_set(db, "features_version", FEATURE_VERSION)
+    log.info("features: %d titles with %d+ votes queued", queued, FEATURE_VOTES)
+
+
 def queue_refresh(db: sqlite3.Connection) -> None:
     if REFRESH_PER_RUN <= 0:
         return
@@ -477,7 +667,9 @@ async def process_queue(db: sqlite3.Connection, client: httpx.AsyncClient, limit
 
     async def feeder():
         while not stopping.is_set():
-            rows = db.execute("SELECT kind, id FROM queue WHERE priority > ? ORDER BY priority DESC LIMIT 2000", (FAILED,)).fetchall()
+            rows = db.execute(
+                "SELECT q.kind, q.id, COALESCE(t.votes, -1) FROM queue q LEFT JOIN titles t ON t.kind = q.kind AND t.id = q.id "
+                "WHERE q.priority > ? ORDER BY q.priority DESC LIMIT 2000", (FAILED,)).fetchall()
             if not rows:
                 break
             for row in rows:
@@ -495,11 +687,14 @@ async def process_queue(db: sqlite3.Connection, client: httpx.AsyncClient, limit
             if job is None:
                 jobs.task_done()
                 return
-            kind, id_ = job
+            kind, id_, votes = job
+            extras = ""
+            if votes < 0 or votes >= FEATURE_VOTES - 2:
+                extras = ",keywords,recommendations," + ("credits" if kind == "m" else "aggregate_credits")
             try:
                 raw = await get_json(client, limiter, f"{TMDB}/{KINDS[kind]}/{id_}", {
                     "api_key": TMDB_KEY,
-                    "append_to_response": "translations,images,alternative_titles,external_ids",
+                    "append_to_response": "translations,images,alternative_titles,external_ids" + extras,
                     "include_image_language": "ru,uk,en,null",
                 })
                 await results.put(("ok", kind, id_, build_base(kind, raw)))
@@ -561,7 +756,65 @@ async def process_queue(db: sqlite3.Connection, client: httpx.AsyncClient, limit
              done, changed, gone, failed, time.monotonic() - started)
 
 
+async def fetch_anilist(client: httpx.AsyncClient, mals: list[int]) -> dict[int, tuple[int, list, list]]:
+    limiter = RateLimiter(ANILIST_RATE)
+    found: dict[int, tuple[int, list, list]] = {}
+    for offset in range(0, len(mals), 50):
+        if stopping.is_set():
+            break
+        chunk = mals[offset:offset + 50]
+        page = 1
+        while page <= 4:
+            data = None
+            for attempt in range(6):
+                await limiter.wait()
+                try:
+                    response = await client.post(ANILIST, json={"query": ANILIST_QUERY, "variables": {"ids": chunk, "page": page}},
+                                                 headers={"Accept": "application/json"}, timeout=60)
+                except (httpx.TransportError, httpx.TimeoutException) as error:
+                    log.debug("AniList network error %s", error)
+                    await asyncio.sleep(5 * (attempt + 1))
+                    continue
+                if response.status_code == 429:
+                    wait = float(response.headers.get("Retry-After", "60") or 60)
+                    limiter.pause(wait)
+                    log.warning("rate limited by AniList, pausing %.0fs", wait)
+                    continue
+                if response.status_code >= 500:
+                    await asyncio.sleep(10 * (attempt + 1))
+                    continue
+                if response.status_code >= 400:
+                    log.warning("AniList answered %d: %s", response.status_code, response.text[:200])
+                    break
+                data = (response.json().get("data") or {}).get("Page") or {}
+                break
+            if data is None:
+                break
+            for media in data.get("media") or []:
+                mal = media.get("idMal")
+                if not isinstance(mal, int):
+                    continue
+                tags = sorted(
+                    (tag for tag in media.get("tags") or []
+                     if isinstance(tag.get("id"), int) and (tag.get("rank") or 0) >= TAG_RANK
+                     and not tag.get("isMediaSpoiler") and not tag.get("isGeneralSpoiler")),
+                    key=lambda tag: -(tag.get("rank") or 0),
+                )
+                recommendations = []
+                for node in ((media.get("recommendations") or {}).get("nodes") or []):
+                    other = (node.get("mediaRecommendation") or {}).get("idMal")
+                    rating = node.get("rating") or 0
+                    if isinstance(other, int) and rating > 0:
+                        recommendations.append([other, rating])
+                found[mal] = (int(media.get("averageScore") or 0), [tag["id"] for tag in tags[:TAG_LIMIT]], recommendations)
+            if not (data.get("pageInfo") or {}).get("hasNextPage"):
+                break
+            page += 1
+    return found
+
+
 async def sync_anime(db: sqlite3.Connection, client: httpx.AsyncClient, force: bool = False) -> None:
+    force = force or meta_get(db, "anime_version") != ANIME_VERSION
     if not force and now() - int(meta_get(db, "anime_at", "0")) < ANIME_EVERY:
         return
     started = time.monotonic()
@@ -601,8 +854,8 @@ async def sync_anime(db: sqlite3.Connection, client: httpx.AsyncClient, force: b
     if LIMIT:
         present = {(kind, id_) for kind, id_ in db.execute("SELECT kind, id FROM titles")}
         mals = sorted({mal for key, mal in links.items() if key in present})
-    names_before = {mal: (russian, name) for mal, russian, name in db.execute("SELECT mal, russian, name FROM shikimori")}
-    fetched: dict[int, tuple[str, str]] = {}
+    names_before = {mal: (russian, name, score) for mal, russian, name, score in db.execute("SELECT mal, russian, name, score FROM shikimori")}
+    fetched: dict[int, tuple[str, str, float]] = {}
     for offset in range(0, len(mals), 50):
         if stopping.is_set():
             return
@@ -615,19 +868,39 @@ async def sync_anime(db: sqlite3.Connection, client: httpx.AsyncClient, force: b
             continue
         for row in rows or []:
             if isinstance(row.get("id"), int):
-                fetched[row["id"]] = (clean(row.get("russian")), clean(row.get("name")))
+                try:
+                    score = float(row.get("score") or 0)
+                except (TypeError, ValueError):
+                    score = 0.0
+                fetched[row["id"]] = (clean(row.get("russian")), clean(row.get("name")), score)
     db.execute("BEGIN")
-    db.executemany("INSERT INTO shikimori(mal, russian, name) VALUES(?, ?, ?) ON CONFLICT(mal) DO UPDATE "
-                   "SET russian = excluded.russian, name = excluded.name",
-                   [(mal, russian, name) for mal, (russian, name) in fetched.items()])
+    db.executemany("INSERT INTO shikimori(mal, russian, name, score) VALUES(?, ?, ?, ?) ON CONFLICT(mal) DO UPDATE "
+                   "SET russian = excluded.russian, name = excluded.name, score = excluded.score",
+                   [(mal, russian, name, score) for mal, (russian, name, score) in fetched.items()])
     db.execute("COMMIT")
+
+    anilist_before = {mal: (score, tags, recs) for mal, score, tags, recs in db.execute("SELECT mal, score, tags, recommendations FROM anilist")}
+    anilist = await fetch_anilist(client, mals)
+    if stopping.is_set():
+        return
+    anilist_rows = {mal: (score, json.dumps(tags), json.dumps(recs)) for mal, (score, tags, recs) in anilist.items()}
+    db.execute("BEGIN")
+    db.executemany("INSERT INTO anilist(mal, score, tags, recommendations) VALUES(?, ?, ?, ?) ON CONFLICT(mal) DO UPDATE "
+                   "SET score = excluded.score, tags = excluded.tags, recommendations = excluded.recommendations",
+                   [(mal, *row) for mal, row in anilist_rows.items()])
+    db.execute("COMMIT")
+    anilist_changed = {mal for mal, row in anilist_rows.items() if anilist_before.get(mal) != row}
 
     touched = {key for key, mal in links.items() if before.get(key) != mal or names_before.get(mal) != fetched.get(mal, names_before.get(mal))}
     touched |= {key for key in before if key not in links}
+    touched |= {key for key, mal in links.items() if mal in anilist_changed}
+    if anilist_changed:
+        touched |= set(links)
     changed = rebuild(db, sorted(touched))
     meta_set(db, "anime_at", now())
-    log.info("anime: %d TMDB links, %d Shikimori names, %d records changed, %.0fs",
-             len(links), len(fetched), changed, time.monotonic() - started)
+    meta_set(db, "anime_version", ANIME_VERSION)
+    log.info("anime: %d TMDB links, %d Shikimori names, %d AniList entries, %d records changed, %.0fs",
+             len(links), len(fetched), len(anilist), changed, time.monotonic() - started)
 
 
 def signing_key() -> Ed25519PrivateKey:
@@ -760,6 +1033,7 @@ async def run_cycle(db: sqlite3.Connection, client: httpx.AsyncClient, limiter: 
     except Exception as error:
         log.warning("anime sync failed, will retry next run: %s", error)
     if not loading:
+        queue_features(db)
         queue_refresh(db)
     await process_queue(db, client, limiter, publish_during=loading)
     if stopping.is_set():

@@ -1,13 +1,13 @@
 import type { Dismissal } from "./account";
 import type { MediaItem, MediaType, TitleKeyword, TitleTaste } from "./tmdb";
 import type { Progress, TitleRef, TrackEntry, WatchStatus } from "../state/library";
+import { interestWeight, type Behaviour } from "./behaviour";
 
 const msPerDay = 86_400_000;
 
-const neutralRating = 5.5;
-const ratingSpan = 4.5;
+const ratingWeights = [0, -1, -1, -0.85, -0.6, 0, 0.15, 0.4, 0.7, 1, 1];
 const statusWeights: Record<WatchStatus, number> = {
-  completed: 0.55,
+  completed: 0.35,
   watching: 0.45,
   planned: 0.25,
   onHold: 0.1,
@@ -15,8 +15,10 @@ const statusWeights: Record<WatchStatus, number> = {
 };
 const likedWeight = 0.6;
 const untriedDropWeight = -0.15;
-const oldestSignalShare = 0.4;
-const tasteHalfLifeDays = 240;
+const tasteHalfLifeDays = 730;
+const rewatchWeight = 1.0;
+const dislikedRating = 4;
+const weakestInterest = 0.02;
 const weakestSignal = 0.08;
 
 const sampleSeconds = 8 * 60;
@@ -50,7 +52,7 @@ export const dismissWeights: Record<DismissReason, number> = {
   other: -0.2,
 };
 
-export type SignalOrigin = "rating" | "liked" | "status" | "finished" | "binged" | "watching" | "abandoned" | "dismissed";
+export type SignalOrigin = "rating" | "liked" | "status" | "finished" | "binged" | "watching" | "abandoned" | "dismissed" | "rewatched" | "interest";
 
 export interface TasteSignal {
   title: TitleRef;
@@ -61,6 +63,7 @@ export interface TasteSignal {
   at: number;
   reason?: DismissReason;
   personId?: number;
+  keep?: boolean;
 }
 
 export interface PersonAffinity {
@@ -140,7 +143,7 @@ export function key(title: Pick<TitleRef, "type" | "id">): string {
 
 function faded(weight: number, at: number, now: number): number {
   const ageDays = Math.max(0, now - at) / msPerDay;
-  return weight * (oldestSignalShare + (1 - oldestSignalShare) * 0.5 ** (ageDays / tasteHalfLifeDays));
+  return weight * 0.5 ** (ageDays / tasteHalfLifeDays);
 }
 
 export interface WatchEvidence {
@@ -215,7 +218,12 @@ function implicitSignal(evidence: WatchEvidence, now: number): { weight: number;
 
 const explicitStatuses: ReadonlySet<WatchStatus> = new Set<WatchStatus>(["planned", "onHold", "dropped"]);
 
-export function tasteSignals(tracked: Record<string, TrackEntry>, progress: Record<string, Progress>, now: number): TasteSignal[] {
+export function tasteSignals(
+  tracked: Record<string, TrackEntry>,
+  progress: Record<string, Progress>,
+  now: number,
+  behaviour?: Behaviour,
+): TasteSignal[] {
   const evidence = watchEvidence(progress);
   const signals: TasteSignal[] = [];
   for (const entry of Object.values(tracked)) {
@@ -224,7 +232,7 @@ export function tasteSignals(tracked: Record<string, TrackEntry>, progress: Reco
     let stated: number;
     let origin: SignalOrigin;
     if (entry.rating !== null) {
-      stated = clamp((entry.rating - neutralRating) / ratingSpan, -1, 1);
+      stated = ratingWeights[clamp(Math.round(entry.rating), 1, ratingWeights.length - 1)];
       origin = "rating";
     } else if (entry.liked) {
       stated = likedWeight;
@@ -242,6 +250,22 @@ export function tasteSignals(tracked: Record<string, TrackEntry>, progress: Reco
       stated = entry.status ? statusWeights[entry.status] : 0;
       origin = "status";
     }
+    if (behaviour) {
+      const titleKey = key(entry);
+      const rewatches = Math.max(entry.rewatches ?? 0, behaviour.rewatched.get(titleKey) ?? 0);
+      const disliked = entry.rating !== null && entry.rating <= dislikedRating;
+      if (rewatches > 0 && !disliked) {
+        stated = Math.max(stated, rewatchWeight);
+        origin = "rewatched";
+      } else if (entry.rating === null) {
+        const pace = behaviour.pace.get(titleKey) ?? 0;
+        if (pace > 0 && stated > 0) stated = Math.min(1, stated + pace);
+        stated += behaviour.skipping.get(titleKey) ?? 0;
+      }
+    } else if ((entry.rewatches ?? 0) > 0 && !(entry.rating !== null && entry.rating <= dislikedRating)) {
+      stated = Math.max(stated, rewatchWeight);
+      origin = "rewatched";
+    }
     const at = Math.max(entry.updatedAt, seen?.lastAt ?? 0);
     const weight = faded(stated, at, now);
     if (Math.abs(weight) < weakestSignal) continue;
@@ -256,6 +280,27 @@ export function tasteSignals(tracked: Record<string, TrackEntry>, progress: Reco
     });
   }
   return signals.sort((a, b) => Math.abs(b.weight) - Math.abs(a.weight));
+}
+
+export function interestSignals(behaviour: Behaviour, tracked: Record<string, TrackEntry>, dismissed: Record<string, Dismissal>, now: number): TasteSignal[] {
+  const signals: TasteSignal[] = [];
+  for (const [titleKey, interest] of behaviour.interest) {
+    const existing = tracked[titleKey];
+    if (titleKey in dismissed || (existing && (existing.status !== null || existing.rating !== null))) continue;
+    const weight = interestWeight(interest, now);
+    if (weight < weakestInterest) continue;
+    const [type, id] = titleKey.split(":");
+    signals.push({
+      title: { type: type as MediaType, id: Number(id), title: interest.name, poster: null, backdrop: null, year: interest.year },
+      weight,
+      rated: false,
+      status: null,
+      origin: "interest",
+      at: interest.at,
+      keep: true,
+    });
+  }
+  return signals.sort((a, b) => b.weight - a.weight);
 }
 
 export function dismissalSignals(dismissed: Record<string, Dismissal>, tracked: Record<string, TrackEntry>, now: number): TasteSignal[] {

@@ -171,6 +171,10 @@ fn write_index(archive: &[u8], index: &PathBuf) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub(crate) fn index_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(FOLDER_NAME).join(INDEX_FILE_NAME)
+}
+
 fn lookup(index: &Path, id: u32) -> Option<ImdbRating> {
     let mut file = File::open(index).ok()?;
     let count = file.metadata().ok()?.len() / RECORD_BYTES as u64;

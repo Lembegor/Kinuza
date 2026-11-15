@@ -15,7 +15,8 @@ const catalogRoutes: CatalogRoute[] = [
   { id: "server", api: "https://kinuza.channeluza.com/kinuza/tmdb/3", images: "https://kinuza.channeluza.com/kinuza/i/t/p" },
 ];
 const routeStorageKey = "kinuza-catalog-route";
-const routeProbeTimeoutMs = 9000;
+const routeProbeTimeoutMs = 25000;
+const directPatienceMs = 6000;
 const requestTimeoutMs = 15000;
 const timeoutMessage = "tmdb_timeout";
 const routeRecheckMs = 6 * 60 * 60 * 1000;
@@ -62,8 +63,13 @@ function saveRoute(id: CatalogRouteId): void {
   }
 }
 
-function switchRoute(next: CatalogRoute): void {
+function logRoute(text: string): void {
+  void import("./backend").then(({ backend }) => backend.appLog(`catalog: ${text}`)).catch(() => undefined);
+}
+
+function switchRoute(next: CatalogRoute, reason: string): void {
   const changed = next !== route;
+  if (changed) logRoute(`route ${route.id} -> ${next.id} (${reason})`);
   route = next;
   saveRoute(next.id);
   if (changed) for (const listener of routeListeners) listener();
@@ -72,20 +78,23 @@ function switchRoute(next: CatalogRoute): void {
 async function probeRoute(candidate: CatalogRoute): Promise<boolean> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), routeProbeTimeoutMs);
+  const startedAt = Date.now();
   try {
     const key = apiKeyOverride ?? import.meta.env.VITE_TMDB_API_KEY ?? "";
     const response = await fetch(`${candidate.api}/movie/550?api_key=${encodeURIComponent(key)}&append_to_response=credits,images`, {
       signal: controller.signal,
     });
     if (response.status === keyRejectedStatus) return true;
-    if (!response.ok) return false;
+    if (!response.ok) throw new Error(`status ${response.status}`);
     const data = (await response.json()) as { id?: number; poster_path?: string | null };
-    if (data.id !== 550) return false;
-    if (!data.poster_path) return true;
-    const picture = await fetch(`${candidate.images}/w342${data.poster_path}`, { mode: "no-cors", signal: controller.signal });
-    await picture.blob();
+    if (data.id !== 550) throw new Error("unexpected answer");
+    if (data.poster_path) {
+      const picture = await fetch(`${candidate.images}/w342${data.poster_path}`, { mode: "no-cors", signal: controller.signal });
+      await picture.blob();
+    }
     return true;
-  } catch {
+  } catch (error) {
+    logRoute(`${candidate.id} did not answer in ${Math.round((Date.now() - startedAt) / 1000)}s: ${error instanceof Error ? error.message : String(error)}`);
     return false;
   } finally {
     clearTimeout(timer);
@@ -95,11 +104,26 @@ async function probeRoute(candidate: CatalogRoute): Promise<boolean> {
 export function checkCatalogRoute(): Promise<boolean> {
   routeCheck ??= (async () => {
     try {
-      for (const candidate of catalogRoutes) {
-        if (await probeRoute(candidate)) {
-          switchRoute(candidate);
+      const direct = probeRoute(catalogRoutes[0]);
+      const directInTime = await Promise.race([direct, new Promise<null>((resolve) => setTimeout(() => resolve(null), directPatienceMs))]);
+      if (directInTime) {
+        switchRoute(catalogRoutes[0], "answered");
+        return true;
+      }
+      for (let index = 1; index < catalogRoutes.length; index++) {
+        if (await probeRoute(catalogRoutes[index])) {
+          switchRoute(catalogRoutes[index], directInTime === false ? "direct failed" : "direct is slow");
+          if (directInTime === null) {
+            void direct.then((answered) => {
+              if (answered) switchRoute(catalogRoutes[0], "answered late");
+            });
+          }
           return true;
         }
+      }
+      if (await direct) {
+        switchRoute(catalogRoutes[0], "answered late");
+        return true;
       }
       return false;
     } finally {
@@ -712,7 +736,7 @@ export const tmdb = {
     const videos = toVideos(raw.videos?.results);
 
     const runtime: number | null =
-      type === "movie" ? raw.runtime || null : (raw.episode_run_time?.[0] ?? null);
+      type === "movie" ? raw.runtime || null : (raw.episode_run_time?.[0] || raw.last_episode_to_air?.runtime || raw.next_episode_to_air?.runtime || null);
 
     return {
       ...base,
@@ -790,9 +814,14 @@ export const tmdb = {
   bestOfGenre: (type: MediaType, genreId: number) =>
     list(`/discover/${type}`, type, { with_genres: genreId, sort_by: "vote_count.desc", "vote_average.gte": 7, "vote_count.gte": 400 }),
 
-  async personFilms(personId: number, role: "director" | "cast"): Promise<MediaItem[]> {
+  async personFilms(personId: number, role: "director" | "writer" | "cast"): Promise<MediaItem[]> {
     const raw = await request<Raw>(`/person/${personId}/movie_credits`);
-    const credits: Raw[] = role === "director" ? (raw.crew ?? []).filter((credit: Raw) => credit.job === "Director") : (raw.cast ?? []);
+    const credits: Raw[] =
+      role === "director"
+        ? (raw.crew ?? []).filter((credit: Raw) => credit.job === "Director")
+        : role === "writer"
+          ? (raw.crew ?? []).filter((credit: Raw) => credit.department === "Writing")
+          : (raw.cast ?? []);
     return toItems(credits, "movie");
   },
 
@@ -836,6 +865,11 @@ export const tmdb = {
     const byRelease = (a: CollectionPart, b: CollectionPart) =>
       Number(!a.releaseDate) - Number(!b.releaseDate) || a.releaseDate.localeCompare(b.releaseDate);
     return { id: raw.id, name: raw.name ?? "", parts: parts.sort(byRelease) };
+  },
+
+  async personName(id: number): Promise<string> {
+    const raw = await request<Raw>(`/person/${id}`);
+    return raw.name ?? "";
   },
 
   async person(id: number): Promise<Person> {

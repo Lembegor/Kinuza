@@ -86,6 +86,8 @@ struct Line {
     s: Option<String>,
     #[serde(default)]
     n: Vec<String>,
+    #[serde(default)]
+    f: Option<serde::de::IgnoredAny>,
 }
 
 fn now() -> u64 {
@@ -108,6 +110,7 @@ fn create_schema(connection: &Connection) -> rusqlite::Result<()> {
     connection.execute_batch(
         "CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
          CREATE TABLE IF NOT EXISTS titles(key INTEGER PRIMARY KEY, fame REAL NOT NULL, record TEXT NOT NULL);
+         CREATE TABLE IF NOT EXISTS featured(key INTEGER PRIMARY KEY);
          CREATE VIRTUAL TABLE IF NOT EXISTS names USING fts5(
              text, content='', contentless_delete=1, tokenize='unicode61 remove_diacritics 2', prefix='2 3');",
     )
@@ -116,8 +119,17 @@ fn create_schema(connection: &Connection) -> rusqlite::Result<()> {
 fn open(path: &Path) -> anyhow::Result<Connection> {
     let connection = Connection::open(path)?;
     connection.busy_timeout(Duration::from_secs(5))?;
-    connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
+    connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA journal_size_limit=67108864;")?;
+    let _ = connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
     create_schema(&connection)?;
+    if meta(&connection, "featured").is_none() {
+        connection.execute_batch(
+            "BEGIN;
+             INSERT OR IGNORE INTO featured(key) SELECT key FROM titles WHERE instr(record, '\"f\":{') > 0;
+             INSERT INTO meta(key, value) VALUES('featured', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+             COMMIT;",
+        )?;
+    }
     Ok(connection)
 }
 
@@ -161,7 +173,13 @@ fn apply_line(connection: &Connection, raw: &str) -> anyhow::Result<()> {
     connection.execute("DELETE FROM names WHERE rowid = ?1", [key])?;
     if line.x.is_some() {
         connection.execute("DELETE FROM titles WHERE key = ?1", [key])?;
+        connection.execute("DELETE FROM featured WHERE key = ?1", [key])?;
         return Ok(());
+    }
+    if line.f.is_some() {
+        connection.execute("INSERT OR IGNORE INTO featured(key) VALUES(?1)", [key])?;
+    } else {
+        connection.execute("DELETE FROM featured WHERE key = ?1", [key])?;
     }
     connection.execute(
         "INSERT INTO titles(key, fame, record) VALUES(?1, ?2, ?3)
@@ -206,6 +224,7 @@ fn build_full(dir: &Path, file: &Path, version: u64) -> anyhow::Result<PathBuf> 
     connection.execute_batch("BEGIN")?;
     let count = apply_file(&connection, file)?;
     set_version(&connection, version)?;
+    connection.execute("INSERT INTO meta(key, value) VALUES('featured', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value", [])?;
     connection.execute_batch("COMMIT")?;
     connection.execute_batch("INSERT INTO names(names) VALUES('optimize');")?;
     drop(connection);
@@ -411,6 +430,7 @@ async fn sync(app: &AppHandle) -> anyhow::Result<()> {
                 set_version(&transaction, delta.version)?;
                 transaction.commit()?;
                 tracing::info!("catalog: applied update {} ({count} titles)", delta.version);
+                let _ = connection.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
                 Ok(())
             })
             .await??;
@@ -445,6 +465,8 @@ async fn sync(app: &AppHandle) -> anyhow::Result<()> {
 }
 
 pub fn start(app: AppHandle) {
+    let opener = app.clone();
+    tauri::async_runtime::spawn_blocking(move || open_now(&opener));
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(FIRST_CHECK_AFTER).await;
         loop {
@@ -477,6 +499,44 @@ fn with_connection<T>(app: &AppHandle, run: impl FnOnce(&Connection) -> rusqlite
     match guard.as_ref() {
         Some(connection) if local_version(connection) > 0 => run(connection).map(Some).map_err(|error| error.to_string()),
         _ => Ok(None),
+    }
+}
+
+pub(crate) fn open_now(app: &AppHandle) {
+    if let Some(dir) = folder(app) {
+        if let Err(error) = ensure_open(app, &dir) {
+            tracing::warn!("catalog: could not open the local catalog: {error:#}");
+        }
+    }
+}
+
+pub(crate) fn featured_version(app: &AppHandle) -> Result<Option<u64>, String> {
+    with_connection(app, |connection| {
+        let any: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM featured)", [], |row| row.get(0))?;
+        Ok(any.then(|| local_version(connection)))
+    })
+    .map(Option::flatten)
+}
+
+pub(crate) fn with_featured_records<T>(app: &AppHandle, build: impl FnOnce(&mut dyn Iterator<Item = (f64, String)>) -> T) -> Result<Option<T>, String> {
+    with_connection(app, |connection| {
+        let mut statement = connection.prepare("SELECT t.fame, t.record FROM featured f JOIN titles t ON t.key = f.key")?;
+        let mut rows = statement.query_map([], |row| Ok((row.get::<_, f64>(0)?, row.get::<_, String>(1)?)))?;
+        let mut iterator = std::iter::from_fn(|| rows.next().and_then(Result::ok));
+        Ok(build(&mut iterator))
+    })
+}
+
+fn without_features(record: String) -> String {
+    if !record.contains("\"f\":{") {
+        return record;
+    }
+    match serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&record) {
+        Ok(mut value) => {
+            value.remove("f");
+            serde_json::to_string(&value).unwrap_or(record)
+        }
+        Err(_) => record,
     }
 }
 
@@ -516,7 +576,7 @@ pub async fn catalog_lookup(app: AppHandle, keys: Vec<TitleKey>) -> Result<Vec<S
             let mut records = Vec::with_capacity(wanted.len());
             for key in &wanted {
                 if let Some(record) = statement.query_row([key], |row| row.get::<_, String>(0)).optional()? {
-                    records.push(record);
+                    records.push(without_features(record));
                 }
             }
             Ok(records)
@@ -537,7 +597,7 @@ pub async fn catalog_search(app: AppHandle, query: String) -> Result<Vec<String>
                  WHERE names MATCH ?1 ORDER BY t.fame DESC LIMIT ?2",
             )?;
             let rows = statement.query_map(params![expression, SEARCH_LIMIT as i64], |row| row.get::<_, String>(0))?;
-            rows.collect()
+            rows.map(|row| row.map(without_features)).collect()
         })
         .map(Option::unwrap_or_default)
     })

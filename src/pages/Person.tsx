@@ -1,11 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { UserRound } from "lucide-react";
 import { CatalogError, EmptyState, PosterGrid } from "../components/Cards";
 import { formatDate } from "../lib/format";
 import { useT, type MessageKey } from "../lib/i18n";
 import { imageUrl, tmdb, type MediaItem } from "../lib/tmdb";
+import { imdbRatingOf } from "../lib/imdbRatings";
 import { useAsync } from "../lib/useAsync";
+import { useSettings, type CreditsSort } from "../state/settings";
 import { useGridColumns } from "../lib/useGridColumns";
 
 const collapsedRows = 2;
@@ -57,8 +59,69 @@ function Biography({ text }: { text: string }) {
   );
 }
 
-function Credits({ title, items }: { title: string; items: MediaItem[] }) {
+const creditsSorts: CreditsSort[] = ["rating", "popular", "newest", "oldest"];
+const typicalRating = 6.4;
+const imdbVotesWeight = 3000;
+const catalogVotesWeight = 200;
+
+function weighted(rating: number, votes: number, weight: number): number {
+  return (rating * votes + typicalRating * weight) / (votes + weight);
+}
+
+function useImdbScores(items: MediaItem[], wanted: boolean): Map<string, number> {
+  const [scores, setScores] = useState<Map<string, number>>(() => new Map());
+  useEffect(() => {
+    if (!wanted || items.length === 0) return;
+    let cancelled = false;
+    void Promise.all(
+      items.map(async (item) => {
+        const imdb = await imdbRatingOf(item.type, item.id).catch(() => null);
+        const key: string = `${item.type}:${item.id}`;
+        return { key, score: imdb ? weighted(imdb.rating, imdb.votes, imdbVotesWeight) : null };
+      }),
+    ).then((found) => {
+      if (cancelled) return;
+      const next = new Map<string, number>();
+      for (const { key, score } of found) if (score !== null) next.set(key, score);
+      setScores(next);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [items, wanted]);
+  return scores;
+}
+
+function sortCredits(items: MediaItem[], sort: CreditsSort, scores: Map<string, number>): MediaItem[] {
+  const year = (item: MediaItem) => Number(item.year) || 0;
+  const score = (item: MediaItem) =>
+    scores.get(`${item.type}:${item.id}`) ?? (item.voteCount > 0 ? weighted(item.rating, item.voteCount, catalogVotesWeight) : 0);
+  const sorted = [...items];
+  if (sort === "rating") sorted.sort((a, b) => score(b) - score(a) || b.voteCount - a.voteCount);
+  if (sort === "newest") sorted.sort((a, b) => (year(b) || 9999) - (year(a) || 9999));
+  if (sort === "oldest") sorted.sort((a, b) => (year(a) || 9999) - (year(b) || 9999));
+  return sorted;
+}
+
+function CreditsSortChips() {
   const { t } = useT();
+  const sort = useSettings((state) => state.creditsSort);
+  return (
+    <div className="chips person__sort" role="group" aria-label={t("person.sort.label")}>
+      {creditsSorts.map((option) => (
+        <button key={option} className={`chip chip--compact ${sort === option ? "is-active" : ""}`} aria-pressed={sort === option} onClick={() => useSettings.getState().patch({ creditsSort: option })}>
+          {t(`person.sort.${option}`)}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function Credits({ title, items: given }: { title: string; items: MediaItem[] }) {
+  const { t } = useT();
+  const sort = useSettings((state) => state.creditsSort);
+  const scores = useImdbScores(given, sort === "rating");
+  const items = useMemo(() => sortCredits(given, sort, scores), [given, sort, scores]);
   const [rows, setRows] = useState(collapsedRows);
   const gridRef = useRef<HTMLDivElement>(null);
   const columns = useGridColumns(gridRef);
@@ -116,6 +179,7 @@ export default function PersonPage() {
     { label: t("person.birthplace"), value: data.birthplace },
   ].filter((fact) => fact.value);
 
+  const hasCredits = data.directed.length > 0 || data.acted.length > 0;
   const directed = <Credits key="directed" title={t("person.directed")} items={data.directed} />;
   const acted = <Credits key="acted" title={t("person.acted")} items={data.acted} />;
 
@@ -139,6 +203,7 @@ export default function PersonPage() {
         </div>
       </section>
 
+      {hasCredits && <CreditsSortChips />}
       {data.department === actingDepartment ? [acted, directed] : [directed, acted]}
 
       {data.directed.length === 0 && data.acted.length === 0 && (

@@ -154,6 +154,8 @@ const subtitleFonts: Record<SubtitleFont, { mpv: string; css: string }> = {
 };
 const subtitleColors: Record<SubtitleColor, string> = { white: "#FFFFFF", yellow: "#FFE45C", cyan: "#8FE6FF", green: "#A6FF8F" };
 const seekRunGapMs = 1000;
+const countedSeekSeconds = 4;
+const fastRate = 1.05;
 const hintLifetimeMs = 900;
 const releaseDelayMs = 1500;
 const builtInAudioCodecs = new Set(["aac", "mp3", "opus", "vorbis", "flac"]);
@@ -848,6 +850,11 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
     })(),
   );
   const lastPlayedAt = useRef<number | null>(null);
+  const skippedSeconds = useRef(0);
+  const fastSeconds = useRef(0);
+  const introSeconds = useRef(0);
+  const segmentSkip = useRef(false);
+  const heardTracks = useRef<{ audio: string; subtitles: boolean }>({ audio: "", subtitles: false });
 
   const seasonEpisodes = useAsync(
     () => (session.season !== undefined ? tmdb.season(session.title.id, session.season) : Promise.resolve([])),
@@ -1139,6 +1146,9 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
   useEffect(() => {
     const startedAt = Date.now();
     const startPlayed = playedSeconds.current;
+    const startSkipped = skippedSeconds.current;
+    const startFast = fastSeconds.current;
+    const startIntro = introSeconds.current;
     let done = false;
     const finish = () => {
       if (done) return;
@@ -1157,6 +1167,11 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
           position: saved ? Math.round(saved.position) : undefined,
           duration: saved && saved.duration > 1 ? Math.round(saved.duration) : undefined,
           quality: activitySource.current?.quality,
+          skipped: Math.round(skippedSeconds.current - startSkipped) || undefined,
+          fast: Math.round(fastSeconds.current - startFast) || undefined,
+          intro: Math.round(introSeconds.current - startIntro) || undefined,
+          audio: heardTracks.current.audio || undefined,
+          subtitles: heardTracks.current.subtitles || undefined,
         },
         startedAt,
       );
@@ -1206,6 +1221,9 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
     const length = filmLength();
     if (!video || !Number.isFinite(length) || length <= 0) return;
     const target = Math.min(Math.max(0, time), Math.max(0, length - 0.5));
+    const jump = target - filmTime();
+    if (!segmentSkip.current && jump > countedSeekSeconds) skippedSeconds.current += jump;
+    if (segmentSkip.current && jump > 0) introSeconds.current += jump;
     if (conversionRef.current !== null) {
       setConversionStart(target);
       setBuffering(true);
@@ -1216,7 +1234,16 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
     setEnded(false);
     setCountdown(null);
     lastSeekAt.current = Date.now();
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const skipSegment = useCallback(
+    (end: number) => {
+      segmentSkip.current = true;
+      seekTo(end);
+      segmentSkip.current = false;
+    },
+    [seekTo],
+  );
 
   const showHint = useCallback((text: string) => setHint({ text, id: Date.now() }), []);
   useEffect(() => {
@@ -1971,7 +1998,7 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
         g: () => shiftSubtitles(-delayStepSeconds),
         h: () => shiftSubtitles(delayStepSeconds),
         s: () => {
-          if (skippable) seekTo(skippable.end);
+          if (skippable) skipSegment(skippable.end);
         },
         "?": () => setHotkeysShown((value) => !value),
         Escape: () => {
@@ -2435,6 +2462,11 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
     else if (file) void loadTorrentSubtitle(file, false);
   }, [metadataReady, media.tracks, media.ffmpegInstalled, audioTrack, subtitleOptions]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  heardTracks.current = {
+    audio: audioTrack !== null ? languageCode(media.tracks?.audio[audioTrack]?.language) : "",
+    subtitles: subtitleKey !== null,
+  };
+
   const selectRate = (value: number) => {
     if (videoRef.current) videoRef.current.playbackRate = value;
     setRate(value);
@@ -2699,7 +2731,10 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
       lastPlayedAt.current = time;
       if (previous !== null && playing && !buffering) {
         const step = time - previous;
-        if (step > 0 && step <= naturalStepSeconds * Math.max(1, rate)) playedSeconds.current += step;
+        if (step > 0 && step <= naturalStepSeconds * Math.max(1, rate)) {
+          playedSeconds.current += step;
+          if (rate > fastRate) fastSeconds.current += step;
+        }
       }
       if (Math.abs(time - shownTime.current) < clockStepSeconds) return;
       shownTime.current = time;
@@ -3178,7 +3213,7 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
 
       {skippable && !failed && !(upNextVisible && skippable.kind === "credits") && (
         <div className={`player__skips ${skipShown ? "" : "is-faded"}`} aria-hidden={!skipShown}>
-          <button className="player__skip" tabIndex={skipShown ? undefined : -1} onClick={() => seekTo(skippable.end)}>
+          <button className="player__skip" tabIndex={skipShown ? undefined : -1} onClick={() => skipSegment(skippable.end)}>
             <SkipForward size={16} />
             {t(skippable.sceneAfter ? "player.skip.toScene" : `player.skip.${skippable.kind}`)}
           </button>

@@ -64,6 +64,90 @@ export interface ImdbRating {
   votes: number;
 }
 
+export interface TasteSeed {
+  key: string;
+  weight: number;
+  keep?: boolean;
+  reason?: "genre" | "person" | "seen" | "other";
+  person?: number;
+  extra?: {
+    genres: number[];
+    keywords: number[];
+    directors: number[];
+    cast: number[];
+    recommendations: number[];
+    collection: number | null;
+    year: number;
+    language: string;
+  };
+}
+
+export interface TasteFilters {
+  kind?: "movie" | "tv";
+  anime?: boolean;
+  minYear?: number;
+  maxYear?: number;
+  minRuntime?: number;
+  maxRuntime?: number;
+  genres?: number[];
+  withoutGenres?: number[];
+  countries?: string[];
+  languages?: string[];
+}
+
+export interface TasteRequest {
+  seeds: TasteSeed[];
+  exclude?: string[];
+  filters?: TasteFilters;
+  minVotes?: number;
+  singleCluster?: boolean;
+  limit?: number;
+  avoidPeople?: number[];
+}
+
+export interface TasteShared {
+  group: "genre" | "keyword" | "tag" | "director" | "writer" | "cast" | "composer" | "camera" | "company" | "network" | "collection";
+  id: number;
+  weight: number;
+}
+
+export interface TasteCandidate {
+  key: string;
+  cluster: number;
+  ppr: number;
+  cosine: number;
+  nearest: { key: string; similarity: number }[];
+  negative: number;
+  quality: number;
+  imdb: number | null;
+  votes: number;
+  rating: number;
+  popularity: number;
+  year: number;
+  runtime: number;
+  episodes: number;
+  anime: boolean;
+  language: string;
+  countries: string[];
+  genres: number[];
+  people: number[];
+  collection: number | null;
+  shared: TasteShared[];
+  vector: [number, number][];
+  avoided: number;
+}
+
+export interface TasteResponse {
+  ready: boolean;
+  titles: number;
+  clusters: { seeds: string[]; weight: number; features: TasteShared[] }[];
+  candidates: TasteCandidate[];
+  seedsFound: number;
+  missing: string[];
+  profile: { movie: number; tv: number; anime: number; languages: [string, number][]; genres: [number, number][] };
+  people: { id: number; role: "director" | "writer" | "cast"; weight: number; titles: number }[];
+}
+
 export interface FileDialog {
   title: string;
   filterName: string;
@@ -373,6 +457,9 @@ export const backend = {
   stopEngine: () => call<void>("engine_stop"),
   activityAppend: (events: object[]) => call<number>("activity_append", { events }),
   activityRead: (since?: number) => call<object[]>("activity_read", { since: since ?? null }),
+  activityEdit: (remove: string[], upsert: object[]) => call<number>("activity_edit", { remove, upsert }),
+  activityPrune: (before: number) => call<number>("activity_prune", { before }),
+  tasteRecommend: (request: TasteRequest) => call<TasteResponse>("taste_recommend", { request }),
 };
 
 export async function onLaunchRequest(handler: (request: LaunchRequest) => void): Promise<() => void> {

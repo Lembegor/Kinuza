@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { create } from "zustand";
 import type { Dismissal } from "../lib/account";
-import { backend } from "../lib/backend";
+import { backend, isDesktop } from "../lib/backend";
 import { t } from "../lib/i18n";
 import { cachedCatalog } from "../lib/persistentCache";
 import { catalogLanguage, tmdb, type MediaItem, type MediaType, type TitleTaste } from "../lib/tmdb";
@@ -23,6 +23,8 @@ import {
   type TasteProfile,
   type TasteSignal,
 } from "../lib/taste";
+import { slotOf } from "../lib/behaviour";
+import { buildEngineFeed } from "./engineFeed";
 import { useLibrary, type Progress, type TrackEntry } from "./library";
 
 const msPerDay = 86_400_000;
@@ -44,11 +46,13 @@ const shortestRow = 5;
 const shortestCollectionRow = 3;
 const rowWorthyRating = 6.3;
 const likedRating = 7;
+const becauseWeight = 0.3;
 const freshDays = 270;
 const tasteMaxAgeMs = 14 * msPerDay;
 const listMaxAgeMs = 3 * msPerDay;
 const collectionMaxAgeMs = 7 * msPerDay;
 const feedMaxAgeMs = 12 * 60 * 60 * 1000;
+const simpleFeedMaxAgeMs = 30 * 60 * 1000;
 const rebuildDelayMs = 2500;
 const typeShareForThemes = 0.25;
 const strengths = { collection: 1.2, person: 0.8, theme: 0.9, fresh: 0.45, genre: 0.35 };
@@ -67,6 +71,8 @@ const filmOnlyGenres = new Set([27, 53, 10749, 36, 10402]);
 
 export interface FeedItem extends MediaItem {
   note?: string;
+  signals?: number[];
+  arm?: string;
 }
 
 export interface FeedRow {
@@ -275,8 +281,9 @@ function becauseTitle(signal: TasteSignal, entry: TrackEntry | undefined): strin
   const title = signal.title.title;
   if (signal.origin === "binged") return t("feed.because.binged", { title });
   if (signal.origin === "finished") return t("feed.because.finished", { title });
-  const liked = (entry?.rating ?? 0) >= likedRating || entry?.liked || signal.status === "completed";
-  if (liked) return t("feed.because.liked", { title });
+  if (signal.origin === "rewatched") return t("feed.because.rewatched", { title });
+  if ((entry?.rating ?? 0) >= likedRating || entry?.liked) return t("feed.because.liked", { title });
+  if (signal.status === "completed") return t("feed.because.watched", { title });
   return signal.status === "planned" ? t("feed.because.planned", { title }) : t("feed.because.watching", { title });
 }
 
@@ -285,12 +292,23 @@ function personTitle(person: PersonAffinity): string {
 }
 
 let tunedPreset = defaultPreset;
+let usedEngine = false;
 
 function currentWeights() {
   return weightPresets[tunedPreset] ?? weightPresets[defaultPreset];
 }
 
 async function buildFeed(tracked: Record<string, TrackEntry>, progress: Record<string, Progress>, dismissed: Record<string, Dismissal>): Promise<FeedRow[]> {
+  const engine = await buildEngineFeed(tracked, progress, dismissed).catch((error) => {
+    void backend.appLog(`feed: taste engine failed, using the simple one: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  });
+  usedEngine = engine !== null;
+  if (engine) return engine;
+  return buildClassicFeed(tracked, progress, dismissed);
+}
+
+async function buildClassicFeed(tracked: Record<string, TrackEntry>, progress: Record<string, Progress>, dismissed: Record<string, Dismissal>): Promise<FeedRow[]> {
   const now = Date.now();
   const signals = tasteSignals(tracked, progress, now);
   const chosen = chooseSeeds(signals, dismissalSignals(dismissed, tracked, now), now, seededRandom(dayNumber(now)));
@@ -327,7 +345,7 @@ async function buildFeed(tracked: Record<string, TrackEntry>, progress: Record<s
     push({ id: "collections", title: t("feed.collections"), items: unseen(ranked(collections, rowLimit), rowLimit) }, shortestCollectionRow);
   }
 
-  const liked = seeds.filter((seed) => seed.signal.weight > 0);
+  const liked = seeds.filter((seed) => seed.signal.weight >= becauseWeight);
   const strongest = liked[0];
   const latest = [...liked].sort((a, b) => b.signal.at - a.signal.at).find((seed) => seed !== strongest);
   for (const seed of [strongest, latest].filter((seed): seed is Seed => seed !== undefined).slice(0, becauseRowLimit)) {
@@ -365,6 +383,18 @@ function shuffled<T>(items: T[], random: () => number): T[] {
     [copy[index], copy[other]] = [copy[other], copy[index]];
   }
   return copy;
+}
+
+export async function classicHoldout(hidden: Set<string>): Promise<number | null> {
+  const { tracked, progress, dismissed } = useLibrary.getState();
+  const now = Date.now();
+  const visible = tasteSignals(tracked, progress, now).filter((signal) => !hidden.has(key(signal.title)));
+  const chosen = chooseSeeds(visible, dismissalSignals(dismissed, tracked, now), now, seededRandom(dayNumber(now)));
+  const gathered = await gather(chosen);
+  if (!gathered) return null;
+  const known = new Set([...Object.keys(tracked), ...Object.keys(dismissed)].filter((itemKey) => !hidden.has(itemKey)));
+  const ranked = rankCandidates(gathered.seeds, gathered.extra, gathered.profile, known, forYouLimit, currentWeights());
+  return ranked.filter((entry) => hidden.has(key(entry.item))).length;
 }
 
 export async function tuneWeights(): Promise<TuningResult | null> {
@@ -405,12 +435,13 @@ interface FeedState {
   rows: FeedRow[] | null;
   signature: string | null;
   builtAt: number;
+  byEngine: boolean;
   building: boolean;
   restored: boolean;
   tuning: TuningResult | null;
 }
 
-export const useFeed = create<FeedState>(() => ({ rows: null, signature: null, builtAt: 0, building: false, restored: false, tuning: null }));
+export const useFeed = create<FeedState>(() => ({ rows: null, signature: null, builtAt: 0, byEngine: false, building: false, restored: false, tuning: null }));
 
 let restoring: Promise<void> | null = null;
 
@@ -433,14 +464,23 @@ function restore(): Promise<void> {
       useFeed.setState({ tuning: null });
     }
     try {
-      const stored = feed ? (JSON.parse(feed.text) as { signature: string; language: string; builtAt: number; rows: FeedRow[] }) : null;
+      const stored = feed ? (JSON.parse(feed.text) as { signature: string; language: string; builtAt: number; byEngine?: boolean; rows: FeedRow[] }) : null;
       if (stored && stored.language === catalogLanguage() && Array.isArray(stored.rows)) {
-        useFeed.setState({ rows: stored.rows, signature: stored.signature, builtAt: stored.builtAt });
+        useFeed.setState({ rows: stored.rows, signature: stored.signature, builtAt: stored.builtAt, byEngine: stored.byEngine === true });
       }
     } catch {
       useFeed.setState({ rows: null });
     }
     useFeed.setState({ restored: true });
+    const { rows, byEngine } = useFeed.getState();
+    if (isDesktop && rows && !byEngine) {
+      void backend
+        .tasteRecommend({ seeds: [], limit: 1 })
+        .then((response) => {
+          if (response.ready) useFeed.setState({ builtAt: 0 });
+        })
+        .catch(() => undefined);
+    }
   });
   return restoring;
 }
@@ -455,12 +495,13 @@ async function rebuild(signature: string): Promise<void> {
     const { tracked, progress, dismissed } = useLibrary.getState();
     const rows = await buildFeed(tracked, progress, dismissed);
     const builtAt = Date.now();
-    useFeed.setState({ rows, signature, builtAt });
+    useFeed.setState({ rows, signature, builtAt, byEngine: usedEngine });
+    void backend.appLog(`feed: built ${rows.length} rows with the ${usedEngine ? "taste engine" : "simple engine"}`);
     void backend
-      .storeSet(feedStore, JSON.stringify({ signature, language: catalogLanguage(), builtAt, rows }))
+      .storeSet(feedStore, JSON.stringify({ signature, language: catalogLanguage(), builtAt, byEngine: usedEngine, rows }))
       .catch(() => undefined);
     const tuning = useFeed.getState().tuning;
-    if (!tuning || builtAt - tuning.testedAt > tuningEveryMs) void tuneWeights().catch(() => undefined);
+    if (!usedEngine && (!tuning || builtAt - tuning.testedAt > tuningEveryMs)) void tuneWeights().catch(() => undefined);
   } catch {
     useFeed.setState({ builtAt: Date.now() });
   } finally {
@@ -485,16 +526,18 @@ export function usePersonalFeed(): PersonalFeed {
   const progress = useLibrary((state) => state.progress);
   const loaded = useLibrary((state) => state.loaded);
   const dismissed = useLibrary((state) => state.dismissed);
-  const { rows: storedRows, signature: builtSignature, builtAt, restored } = useFeed();
+  const { rows: storedRows, signature: builtSignature, builtAt, byEngine, restored } = useFeed();
   const signals = useMemo(() => tasteSignals(tracked, progress, Date.now()), [tracked, progress]);
+  const [slot] = useState(() => slotOf(Date.now()));
   const signature = useMemo(
     () =>
       [
         catalogLanguage(),
+        `slot${slot}`,
         signals.map((signal) => `${key(signal.title)}=${signal.weight.toFixed(1)}`).join("|"),
         Object.keys(dismissed).sort().join(","),
       ].join("~"),
-    [signals, dismissed],
+    [signals, dismissed, slot],
   );
 
   // A Home instance keeps the rows it first showed: a rebuild never reshuffles the page under the user,
@@ -511,11 +554,11 @@ export function usePersonalFeed(): PersonalFeed {
 
   useEffect(() => {
     if (!loaded || !restored) return;
-    const stale = Date.now() - builtAt > feedMaxAgeMs;
+    const stale = Date.now() - builtAt > (byEngine || !isDesktop ? feedMaxAgeMs : simpleFeedMaxAgeMs);
     const changed = builtSignature !== signature;
     if (!changed && !stale) return;
     scheduleRebuild(signature, builtSignature === null);
-  }, [signature, loaded, restored, builtSignature, builtAt]);
+  }, [signature, loaded, restored, builtSignature, builtAt, byEngine]);
 
   const rows = useMemo(
     () =>

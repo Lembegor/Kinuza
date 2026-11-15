@@ -20,7 +20,7 @@ export interface Dismissal extends TitleRef {
 
 export const accountDataVersion = 3;
 export const tombstoneLifetimeMs = 90 * 24 * 60 * 60 * 1000;
-export const trackedFields = ["status", "rating", "liked"] as const;
+export const trackedFields = ["status", "rating", "liked", "rewatches"] as const;
 export type TrackedField = (typeof trackedFields)[number];
 
 export interface AccountData {
@@ -42,6 +42,10 @@ export function trackedRemovalKey(key: string): string {
 
 export function progressRemovalKey(key: string): string {
   return `progress:${key}`;
+}
+
+export function activityRemovalKey(id: string): string {
+  return `activity:${id}`;
 }
 
 export function dismissedRemovalKey(key: string): string {
@@ -177,6 +181,9 @@ export function mergeTrackEntry(a: TrackEntry, b: TrackEntry): TrackEntry {
   merged.addedAt = Math.min(a.addedAt || newer.addedAt, b.addedAt || newer.addedAt);
   merged.updatedAt = Math.max(a.updatedAt, b.updatedAt);
   if (merged.liked === undefined) delete merged.liked;
+  if (merged.rewatches === undefined) delete merged.rewatches;
+  const runtime = newer.runtime ?? a.runtime ?? b.runtime;
+  if (runtime) merged.runtime = runtime;
   if (JSON.stringify(merged) === JSON.stringify(a)) return a;
   return merged;
 }

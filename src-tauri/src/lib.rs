@@ -26,6 +26,7 @@ mod rutracker;
 mod server;
 mod storage;
 mod store;
+mod taste;
 mod tray;
 
 use std::{
@@ -145,6 +146,8 @@ pub fn run() {
             store::store_set,
             activity::activity_append,
             activity::activity_read,
+            activity::activity_edit,
+            activity::activity_prune,
             imdb::imdb_rating,
             imdb::imdb_ratings,
             tray::tray_configure,
@@ -157,6 +160,7 @@ pub fn run() {
             catalog::catalog_lookup,
             catalog::catalog_search,
             catalog::catalog_status,
+            taste::taste_recommend,
             online_subtitles::online_subtitles_download,
             ffmpeg::ffmpeg_status,
             ffmpeg::ffmpeg_install,
