@@ -93,6 +93,7 @@ const ALLOWED_PROPERTIES: &[&str] = &[
     "sid",
     "aid",
     "interpolation",
+    "video-sync",
     "volume-max",
     "sub-font",
     "sub-color",
@@ -122,6 +123,9 @@ const AUDIO_FILTERS: &[(&str, &str)] = &[
     ("dialogue", "lavfi=[highpass=f=100,equalizer=f=2600:t=q:w=1.1:g=6,equalizer=f=250:t=q:w=1:g=-3,acompressor=threshold=0.1:ratio=3:attack=10:release=200:makeup=2,alimiter=limit=0.95:level=false]"),
 ];
 
+const MPV_LOG_LEVEL: &str = "info";
+const MPV_LOG_LINES_PER_FILE: usize = 160;
+
 const STATS_PROPERTIES: &[&str] = &[
     "speed",
     "video-codec",
@@ -131,6 +135,21 @@ const STATS_PROPERTIES: &[&str] = &[
     "container-fps",
     "estimated-vf-fps",
     "display-fps",
+    "estimated-display-fps",
+    "vsync-jitter",
+    "video-sync",
+    "current-ao",
+    "audio-device",
+    "current-gpu-context",
+    "display-names",
+    "display-width",
+    "display-height",
+    "display-hidpi-scale",
+    "video-params/pixelformat",
+    "video-out-params/pixelformat",
+    "video-params/sig-peak",
+    "mpv-version",
+    "ffmpeg-version",
     "video-bitrate",
     "audio-codec-name",
     "audio-bitrate",
@@ -282,6 +301,7 @@ where
     tokio::spawn(async move {
         let mut lines = BufReader::new(reader).lines();
         let mut last_time = Instant::now() - TIME_EVENT_EVERY;
+        let mut journal = Journal::default();
         while let Ok(Some(line)) = lines.next_line().await {
             let Ok(message) = serde_json::from_str::<Value>(&line) else { continue };
             if message.get("event").is_none() {
@@ -293,6 +313,9 @@ where
                     };
                     let _ = reply.send(outcome);
                 }
+                continue;
+            }
+            if journal.note(&message) {
                 continue;
             }
             if message.get("name").and_then(Value::as_str) == Some("time-pos") {
@@ -318,7 +341,75 @@ where
     for (id, name) in OBSERVED.iter().enumerate() {
         let _ = commands.send(json!({ "command": ["observe_property", id + 1, name] }).to_string());
     }
+    let _ = commands.send(json!({ "command": ["request_log_messages", MPV_LOG_LEVEL] }).to_string());
     (commands, replies)
+}
+
+#[derive(Default)]
+struct Journal {
+    time: f64,
+    speed: Option<f64>,
+    paused: Option<bool>,
+    lines: usize,
+}
+
+impl Journal {
+    fn note(&mut self, message: &Value) -> bool {
+        let event = message.get("event").and_then(Value::as_str).unwrap_or("");
+        let data = message.get("data");
+        match (event, message.get("name").and_then(Value::as_str)) {
+            ("log-message", _) => {
+                self.log_line(message);
+                return true;
+            }
+            ("start-file", _) => self.lines = 0,
+            ("end-file", _) => {
+                let reason = message.get("reason").and_then(Value::as_str).unwrap_or("-");
+                tracing::info!("mpv: file ended at {:.0}s reason={reason}", self.time);
+            }
+            ("property-change", Some("time-pos")) => {
+                if let Some(time) = data.and_then(Value::as_f64) {
+                    self.time = time;
+                }
+            }
+            ("property-change", Some("speed")) => {
+                if let Some(speed) = data.and_then(Value::as_f64) {
+                    if self.speed.is_some_and(|last| (last - speed).abs() > f64::EPSILON) {
+                        tracing::info!("mpv: speed {speed:.2} at {:.0}s", self.time);
+                    }
+                    self.speed = Some(speed);
+                }
+            }
+            ("property-change", Some("pause")) => {
+                if let Some(paused) = data.and_then(Value::as_bool) {
+                    if self.paused.is_some_and(|last| last != paused) {
+                        tracing::info!("mpv: {} at {:.0}s", if paused { "paused" } else { "resumed" }, self.time);
+                    }
+                    self.paused = Some(paused);
+                }
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn log_line(&mut self, message: &Value) {
+        if self.lines >= MPV_LOG_LINES_PER_FILE {
+            return;
+        }
+        self.lines += 1;
+        let prefix = message.get("prefix").and_then(Value::as_str).unwrap_or("-");
+        let text = message.get("text").and_then(Value::as_str).unwrap_or("").trim_end();
+        if text.is_empty() {
+            return;
+        }
+        let ending = if self.lines == MPV_LOG_LINES_PER_FILE { " (further mpv lines for this file are skipped)" } else { "" };
+        match message.get("level").and_then(Value::as_str) {
+            Some("fatal" | "error") => tracing::error!("mpv[{prefix}]: {text}{ending}"),
+            Some("warn") => tracing::warn!("mpv[{prefix}]: {text}{ending}"),
+            _ => tracing::info!("mpv[{prefix}]: {text}{ending}"),
+        }
+    }
 }
 
 async fn send(app: &AppHandle, state: &MpvState, data_dir: &Path, command: Value) -> Result<Value, String> {
@@ -485,9 +576,15 @@ pub async fn mpv_audio_filter(app: AppHandle, state: State<'_, AppState>, mpv: S
 }
 
 #[tauri::command]
-pub async fn mpv_stats(app: AppHandle, state: State<'_, AppState>, mpv: State<'_, MpvState>) -> Result<HashMap<String, Value>, String> {
+pub async fn mpv_stats(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    mpv: State<'_, MpvState>,
+    names: Option<Vec<String>>,
+) -> Result<HashMap<String, Value>, String> {
     let mut stats = HashMap::new();
-    for name in STATS_PROPERTIES {
+    let wanted = STATS_PROPERTIES.iter().filter(|name| names.as_ref().is_none_or(|names| names.iter().any(|asked| asked == *name)));
+    for name in wanted {
         if let Ok(value) = send(&app, &mpv, &state.data_dir, json!(["get_property", name])).await {
             stats.insert((*name).to_owned(), value);
         }

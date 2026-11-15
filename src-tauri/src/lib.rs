@@ -17,6 +17,7 @@ mod host;
 mod imdb;
 mod launch;
 mod logging;
+mod machine;
 mod media_keys;
 mod metadata;
 mod mpv;
@@ -253,6 +254,7 @@ async fn build_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
         .join(DOWNLOAD_FOLDER_NAME);
 
     logging::start(&data_dir, &app.package_info().version.to_string());
+    machine::describe_in_background();
     let updated_from = store::snapshot_on_version_change(&data_dir, &app.package_info().version.to_string());
 
     let engine = Engine::start(

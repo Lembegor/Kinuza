@@ -187,7 +187,15 @@ const stillWatchingAfter = 3;
 const wheelVolumeStep = 0.05;
 
 let unattendedEpisodes = 0;
+let clockFallback = 0;
+const clockFallbacks = ["audio", "desync"];
 const diagnosticsEveryMs = 30_000;
+const firstDiagnosticsMs = 10_000;
+const setupLogDelayMs = 4000;
+const clockCheckMs = 3000;
+const clockFastRatio = 1.4;
+const clockJumpRatio = 12;
+const clockBadChecks = 2;
 const stallLogSeconds = 1.5;
 
 const skippableChapters: { kind: "intro" | "credits" | "recap"; pattern: RegExp }[] = [
@@ -1057,6 +1065,10 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
   }, [usingMpv, settings.smoothMotion, generation]);
 
   useEffect(() => {
+    if (usingMpv && clockFallback > 0) void mpv.set("video-sync", clockFallbacks[clockFallback - 1]).catch(() => undefined);
+  }, [usingMpv, generation]);
+
+  useEffect(() => {
     if (usingMpv) void mpv.set("audio-delay", audioDelay).catch(() => undefined);
   }, [usingMpv, audioDelay, generation]);
 
@@ -1234,6 +1246,7 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
     setEnded(false);
     setCountdown(null);
     lastSeekAt.current = Date.now();
+    void backend.appLog(`player: seek ${Math.round(target - jump)}s -> ${Math.round(target)}s${segmentSkip.current ? " (skip)" : ""}`);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const skipSegment = useCallback(
@@ -2503,7 +2516,7 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
     if (!usingMpv || !settings.autoSimplify || !playing || buffering || sessionQuality === "fast") return;
     const timer = setInterval(() => {
       void mpv
-        .stats()
+        .stats(["frame-drop-count", "decoder-frame-drop-count"])
         .then((stats) => {
           const dropped = Number(stats["frame-drop-count"] ?? 0) + Number(stats["decoder-frame-drop-count"] ?? 0);
           const check = dropCheck.current;
@@ -2537,7 +2550,7 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
 
   useEffect(() => {
     if (!usingMpv || !playing) return;
-    const timer = setInterval(() => {
+    const report = () => {
       void mpv
         .stats()
         .then((stats) => {
@@ -2549,13 +2562,78 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
             return Number.isFinite(value) ? value.toFixed(digits) : "-";
           };
           void backend.appLog(
-            `player: health at ${Math.round(filmTime())}s ${stats["video-codec"] ?? "-"} ${number("width")}x${number("height")} hwdec=${stats["hwdec-current"] ?? "-"} vo=${stats["current-vo"] ?? "-"} fps=${number("estimated-vf-fps", 1)}/${number("container-fps", 1)} display=${number("display-fps", 1)} bitrate=${Math.round(Number(stats["video-bitrate"] ?? 0) / 1000)}kbps cache_ahead=${number("demuxer-cache-duration", 1)}s dropped_last_30s=${fresh} dropped_total=${dropped} speed=${number("speed", 2)} quality=${sessionQuality}`,
+            `player: health at ${Math.round(filmTime())}s ${stats["video-codec"] ?? "-"} ${number("width")}x${number("height")} hwdec=${stats["hwdec-current"] ?? "-"} vo=${stats["current-vo"] ?? "-"} fps=${number("estimated-vf-fps", 1)}/${number("container-fps", 1)} display=${number("display-fps", 1)}/${number("estimated-display-fps", 1)} jitter=${number("vsync-jitter", 3)} sync=${stats["video-sync"] ?? "-"} ao=${stats["current-ao"] ?? "-"} bitrate=${Math.round(Number(stats["video-bitrate"] ?? 0) / 1000)}kbps cache_ahead=${number("demuxer-cache-duration", 1)}s dropped_last_30s=${fresh} dropped_total=${dropped} speed=${number("speed", 2)} quality=${sessionQuality}`,
           );
         })
         .catch(() => undefined);
-    }, diagnosticsEveryMs);
-    return () => clearInterval(timer);
+    };
+    const first = setTimeout(report, firstDiagnosticsMs);
+    const timer = setInterval(report, diagnosticsEveryMs);
+    return () => {
+      clearTimeout(first);
+      clearInterval(timer);
+    };
   }, [usingMpv, playing, sessionQuality]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!usingMpv || !metadataReady) return;
+    const timer = setTimeout(() => {
+      void mpv
+        .stats()
+        .then((stats) => {
+          const value = (name: string) => {
+            const raw = stats[name];
+            if (raw === undefined || raw === null || raw === "") return "-";
+            return Array.isArray(raw) ? raw.join("+") : String(raw);
+          };
+          void backend.appLog(
+            `player: setup gpu=${value("current-gpu-context")} vo=${value("current-vo")} hwdec=${value("hwdec-current")} display=${value("display-names")} ${value("display-width")}x${value("display-height")}@${value("display-fps")} scale=${value("display-hidpi-scale")} sync=${value("video-sync")} ao=${value("current-ao")} device=${value("audio-device")} audio=${value("audio-codec-name")} ${value("audio-params/samplerate")}Hz ${value("audio-params/channel-count")}ch pixels=${value("video-params/pixelformat")}->${value("video-out-params/pixelformat")} peak=${value("video-params/sig-peak")} window=${window.innerWidth}x${window.innerHeight}@${window.devicePixelRatio} focused=${document.hasFocus()} ${value("mpv-version")} ffmpeg=${value("ffmpeg-version")}`,
+          );
+        })
+        .catch(() => undefined);
+    }, setupLogDelayMs);
+    return () => clearTimeout(timer);
+  }, [usingMpv, metadataReady, source?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const clockWarned = useRef(false);
+  useEffect(() => {
+    if (!usingMpv || !playing || buffering) return;
+    const rateNow = () => videoRef.current?.playbackRate || 1;
+    let last = { time: filmTime(), at: performance.now(), rate: rateNow() };
+    let bad = 0;
+    const timer = setInterval(() => {
+      const now = { time: filmTime(), at: performance.now(), rate: rateNow() };
+      const wall = (now.at - last.at) / 1000;
+      const ratio = (now.time - last.time) / (wall * now.rate);
+      const steady =
+        now.rate === last.rate && !holdSpeed.current.active && Date.now() - lastSeekAt.current > clockCheckMs * 2 && ratio < clockJumpRatio;
+      last = now;
+      bad = steady && ratio > clockFastRatio ? bad + 1 : 0;
+      if (bad < clockBadChecks) return;
+      bad = 0;
+      if (clockWarned.current) return;
+      void mpv
+        .stats()
+        .catch(() => ({}) as Record<string, unknown>)
+        .then((stats) => {
+          const value = (name: string) => (stats[name] === undefined ? "-" : String(stats[name]));
+          const actual = Number(stats.speed);
+          if (Number.isFinite(actual) && Math.abs(actual - now.rate) > 0.01) {
+            void backend.appLog(`player: mpv speed was ${actual} while ${now.rate} was chosen, setting it back`);
+            void mpv.set("speed", now.rate).catch(() => undefined);
+            return;
+          }
+          const next = clockFallbacks[clockFallback];
+          if (next) clockFallback += 1;
+          else clockWarned.current = true;
+          void backend.appLog(
+            `player: video ran ${ratio.toFixed(1)}x faster than the clock at ${Math.round(now.time)}s speed=${value("speed")} sync=${value("video-sync")} display=${value("display-fps")}/${value("estimated-display-fps")} jitter=${value("vsync-jitter")} ao=${value("current-ao")} device=${value("audio-device")}${next ? `, switching video sync to ${next}` : ", nothing left to switch"}`,
+          );
+          if (next) void mpv.set("video-sync", next).catch(() => undefined);
+        });
+    }, clockCheckMs);
+    return () => clearInterval(timer);
+  }, [usingMpv, playing, buffering, source?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!buffering || !metadataReady || !source || playedSeconds.current < 5) return;

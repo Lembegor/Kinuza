@@ -1,0 +1,72 @@
+use std::process::Command;
+
+pub fn describe_in_background() {
+    std::thread::spawn(|| {
+        for line in describe() {
+            tracing::info!("machine: {line}");
+        }
+    });
+}
+
+fn run(program: &str, arguments: &[&str]) -> Option<String> {
+    let mut command = Command::new(program);
+    command.args(arguments);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    let output = command.output().ok()?;
+    output.status.success().then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+#[cfg(windows)]
+const WINDOWS_QUERY: &str = r#"[Console]::OutputEncoding=[Text.Encoding]::UTF8
+$os=Get-CimInstance Win32_OperatingSystem
+"os: $($os.Caption) $($os.Version) build $($os.BuildNumber) $($os.OSArchitecture)"
+$cpu=Get-CimInstance Win32_Processor | Select-Object -First 1
+"cpu: $($cpu.Name.Trim()) cores=$($cpu.NumberOfCores) threads=$($cpu.NumberOfLogicalProcessors)"
+"ram: $([math]::Round($os.TotalVisibleMemorySize/1MB,1)) GB, free $([math]::Round($os.FreePhysicalMemory/1MB,1)) GB"
+Get-CimInstance Win32_VideoController | ForEach-Object { "gpu: $($_.Name) driver=$($_.DriverVersion) mode=$($_.CurrentHorizontalResolution)x$($_.CurrentVerticalResolution)@$($_.CurrentRefreshRate)Hz" }
+Get-CimInstance Win32_DesktopMonitor | ForEach-Object { "monitor: $($_.Name) $($_.ScreenWidth)x$($_.ScreenHeight)" }
+Get-CimInstance Win32_SoundDevice | ForEach-Object { "sound: $($_.Name) status=$($_.Status)" }"#;
+
+#[cfg(windows)]
+fn describe() -> Vec<String> {
+    use winreg::{enums::HKEY_CURRENT_USER, enums::HKEY_LOCAL_MACHINE, RegKey};
+
+    let mut lines: Vec<String> = run("powershell", &["-NoProfile", "-NonInteractive", "-Command", WINDOWS_QUERY])
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let scheduling = RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey(r"SYSTEM\CurrentControlSet\Control\GraphicsDrivers")
+        .and_then(|key| key.get_value::<u32, _>("HwSchMode"))
+        .map(|mode| if mode == 2 { "on" } else { "off" })
+        .unwrap_or("default");
+    let directx = RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey(r"Software\Microsoft\DirectX\UserGpuPreferences")
+        .and_then(|key| key.get_value::<String, _>("DirectXUserGlobalSettings"))
+        .unwrap_or_else(|_| "default".to_owned());
+    lines.push(format!("graphics: gpu scheduling={scheduling} directx settings={directx}"));
+    lines
+}
+
+#[cfg(target_os = "macos")]
+fn describe() -> Vec<String> {
+    let memory = run("sysctl", &["-n", "hw.memsize"]).and_then(|bytes| bytes.parse::<f64>().ok()).unwrap_or(0.0);
+    vec![
+        format!("os: macOS {}", run("sw_vers", &["-productVersion"]).unwrap_or_default()),
+        format!("model: {}", run("sysctl", &["-n", "hw.model"]).unwrap_or_default()),
+        format!("cpu: {}", run("sysctl", &["-n", "machdep.cpu.brand_string"]).unwrap_or_default()),
+        format!("ram: {:.1} GB", memory / 1_073_741_824.0),
+    ]
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn describe() -> Vec<String> {
+    vec![format!("os: {}", run("uname", &["-sr"]).unwrap_or_default())]
+}

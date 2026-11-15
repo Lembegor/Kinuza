@@ -11,6 +11,7 @@ import "./styles/player.css";
 import "./styles/profile.css";
 import App from "./App";
 import { retryFailedImages } from "./lib/imageRetry";
+import { backend } from "./lib/backend";
 import { mpv } from "./lib/mpv";
 import { guardAppClose } from "./lib/lifecycle";
 import { startWatchedCleanup } from "./state/cleanup";
@@ -18,6 +19,17 @@ import { flushLibrary } from "./state/library";
 import { startDownloadNotifications, startEpisodeNotifications } from "./state/notifications";
 import { useSettings } from "./state/settings";
 import { keepTrayInStep } from "./state/tray";
+
+const describeFailure = (reason: unknown) =>
+  reason instanceof Error ? `${reason.message} ${reason.stack?.split("\n").slice(1, 4).join(" | ") ?? ""}` : String(reason);
+window.addEventListener("error", (event) => {
+  void backend.appLog(`ui error: ${describeFailure(event.error ?? event.message)} at ${event.filename}:${event.lineno}`);
+});
+window.addEventListener("unhandledrejection", (event) => {
+  void backend.appLog(`ui error: unhandled ${describeFailure(event.reason)}`);
+});
+window.addEventListener("blur", () => void backend.appLog("ui: window lost focus"));
+window.addEventListener("focus", () => void backend.appLog("ui: window got focus"));
 
 retryFailedImages();
 if (mpv.supported) void mpv.quit().catch(() => undefined);
