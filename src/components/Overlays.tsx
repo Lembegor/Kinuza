@@ -11,6 +11,7 @@ const toastIcons = { info: Info, success: CircleCheck, error: CircleAlert };
 const toastLifetimeMs = 5000;
 const errorToastLifetimeMs = 9000;
 const actionToastLifetimeMs = 10000;
+const longestHoldMs = 20000;
 
 function toastLifetime(toast: Toast): number {
   if (toast.action) return actionToastLifetimeMs;
@@ -20,7 +21,9 @@ function toastLifetime(toast: Toast): number {
 function ToastItem({ toast }: { toast: Toast }) {
   const { t } = useT();
   const dismiss = useUi((state) => state.dismissToast);
-  const [held, setHeld] = useState(false);
+  const watching = useUi((state) => state.player !== null);
+  const [hovered, setHovered] = useState(false);
+  const held = hovered && !watching;
   const left = useRef(toastLifetime(toast));
 
   useEffect(() => {
@@ -33,15 +36,20 @@ function ToastItem({ toast }: { toast: Toast }) {
     };
   }, [held, toast.id, dismiss]);
 
+  useEffect(() => {
+    const timer = setTimeout(() => dismiss(toast.id), toastLifetime(toast) + longestHoldMs);
+    return () => clearTimeout(timer);
+  }, [toast, dismiss]);
+
   const Icon = toastIcons[toast.kind];
   return (
     <div
       className={`toast toast--${toast.kind}`}
       role={toast.kind === "error" ? "alert" : "status"}
-      onMouseEnter={() => setHeld(true)}
-      onMouseLeave={() => setHeld(false)}
-      onFocus={() => setHeld(true)}
-      onBlur={() => setHeld(false)}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onFocus={() => setHovered(true)}
+      onBlur={() => setHovered(false)}
     >
       <Icon size={18} />
       <span>{toast.text}</span>
@@ -160,11 +168,12 @@ export function ConfirmDialog() {
 
 export function UpdateNotice() {
   const { status, version, notes, changes, progress, dismissed, install, dismiss } = useUpdater();
+  const watching = useUi((state) => state.player !== null);
   const { t, language } = useT();
   const shownChanges = changes
     .map((change) => ({ version: change.version, lines: change.lines[language] ?? change.lines.en ?? [] }))
     .filter((change) => change.lines.length > 0);
-  const visible = (status === "available" && !dismissed) || status === "downloading" || status === "installing";
+  const visible = (status === "available" && !dismissed && !watching) || status === "downloading" || status === "installing";
   if (!visible) return null;
 
   return (

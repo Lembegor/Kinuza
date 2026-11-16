@@ -17,6 +17,9 @@ where
 {
     args.into_iter().find_map(|argument| {
         let lower = argument.to_ascii_lowercase();
+        if lower.starts_with(&format!("{}://", crate::share_links::SCHEME)) {
+            return title_link(&argument).map(|value| LaunchRequest { kind: "title", value });
+        }
         if lower.starts_with("magnet:?") {
             return Some(LaunchRequest {
                 kind: "magnet",
@@ -36,4 +39,49 @@ where
         }
         None
     })
+}
+
+fn title_link(argument: &str) -> Option<String> {
+    let url = tauri::Url::parse(argument).ok()?;
+    if url.host_str()? != "title" {
+        return None;
+    }
+    let parts: Vec<&str> = url.path().trim_matches('/').split('/').collect();
+    let [kind, id] = parts.as_slice() else { return None };
+    if !matches!(*kind, "movie" | "tv") || id.is_empty() || id.len() > 10 || !id.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let mut value = format!("{kind}/{id}");
+    if *kind == "tv" {
+        let number = |name: &str| {
+            url.query_pairs()
+                .find(|(key, _)| key == name)
+                .and_then(|(_, found)| found.parse::<u32>().ok())
+                .filter(|found| *found < 10_000)
+        };
+        if let Some(season) = number("s") {
+            value.push_str(&format!("?s={season}"));
+            if let Some(episode) = number("e") {
+                value.push_str(&format!("&e={episode}"));
+            }
+        }
+    }
+    Some(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn title_links_are_read_and_checked() {
+        let read = |text: &str| from_args([text.to_owned()]).map(|request| (request.kind, request.value));
+        assert_eq!(read("kinuza://title/movie/1300968"), Some(("title", "movie/1300968".to_owned())));
+        assert_eq!(read("kinuza://title/tv/45790?s=2&e=7"), Some(("title", "tv/45790?s=2&e=7".to_owned())));
+        assert_eq!(read("kinuza://title/tv/45790/"), Some(("title", "tv/45790".to_owned())));
+        assert_eq!(read("kinuza://title/person/1"), None);
+        assert_eq!(read("kinuza://title/movie/12a"), None);
+        assert_eq!(read("kinuza://evil/movie/1"), None);
+        assert_eq!(read("kinuza://title/movie/1/2"), None);
+    }
 }

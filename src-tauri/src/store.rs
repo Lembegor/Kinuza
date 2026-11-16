@@ -95,7 +95,7 @@ pub async fn store_set(state: State<'_, AppState>, name: String, value: String, 
 fn save_document(folder: &Path, name: &str, value: &str, allow_shrink: bool) -> Result<(), String> {
     let guarded = GUARDED_STORES.contains(&name);
     let before = if guarded {
-        document_path(folder, name).ok().and_then(|path| fs::read_to_string(path).ok()).and_then(|text| Counts::of(&text))
+        document_path(folder, name).ok().and_then(|path| retrying(|| fs::read_to_string(&path)).ok()).and_then(|text| Counts::of(&text))
     } else {
         None
     };
@@ -120,9 +120,9 @@ fn save_document(folder: &Path, name: &str, value: &str, allow_shrink: bool) -> 
             }
         }
     }
-    write_document(folder, name, value).map_err(|error| {
+    retrying(|| write_document(folder, name, value)).map_err(|error| {
         tracing::warn!("store: could not save {name}: {error}");
-        "store_unwritable".to_owned()
+        if is_transient(&error) { ERROR_BUSY.to_owned() } else { "store_unwritable".to_owned() }
     })?;
     if let (Some(before), Some(after)) = (before, after) {
         if before != after {
@@ -183,12 +183,40 @@ pub fn snapshot_on_version_change(data_dir: &Path, version: &str) -> Option<Stri
     had_data.then_some(previous)
 }
 
+const TRANSIENT_ATTEMPTS: u32 = 6;
+const TRANSIENT_PAUSE_MS: u64 = 120;
+const ERROR_BUSY: &str = "store_busy";
+
+fn is_transient(error: &std::io::Error) -> bool {
+    matches!(error.kind(), std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock)
+        || matches!(error.raw_os_error(), Some(code) if TRANSIENT_OS_ERRORS.contains(&code))
+}
+
+#[cfg(unix)]
+const TRANSIENT_OS_ERRORS: &[i32] = &[libc::EMFILE, libc::ENFILE, libc::EAGAIN, libc::EINTR, libc::EBUSY];
+#[cfg(windows)]
+const TRANSIENT_OS_ERRORS: &[i32] = &[4, 32, 33];
+
+fn retrying<T>(mut action: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    let mut attempt = 1;
+    loop {
+        match action() {
+            Err(error) if is_transient(&error) && attempt < TRANSIENT_ATTEMPTS => {
+                std::thread::sleep(std::time::Duration::from_millis(TRANSIENT_PAUSE_MS * u64::from(attempt)));
+                attempt += 1;
+            }
+            other => return other,
+        }
+    }
+}
+
 fn read_document(folder: &Path, name: &str) -> Result<Option<StoredDocument>, String> {
     let path = document_path(folder, name)?;
     let main_missing = !path.exists();
     let mut damaged = false;
+    let mut busy = false;
     for (index, candidate) in candidates(folder, name, &path).iter().enumerate() {
-        match fs::read_to_string(candidate) {
+        match retrying(|| fs::read_to_string(candidate)) {
             Ok(text) if is_json(&text) => {
                 let recovered = index > 1 || (index == 1 && !main_missing);
                 if index > 0 {
@@ -206,12 +234,18 @@ fn read_document(folder: &Path, name: &str) -> Result<Option<StoredDocument>, St
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => {
-                damaged = true;
+                if is_transient(&error) {
+                    busy = true;
+                } else {
+                    damaged = true;
+                }
                 tracing::warn!("store: could not read {}: {error}", candidate.display());
             }
         }
     }
-    if damaged {
+    if busy {
+        Err(ERROR_BUSY.to_owned())
+    } else if damaged {
         Err("store_unreadable".to_owned())
     } else {
         Ok(None)
@@ -503,6 +537,22 @@ mod tests {
         assert!(names.contains(&"library-before-1.0.0-from-0.9.0.json".to_owned()));
         assert!(names.contains(&"library-before-1.1.0-from-1.0.0.json".to_owned()));
         assert_eq!(names.len(), 2);
+    }
+
+    #[test]
+    fn running_out_of_files_is_temporary() {
+        #[cfg(unix)]
+        let code = libc::EMFILE;
+        #[cfg(windows)]
+        let code = 4;
+        assert!(is_transient(&std::io::Error::from_raw_os_error(code)));
+        assert!(!is_transient(&std::io::Error::from(std::io::ErrorKind::NotFound)));
+        let mut calls = 0;
+        let result = retrying(|| {
+            calls += 1;
+            if calls < 3 { Err(std::io::Error::from_raw_os_error(code)) } else { Ok(calls) }
+        });
+        assert_eq!(result.unwrap(), 3);
     }
 
     #[test]

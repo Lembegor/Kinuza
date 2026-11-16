@@ -1,5 +1,34 @@
 use std::process::Command;
 
+#[cfg(unix)]
+const OPEN_FILES_WANTED: [u64; 4] = [65_536, 24_576, 10_240, 4_096];
+
+#[cfg(unix)]
+pub fn raise_open_files() {
+    let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
+        tracing::warn!("machine: could not read the open files limit");
+        return;
+    }
+    let before = limit.rlim_cur as u64;
+    let ceiling = limit.rlim_max as u64;
+    for wanted in OPEN_FILES_WANTED {
+        let target = wanted.min(ceiling);
+        if target <= before {
+            break;
+        }
+        let next = libc::rlimit { rlim_cur: target as libc::rlim_t, rlim_max: limit.rlim_max };
+        if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &next) } == 0 {
+            tracing::info!("machine: open files limit {before} -> {target}");
+            return;
+        }
+    }
+    tracing::info!("machine: open files limit stays {before}");
+}
+
+#[cfg(not(unix))]
+pub fn raise_open_files() {}
+
 pub fn describe_in_background() {
     std::thread::spawn(|| {
         for line in describe() {

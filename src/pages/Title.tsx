@@ -26,6 +26,7 @@ import { Gallery } from "../components/Gallery";
 import { RatingStars, StatusMenu } from "../components/TrackControls";
 import { TitleTime } from "../components/profile/TitleTime";
 import { TrailerOverlay } from "../components/TrailerOverlay";
+import { ShareButton } from "../components/ShareButton";
 import { backend, describeError, isDesktop } from "../lib/backend";
 import { formatBytes, formatDate, formatRuntime, formatSpeed } from "../lib/format";
 import { t, useT } from "../lib/i18n";
@@ -839,7 +840,10 @@ export default function TitlePage() {
     [data?.id, data?.seasons, type],
   );
   const layout = layoutState.data ?? null;
-  const [focusEpisode, setFocusEpisode] = useState<number | null>(null);
+  const [focusEpisode, setFocusEpisode] = useState<number | null>(() => {
+    const asked = Number(searchParams.get("e"));
+    return Number.isInteger(asked) && asked > 0 ? asked : null;
+  });
   const { openAddSource, setPageTarget } = useUi.getState();
 
   const firstSeason = data?.seasons.find((season) => season.seasonNumber !== specialsSeason)?.seasonNumber ?? data?.seasons[0]?.seasonNumber ?? 1;
@@ -1059,6 +1063,7 @@ export default function TitlePage() {
                   {t("title.trailer")}
                 </button>
               )}
+              <ShareButton type={type} id={id} name={shownTitle} />
             </div>
             {(type === "tv" || !bestMovieSource) && <TrackerHint details={data} picked={pick.entry} onFind={() => openAddSource({ target })} />}
             <RatingStars title={shownRef} />

@@ -5,6 +5,20 @@ export type ChangelogLine = string | { heading: string };
 export type Changelog = Record<AppLanguage, ChangelogLine[]>;
 
 export const changelog: Record<string, Changelog> = {
+  "0.6.1": {
+    ru: [
+      "Добавлена возможность делиться ссылками на тайтлы.",
+      "Минорные исправления.",
+    ],
+    en: [
+      "You can now share links to titles.",
+      "Minor fixes.",
+    ],
+    uk: [
+      "Додано можливість ділитися посиланнями на тайтли.",
+      "Дрібні виправлення.",
+    ],
+  },
   "0.6.0": {
     ru: [
       "Поиск раздач сразу на RuTracker, NNM-Club, YTS, EZTV, AniLiberty и Sukebei.",

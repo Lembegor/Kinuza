@@ -100,7 +100,17 @@ function useTorrentDrop(): boolean {
   return dragging;
 }
 
+let lastLaunch = { key: "", at: 0 };
+const repeatedLaunchMs = 4000;
+
 function openLaunchRequest(request: LaunchRequest): void {
+  const key = `${request.kind}:${request.value}`;
+  if (key === lastLaunch.key && Date.now() - lastLaunch.at < repeatedLaunchMs) return;
+  lastLaunch = { key, at: Date.now() };
+  if (request.kind === "title") {
+    if (/^(movie|tv)\/\d+(\?s=\d+(&e=\d+)?)?$/.test(request.value)) window.location.hash = `#/title/${request.value}`;
+    return;
+  }
   const { pageTarget, openAddSource } = useUi.getState();
   const source = request.kind === "magnet" ? { magnet: request.value } : { filePath: request.value };
   openAddSource({ target: null, suggested: pageTarget, ...source });

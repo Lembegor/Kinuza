@@ -108,9 +108,11 @@ import {
   subtitleFileFace,
   voiceFace,
   voicedBy,
+  type SoundInfo,
   type TrackGuess,
   type VoiceLike,
 } from "../lib/trackNames";
+import { audioWish, subtitleWish, wantedAudioLanguage } from "../lib/voicePreference";
 import { autoPlay, choosePick, commitPick, healthOf, inspectPick, requestPick, useAutoPick, type PickCandidate, type PickTarget } from "../state/autoPick";
 import { sourceNames } from "../lib/trackers";
 
@@ -314,6 +316,20 @@ const probeWaitMs = 1500;
 const heldStartLimitMs = 4000;
 const originalTrackTitle = /оригинал|original|\borig\b/i;
 const commentaryTrackTitle = /коммент|comment/i;
+const voiceKindOrder = ["dub", "mvo", "dvo", "avo", "vo"];
+
+function isOriginalTrack(track: AudioTrackInfo): boolean {
+  return track.isOriginal || originalTrackTitle.test(track.title);
+}
+
+function bestOf(list: AudioTrackInfo[], infoOf: (track: AudioTrackInfo) => SoundInfo, preferDefault: boolean): AudioTrackInfo | undefined {
+  const rank = (track: AudioTrackInfo) => {
+    const kind = infoOf(track).kind ?? "";
+    const place = voiceKindOrder.indexOf(kind);
+    return (place < 0 ? voiceKindOrder.length : place) * 2 + (preferDefault && track.isDefault ? 0 : 1);
+  };
+  return [...list].sort((a, b) => rank(a) - rank(b))[0];
+}
 const nextEpisodeCountdownSeconds = 8;
 const stuckEndSeconds = 1.5;
 const stuckEndWaitMs = 2500;
@@ -1074,7 +1090,7 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
   useEffect(() => {
     if (!usingMpv || !url || loadedUrl.current === url) return;
     loadedUrl.current = url;
-    const wanted = preferences?.audioLanguage || settings.audioLanguage || originalLanguage;
+    const wanted = wantedAudioLanguage(preferences, originalLanguage) || originalLanguage;
     void mpv.set("alang", wanted ? [wanted, ...threeLetterCodes(wanted)].join(",") : "").catch(() => undefined);
     mpvPlayer.video.prime(volume, muted, rate);
     setStartHeld(true);
@@ -1783,7 +1799,8 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
     if (voicedFor.current === source.id) return;
     const tracks = media.tracks?.audio;
     if (!tracks || tracks.length === 0) return;
-    const wanted = preferences?.audioLanguage || settings.audioLanguage;
+    const wish = audioWish(preferences, originalLanguage);
+    const wanted = wish?.language ?? "";
     voicedFor.current = source.id;
     if (!wanted || wanted === originalLanguage) return;
     if (tracks.some((track) => languageCode(track.language) === wanted)) return;
@@ -1798,7 +1815,7 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
         void backend.appLog(`player: no voice donor found for ${source.pickId ?? source.infoHash.slice(0, 8)}`);
         return;
       }
-      const remembered = (preferences?.audioAuthor || preferences?.releaseVoice || "").toLowerCase();
+      const remembered = (preferences?.audioAuthor || preferences?.releaseVoice || wish?.author || "").toLowerCase();
       const order: (string | null)[] = ["dub", "mvo", "dvo", "avo", "vo", null];
       const voices = (donor.voiceTracks ?? []).filter((voice) => voice.language === wanted && voice.kind !== "original");
       const voice =
@@ -2329,6 +2346,8 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
       subtitleTitle: track?.title ?? "",
       subtitleSigns: track ? showsSignsOnly(track) : false,
     });
+    const chosenLanguage = language || (track ? languageCode(track.language) : "");
+    if (chosenLanguage) useSettings.getState().patch({ lastSubtitles: { language: chosenLanguage, signs: track ? showsSignsOnly(track) : false } });
   };
 
   const shiftSubtitles = (step: number) => {
@@ -2443,7 +2462,7 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
     setOnlinePanel(true);
     setOnline({ loading: true, items: null, error: "" });
     try {
-      const wanted = [preferences?.subtitleLanguage, settings.subtitleLanguage, language, "ru", "uk", "en", originalLanguage].filter(
+      const wanted = [subtitleWish(preferences).language, settings.subtitleLanguage, language, "ru", "uk", "en", originalLanguage].filter(
         (code): code is string => Boolean(code) && code !== subtitlesOff,
       );
       const languages = [...new Set(wanted)].slice(0, onlineLanguagesAsked);
@@ -2560,32 +2579,34 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
   useEffect(() => {
     const tracks = media.tracks?.audio;
     if (!tracks || tracks.length === 0 || !metadataReady || pickedAudio.current || !probeSettled) return;
-    const asked = preferences?.audioLanguage || settings.audioLanguage;
+    const wish = audioWish(preferences, originalLanguage);
+    const asked = wish && !wish.original ? wish.language : "";
     if (!asked && !originalSettled) return;
     const wanted = asked || originalLanguage;
-    const isOriginalTrack = (track: AudioTrackInfo) => track.isOriginal || originalTrackTitle.test(track.title);
     const pickFrom = (list: AudioTrackInfo[]) =>
       list.find((track) => preferences?.audioTitle && track.title === preferences.audioTitle) ??
       (asked ? undefined : list.find(isOriginalTrack)) ??
       list.find((track) => (usingMpv ? track.isDefault : playsUnconverted(track))) ??
       list[0];
+    const infoOf = (track: AudioTrackInfo) => soundInfo(track, locale, originalLanguage || undefined, audioGuess(track));
+    const voiced = (list: AudioTrackInfo[]) => list.filter((track) => !commentaryTrackTitle.test(track.title) && infoOf(track).kind !== "commentary");
     const inLanguage = wanted ? tracks.filter((track) => languageCode(track.language) === wanted) : [];
-    const savedVoice: VoiceLike | null = preferences?.audioAuthor
-      ? { code: preferences.audioLanguage ?? "", kind: (preferences.audioKind || null) as VoiceLike["kind"], author: preferences.audioAuthor }
-      : null;
-    const remembered =
-      (preferences?.audioTitle ? tracks.find((track) => track.title === preferences.audioTitle) : undefined) ??
-      (savedVoice
-        ? tracks.find(
-            (track) =>
-              !commentaryTrackTitle.test(track.title) && sameVoice(soundInfo(track, locale, originalLanguage || undefined, audioGuess(track)), savedVoice),
-          )
-        : undefined);
+    const savedVoice: VoiceLike | null =
+      wish && !wish.original && wish.author ? { code: wish.language, kind: (wish.kind || null) as VoiceLike["kind"], author: wish.author } : null;
+    const sameStudio = savedVoice ? voiced(tracks).find((track) => sameVoice(infoOf(track), savedVoice)) : undefined;
+    const anyDub = wish && !wish.original && wish.kind === "dub" ? voiced(inLanguage).find((track) => infoOf(track).kind === "dub") : undefined;
+    const bestVoice = asked && !wish?.fromTitle ? bestOf(voiced(inLanguage), infoOf, usingMpv) : undefined;
+    const remembered = (preferences?.audioTitle ? tracks.find((track) => track.title === preferences.audioTitle) : undefined) ?? sameStudio ?? anyDub;
+    const fallbackLanguage = settings.audioLanguage && settings.audioLanguage !== wanted ? settings.audioLanguage : "";
+    const inFallback = fallbackLanguage ? voiced(tracks.filter((track) => languageCode(track.language) === fallbackLanguage)) : [];
     const choice =
       remembered ??
-      pickFrom(inLanguage.filter((track) => !commentaryTrackTitle.test(track.title))) ??
+      bestVoice ??
+      pickFrom(voiced(inLanguage)) ??
       pickFrom(inLanguage) ??
-      (asked ? undefined : tracks.find(isOriginalTrack)) ??
+      bestOf(inFallback, infoOf, usingMpv) ??
+      tracks.find(isOriginalTrack) ??
+      (originalLanguage ? tracks.find((track) => languageCode(track.language) === originalLanguage) : undefined) ??
       tracks.find((track) => track.isDefault) ??
       tracks[0];
     pickedAudio.current = true;
@@ -2651,6 +2672,10 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
       audioKind: voice.kind ?? "",
       ...(voice.author ? { releaseVoice: voice.author } : {}),
     });
+    if (voice.kind !== "commentary") {
+      const original = isOriginalTrack(track) || voice.kind === "original" || (Boolean(voice.code) && voice.code === originalLanguage);
+      useSettings.getState().patch({ lastVoice: { language: voice.code, author: voice.author, kind: voice.kind ?? "", original } });
+    }
   };
 
   useConvertedAudio(videoRef, source ?? null, heardConverted, volume, muted, audioDelay);
@@ -2661,7 +2686,8 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
     if (media.tracks && media.tracks.audio.length > 0 && audioTrack === null) return;
     subtitlesDecided.current = true;
 
-    const asked = preferences?.subtitleLanguage || settings.subtitleLanguage;
+    const wish = subtitleWish(preferences);
+    const asked = wish.language;
     const wanted = asked || language;
     if (wanted === subtitlesOff) return;
     const savedTitle = preferences?.subtitleTitle;
@@ -2679,7 +2705,7 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
 
     const embedded = (media.tracks?.subtitles ?? []).filter((track) => showable(track) && languageCode(track.language) === wanted);
     const full =
-      (preferences?.subtitleSigns ? embedded.find((track) => showsSignsOnly(track)) : undefined) ??
+      (wish.signs ? embedded.find((track) => showsSignsOnly(track)) : undefined) ??
       embedded.find((track) => track.isText && !showsSignsOnly(track)) ??
       embedded.find((track) => !showsSignsOnly(track)) ??
       embedded[0];

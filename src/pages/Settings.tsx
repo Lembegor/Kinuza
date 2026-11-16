@@ -365,7 +365,7 @@ export default function Settings() {
               className="select select--large"
               aria-label={t("settings.viewing.audio")}
               value={settings.audioLanguage}
-              onChange={(event) => settings.patch({ audioLanguage: event.target.value })}
+              onChange={(event) => settings.patch({ audioLanguage: event.target.value, lastVoice: null })}
             >
               <option value="">{t("settings.viewing.audio.original")}</option>
               {appLanguages.map((code) => (
@@ -386,7 +386,7 @@ export default function Settings() {
               className="select select--large"
               aria-label={t("settings.viewing.subtitles")}
               value={settings.subtitleLanguage}
-              onChange={(event) => settings.patch({ subtitleLanguage: event.target.value })}
+              onChange={(event) => settings.patch({ subtitleLanguage: event.target.value, lastSubtitles: null })}
             >
               <option value="">{t("settings.viewing.subtitles.interface")}</option>
               <option value={subtitlesOff}>{t("settings.viewing.subtitles.off")}</option>

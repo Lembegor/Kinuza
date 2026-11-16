@@ -50,6 +50,8 @@ export interface Settings {
   language: AppLanguage | "";
   audioLanguage: string;
   subtitleLanguage: string;
+  lastVoice: VoiceChoice | null;
+  lastSubtitles: SubtitleChoice | null;
   downloadLimit: number;
   uploadLimit: number;
   maxActiveDownloads: number;
@@ -101,6 +103,8 @@ const defaults: Settings = {
   language: "",
   audioLanguage: "",
   subtitleLanguage: "",
+  lastVoice: null,
+  lastSubtitles: null,
   downloadLimit: 0,
   uploadLimit: 0,
   maxActiveDownloads: 0,
@@ -158,15 +162,34 @@ function applyDownloadPolicy(settings: Settings): void {
     .catch((error) => report("downloads", "journal.settings.policy", error));
 }
 
+export interface VoiceChoice {
+  language: string;
+  author: string;
+  kind: string;
+  original: boolean;
+}
+
+export interface SubtitleChoice {
+  language: string;
+  signs: boolean;
+}
+
 interface SettingsState extends Settings {
   loaded: boolean;
-  load: () => Promise<void>;
+  load: (attempt?: number) => Promise<void>;
   patch: (change: Partial<Settings>) => void;
 }
 
 let earlyChanges: Partial<Settings> = {};
 let savingBlocked = false;
 let saveFailureShown = false;
+let waitingForStore = false;
+const storeBusyRetryMs = 3000;
+const storeBusyAttempts = 40;
+
+function storeBusy(error: unknown): boolean {
+  return String(error).includes("store_busy");
+}
 
 function persist(settings: Settings): void {
   if (savingBlocked) return;
@@ -192,15 +215,27 @@ export const useSettings = create<SettingsState>((set, get) => ({
   ...defaults,
   loaded: false,
 
-  async load() {
+  async load(attempt = 0) {
     try {
       const document = await backend.storeGet(storeName);
       const parsed: unknown = document ? JSON.parse(document.text) : {};
       const stored: Partial<Settings> = upgrade(typeof parsed === "object" && parsed !== null ? (parsed as Partial<Settings>) : {});
+      const recovering = waitingForStore;
+      waitingForStore = false;
+      savingBlocked = false;
       set({ ...defaults, ...stored, ...earlyChanges, loaded: true });
       if (Object.keys(earlyChanges).length > 0) persist(currentSettings(get()));
+      if (recovering) void backend.appLog("settings: read after the store was busy");
     } catch (error) {
       savingBlocked = true;
+      if (storeBusy(error) && attempt < storeBusyAttempts) {
+        if (!waitingForStore) report("settings", "journal.settings.load", error);
+        waitingForStore = true;
+        set({ ...earlyChanges, loaded: true });
+        setTimeout(() => void get().load(attempt + 1), storeBusyRetryMs);
+        return;
+      }
+      waitingForStore = false;
       report("settings", "journal.settings.load", error);
       set({ ...earlyChanges, loaded: true });
       useUi.getState().toast(t("settings.loadFailed"), "error");
@@ -215,7 +250,7 @@ export const useSettings = create<SettingsState>((set, get) => ({
     set(change);
     if ("tmdbKey" in change) setApiKeyOverride(get().tmdbKey);
     if ("language" in change) setCatalogLanguage(get().language || fallbackCatalogLanguage);
-    if (!get().loaded) {
+    if (!get().loaded || waitingForStore) {
       earlyChanges = { ...earlyChanges, ...change };
       return;
     }

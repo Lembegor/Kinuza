@@ -1,0 +1,15 @@
+services:
+  share:
+    build: .
+    container_name: kinuza-share
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      SHARE_CATALOG: /catalog/catalog.db
+      SHARE_PORT: "8092"
+    volumes:
+      - /opt/kinuza-catalog/data:/catalog:ro
+    ports:
+      - "127.0.0.1:8092:8092"
+    mem_limit: 120m
+    cpus: 0.3

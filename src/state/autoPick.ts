@@ -8,6 +8,7 @@ import { releaseVoices, voicesSummary, type ReleaseVoice } from "../lib/trackNam
 import { isVideoRelease, originalLanguageMark, parseEpisode, parseSize, parseTags, parseTrackerRelease, qualityRank, type TrackerRelease } from "../lib/parse";
 import { pictureMarks, sourceKind } from "../lib/releaseNames";
 import { namedAs } from "../lib/titleMatch";
+import { audioWish, wantedAudioLanguage } from "../lib/voicePreference";
 import { toSource } from "../lib/releaseUpdate";
 import { rutracker, rutrackerErrors, serverProblemOf, isServerError, type ReleaseSource, type RutrackerItem, type ServerProblem } from "../lib/rutracker";
 import { inspectTracker, isRutrackerId, searchTrackers, type TrackerResults } from "../lib/trackers";
@@ -279,8 +280,8 @@ function unitMinutes(target: PickTarget): number {
 }
 
 function wantedAudio(target: PickTarget): string {
-  const chosen = useLibrary.getState().preferences[titleKey(target.title.type, target.title.id)]?.audioLanguage;
-  return chosen || useSettings.getState().audioLanguage || target.originalLanguage || "";
+  const preferences = useLibrary.getState().preferences[titleKey(target.title.type, target.title.id)];
+  return wantedAudioLanguage(preferences, target.originalLanguage ?? "") || target.originalLanguage || "";
 }
 
 function audioCodes(release: TrackerRelease, target: PickTarget): string[] {
@@ -300,7 +301,8 @@ function streamable(candidate: { sizeBytes: number; units: number; seeds: number
 
 function rememberedVoice(target: PickTarget): string {
   const preferences = useLibrary.getState().preferences[titleKey(target.title.type, target.title.id)];
-  return (preferences?.releaseVoice || preferences?.audioAuthor || "").toLowerCase();
+  const wish = audioWish(preferences, target.originalLanguage ?? "");
+  return (preferences?.releaseVoice || preferences?.audioAuthor || (wish && !wish.original ? wish.author : "") || "").toLowerCase();
 }
 
 function donorOrder(target: PickTarget): (a: PickCandidate, b: PickCandidate) => number {
@@ -333,7 +335,8 @@ function score(item: RutrackerItem, release: TrackerRelease, sizeBytes: number, 
   const understood = spoken && audio.includes(spoken) ? weights.audio : release.subtitleLanguages.includes(wantedSubtitles) ? weights.subtitles : 0;
   const seeded = item.seeds < weakSeeds ? -3 + item.seeds * 0.5 : Math.log10(item.seeds + 1) * weights.seeds;
   const preferences = useLibrary.getState().preferences[titleKey(target.title.type, target.title.id)];
-  const remembered = preferences?.releaseVoice || preferences?.audioTitle;
+  const wish = audioWish(preferences, target.originalLanguage ?? "");
+  const remembered = preferences?.releaseVoice || preferences?.audioTitle || (wish && !wish.original ? wish.author : "");
   const voice = remembered && item.title.toLowerCase().includes(remembered.toLowerCase()) ? weights.voice : 0;
   let speed = 0;
   const units = unitsIn(item, release, target);

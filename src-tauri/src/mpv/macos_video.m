@@ -210,7 +210,7 @@ static void onUpdate(void *context) {
 
 - (void)setFrameSize:(NSSize)size {
     [super setFrameSize:size];
-    self.videoLayer.frame = self.bounds;
+    self.videoLayer.bounds = self.bounds;
 }
 
 - (void)viewDidChangeBackingProperties {
@@ -286,7 +286,6 @@ void kinuza_video_place(void *video, int x, int y, int width, int height) {
         [CATransaction setDisableActions:YES];
         view.autoresizingMask = NSViewNotSizable;
         view.frame = frame;
-        view.videoLayer.frame = view.bounds;
         [CATransaction commit];
     };
     if ([NSThread isMainThread]) {

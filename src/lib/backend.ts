@@ -50,7 +50,7 @@ export interface AppInfo {
 }
 
 export interface LaunchRequest {
-  kind: "magnet" | "file";
+  kind: "magnet" | "file" | "title";
   value: string;
 }
 

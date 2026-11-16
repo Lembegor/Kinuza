@@ -4,6 +4,8 @@ import { isRecord } from "../lib/account";
 
 const storeName = "profile";
 const saveDelayMs = 400;
+const busyRetryMs = 3000;
+const busyAttempts = 40;
 const profileVersion = 1;
 
 export type HistoryRetention = "forever" | "year" | "quarter";
@@ -33,7 +35,7 @@ export interface ProfileData {
 interface ProfileState extends ProfileData {
   loaded: boolean;
   deviceId: string;
-  load: () => Promise<void>;
+  load: (attempt?: number) => Promise<void>;
   patch: (change: Partial<Omit<ProfileData, "version" | "id" | "createdAt" | "updatedAt">>) => void;
   hideTitle: (key: string) => void;
   showTitle: (key: string) => void;
@@ -152,12 +154,16 @@ export const useProfile = create<ProfileState>((set, get) => {
     loaded: false,
     deviceId: "",
 
-    async load() {
+    async load(attempt = 0) {
       let stored: unknown = null;
       try {
         const document = await backend.storeGet(storeName);
         stored = document ? JSON.parse(document.text) : null;
-      } catch {
+      } catch (error) {
+        if (String(error).includes("store_busy") && attempt < busyAttempts) {
+          setTimeout(() => void get().load(attempt + 1), busyRetryMs);
+          return;
+        }
         stored = null;
       }
       const parsed = parseProfile(stored);

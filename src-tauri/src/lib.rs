@@ -14,6 +14,7 @@ mod gateway;
 mod children;
 mod files;
 mod host;
+mod share_links;
 mod imdb;
 mod launch;
 mod logging;
@@ -103,6 +104,7 @@ pub fn run() {
             app.manage(state);
             catalog::start(app.handle().clone());
             machine::watch_window_thread(app.handle().clone());
+            std::thread::spawn(share_links::register);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -208,6 +210,22 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building Kinuza")
         .run(|app, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Opened { urls } = &event {
+                if let Some(request) = launch::from_args(urls.iter().map(|url| url.to_string())) {
+                    if let Some(state) = app.try_state::<AppState>() {
+                        if let Ok(mut pending) = state.pending_launch.lock() {
+                            *pending = Some(request.clone());
+                        }
+                    }
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.unminimize();
+                        let _ = window.set_focus();
+                    }
+                    let _ = app.emit(launch::LAUNCH_EVENT, request);
+                }
+            }
             if let tauri::RunEvent::Exit = event {
                 tauri::async_runtime::block_on(mpv::shutdown(&app.state::<mpv::MpvState>()));
                 if let Some(state) = app.try_state::<AppState>() {
@@ -258,6 +276,7 @@ async fn build_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
         .join(DOWNLOAD_FOLDER_NAME);
 
     logging::start(&data_dir, &app.package_info().version.to_string());
+    machine::raise_open_files();
     machine::describe_in_background();
     let updated_from = store::snapshot_on_version_change(&data_dir, &app.package_info().version.to_string());
 

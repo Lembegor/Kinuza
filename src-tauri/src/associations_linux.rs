@@ -45,7 +45,7 @@ fn launcher() -> Result<String> {
     Ok(std::env::current_exe().context("cannot locate the executable")?.to_string_lossy().into_owned())
 }
 
-fn exec_line(program: &str) -> String {
+pub(crate) fn exec_line(program: &str) -> String {
     let mut quoted = String::from("\"");
     for character in program.chars() {
         match character {

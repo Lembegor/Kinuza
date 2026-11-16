@@ -136,7 +136,7 @@ interface LibraryState extends LibraryData {
   loaded: boolean;
   firstRun: boolean;
   unreadable: boolean;
-  load: () => Promise<void>;
+  load: (attempt?: number) => Promise<void>;
   setStatus: (title: TitleRef, status: WatchStatus | null) => void;
   setRating: (title: TitleRef, rating: number | null) => void;
   setRewatches: (title: TitleRef, rewatches: number) => void;
@@ -324,6 +324,8 @@ let progressTimer: ReturnType<typeof setTimeout> | undefined;
 let libraryDirty = false;
 let progressDirty = false;
 let savingBlocked = false;
+const busyRetryMs = 1500;
+const busyAttempts = 6;
 let progressStored = false;
 let saveFailureShown = false;
 let legacyPending = false;
@@ -508,7 +510,7 @@ export const useLibrary = create<LibraryState>((set, get) => {
     firstRun: false,
     unreadable: false,
 
-    async load() {
+    async load(attempt = 0) {
       try {
         const [document, progressDocument] = await Promise.all([backend.storeGet(storeName), backend.storeGet(progressStoreName)]);
         const dropped = { count: 0 };
@@ -546,6 +548,10 @@ export const useLibrary = create<LibraryState>((set, get) => {
           scheduleSave();
         }
       } catch (error) {
+        if (String(error).includes("store_busy") && attempt < busyAttempts) {
+          setTimeout(() => void get().load(attempt + 1), busyRetryMs);
+          return;
+        }
         blockSaving(error);
         set({ loaded: true, unreadable: true });
       }
