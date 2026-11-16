@@ -79,6 +79,7 @@ where
 const URGENT_PIECES: usize = 2;
 const URGENT_STEAL_AFTER: Duration = Duration::from_secs(3);
 const URGENT_STEAL_UNKNOWN_AFTER: Duration = Duration::from_secs(8);
+const URGENT_REFERENCE_PIECE: u32 = 4 * 1024 * 1024;
 
 pub struct PieceTracker {
     chunks: ChunkTracker,
@@ -146,9 +147,10 @@ impl PieceTracker {
             if info.peer == req.peer {
                 continue;
             }
+            let scale = (self.chunks.get_lengths().piece_length(piece) as f64 / URGENT_REFERENCE_PIECE as f64).max(1.0);
             let patience = match req.peer_avg_time {
-                Some(avg) => URGENT_STEAL_AFTER.max(avg.mul_f64(2.0)),
-                None => URGENT_STEAL_UNKNOWN_AFTER,
+                Some(avg) => URGENT_STEAL_AFTER.mul_f64(scale).max(avg.mul_f64(2.0)),
+                None => URGENT_STEAL_UNKNOWN_AFTER.mul_f64(scale),
             };
             if info.started.elapsed() < patience || !(req.can_steal)(piece) {
                 continue;

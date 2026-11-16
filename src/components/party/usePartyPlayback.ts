@@ -47,6 +47,9 @@ const seekSettleMs = 1200;
 const gateSeekGapMs = 700;
 const positionSlack = 0.3;
 const readyAhead = 4;
+const relaxAfter = 10;
+const relaxedAhead = 1;
+const relaxedSlack = 2;
 const endSlack = 6;
 const stallAfterMs = 700;
 const startLeadBaseMs = 40;
@@ -183,9 +186,11 @@ export function usePartyPlayback(options: PartyPlaybackOptions, controls: Mutabl
         if (Math.abs(local - gate.pos) > positionSlack && sinceSeek > gateSeekGapMs) syncSeek(gate.pos);
         else if (Math.abs(local - gate.pos) <= positionSlack) seekTry.current = { target: -1, count: 0, from: 0 };
         const ahead = aheadOf(o.buffered, gate.pos);
-        const ready = ahead >= readyAhead || gate.pos >= length - endSlack || o.finished;
+        const relaxed = serverNow - gate.since > relaxAfter;
+        const ready = ahead >= readyAhead || gate.pos >= length - endSlack || o.finished || (relaxed && !o.buffering && ahead >= relaxedAhead);
         status.pct = Math.min(100, Math.round((ahead / readyAhead) * 100));
-        if (ready && gate.waiting.includes(room.me) && readySent.current !== gate.id && Math.abs(local - gate.pos) < 0.6) {
+        if (ready && gate.waiting.includes(room.me) && readySent.current !== gate.id && Math.abs(local - gate.pos) < (relaxed ? relaxedSlack : 0.6)) {
+          if (ahead < readyAhead && !o.finished) void backend.appLog(`party: ready for gate at ${gate.pos.toFixed(1)}s with ${ahead.toFixed(1)}s buffered after ${(serverNow - gate.since).toFixed(0)}s`);
           readySent.current = gate.id;
           sendReady(gate.id);
         }

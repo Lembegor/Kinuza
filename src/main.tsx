@@ -12,6 +12,7 @@ import "./styles/profile.css";
 import "./styles/home.css";
 import "./styles/social.css";
 import "./styles/party.css";
+import "./styles/cast.css";
 import App from "./App";
 import { retryFailedImages } from "./lib/imageRetry";
 import { backend } from "./lib/backend";

@@ -7,6 +7,7 @@ import { AppHotkeys, ConfirmDialog, Toasts, UpdateNotice } from "./components/Ov
 import { AddFriendDialog, useAddFriend } from "./components/social/AddFriendDialog";
 import { SignInWaiting } from "./components/social/SocialBits";
 import { InviteDialog, JoinRoomDialog, RoomPanel } from "./components/party/RoomPanel";
+import { CastPicker, CastPlayer } from "./components/cast/CastViews";
 import { openRoomLink, startInviteLoop } from "./state/party";
 import { useAccount } from "./state/account";
 import { PageStack } from "./components/PageStack";
@@ -319,6 +320,8 @@ export default function App() {
         <RoomPanel />
         <JoinRoomDialog />
         <InviteDialog />
+        <CastPicker />
+        <CastPlayer />
         <AppHotkeys />
         <WhatsNew ready={!introducing} />
         <UpdateNotice />

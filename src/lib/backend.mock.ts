@@ -147,6 +147,8 @@ function demoWords(text: string): string[] {
   return text.toLowerCase().replace(/ё/g, "е").split(/[^\p{L}\p{N}]+/u).filter(Boolean);
 }
 
+const mockCast = { active: false, paused: false, base: 0, since: 0, level: 0, volume: 22 };
+
 const mockAccount = {
   signedIn: false,
   cancelled: false,
@@ -431,6 +433,43 @@ export async function mockInvoke(command: string, args: Record<string, unknown> 
     case "storage_drop_cached":
     case "storage_free_download":
       return 2 * GiB;
+    case "cast_devices":
+      await new Promise((resolve) => setTimeout(resolve, 900));
+      return [
+        { id: "uuid:tv-1", name: "[TV] Samsung 7 Series (55)", maker: "Samsung Electronics", model: "UE55RU7400", address: "192.168.1.40" },
+        { id: "uuid:tv-2", name: "LG webOS TV OLED65C1", maker: "LG Electronics", model: "OLED65C1", address: "192.168.1.41" },
+      ];
+    case "cast_start": {
+      const request = args.request as { start: number; level: number; device: string };
+      mockCast.active = true;
+      mockCast.paused = false;
+      mockCast.base = request.start;
+      mockCast.since = Date.now() + 2500;
+      mockCast.level = request.level;
+      return { level: request.level, direct: request.level === 0, mime: "video/x-matroska", url: "http://192.168.1.10:50123/cast/x/video.mkv", address: "192.168.1.40" };
+    }
+    case "cast_status": {
+      if (!mockCast.active) return { active: false, state: "", position: 0, reported: false, duration: null, volume: null };
+      const starting = Date.now() < mockCast.since;
+      const position = mockCast.paused || starting ? mockCast.base : mockCast.base + (Date.now() - mockCast.since) / 1000;
+      return { active: true, state: starting ? "TRANSITIONING" : mockCast.paused ? "PAUSED_PLAYBACK" : "PLAYING", position, reported: true, duration: null, volume: mockCast.volume };
+    }
+    case "cast_pause":
+      mockCast.base = mockCast.base + (Date.now() - mockCast.since) / 1000;
+      mockCast.paused = true;
+      return null;
+    case "cast_play":
+      mockCast.paused = false;
+      mockCast.since = Date.now();
+      return null;
+    case "cast_volume":
+      mockCast.volume = Number(args.value);
+      return null;
+    case "cast_seek_native":
+      return false;
+    case "cast_stop":
+      mockCast.active = false;
+      return null;
     case "torrent_set_upload": {
       const torrent = torrents.find((t) => t.infoHash === args.infoHash);
       if (torrent) torrent.uploadEnabled = Boolean(args.enabled);

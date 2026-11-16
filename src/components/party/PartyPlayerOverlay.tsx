@@ -147,7 +147,7 @@ function WaitCard() {
             ))}
           </div>
           <b>{slow.length === 1 ? t("party.wait.one", { name: slow[0].name || t("friends.someone") }) : t("party.wait.many", { count: slow.length })}</b>
-          {slow.length === 1 && <small>{t("party.wait.percent", { percent: slow[0].status.pct ?? 0 })}</small>}
+          {slow.length === 1 && <small>{slow[0].status.loaded ? t("party.wait.percent", { percent: slow[0].status.pct ?? 0 }) : t("party.status.opening")}</small>}
           {canControl() && waited * 1000 > skipOfferMs && (
             <div className="party-wait__actions">
               {slow.map((member) => (

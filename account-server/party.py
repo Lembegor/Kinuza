@@ -27,6 +27,8 @@ COUNTDOWN_AFTER = 1.5
 TICKET_SECONDS = 60
 INVITE_SECONDS = 1800
 WAIT_SECONDS = 25
+GATE_STUCK_SECONDS = 30
+GATE_GIVE_UP_SECONDS = 90
 WS_MAX = 640 * 1024
 SUBTITLE_LIMIT = 600 * 1024
 RATE_MIN = 0.25
@@ -283,6 +285,19 @@ class Room:
         self.changed(by, "start" if gate["resume"] else "ready", countdown)
         return True
 
+    def overdue(self, stamp: float) -> list[Member]:
+        if not self.gate:
+            return []
+        waited = stamp - self.gate["since"]
+        late = []
+        for user_id in sorted(self.gate["waiting"]):
+            member = self.members.get(user_id)
+            if member is None:
+                continue
+            if waited >= GATE_GIVE_UP_SECONDS or (waited >= GATE_STUCK_SECONDS and not member.status.get("loaded")):
+                late.append(member)
+        return late
+
     def drop_waiting(self, user_id: int) -> bool:
         if self.gate and user_id in self.gate["waiting"]:
             self.gate["waiting"].discard(user_id)
@@ -400,6 +415,7 @@ class Party:
             for member in list(room.members.values()):
                 if not member.online and stamp - member.left_at > SEAT_HOLD_SECONDS:
                     await self.remove(room, member.id, "left")
+            await self.give_up_waiting(room, stamp)
             if not room.members and stamp - room.empty_since > EMPTY_CLOSE_SECONDS:
                 self.rooms.pop(room.code, None)
         for user_id in list(self.invites):
@@ -409,6 +425,20 @@ class Party:
             else:
                 self.invites.pop(user_id, None)
         self.tickets = {key: value for key, value in self.tickets.items() if value[1] > stamp}
+
+    async def give_up_waiting(self, room: Room, stamp: float) -> None:
+        late = room.overdue(stamp)
+        if not late or not room.gate:
+            return
+        waited = stamp - room.gate["since"]
+        for member in late:
+            member.skipped = True
+            room.drop_waiting(member.id)
+        await self.push_state(room)
+        await self.push_members(room)
+        for member in late:
+            log.info("party %s: gave up waiting for %s after %.0f s", room.code, member.id, waited)
+            await self.system(room, "skipped", 0, {"name": member.name, "target": member.id})
 
     async def wait_invites(self, user_id: int) -> list:
         pending = self.take_invites(user_id)

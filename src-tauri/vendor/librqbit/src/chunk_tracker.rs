@@ -318,6 +318,14 @@ impl ChunkTracker {
                 .is_some_and(|status| status.not_any())
     }
 
+    pub(crate) fn is_chunk_downloaded(&self, chunk: &ChunkInfo) -> bool {
+        let start = self.lengths.chunk_range(chunk.piece_index).start;
+        self.chunk_status
+            .get(start + chunk.chunk_index as usize)
+            .map(|bit| *bit)
+            .unwrap_or(false)
+    }
+
     pub fn is_chunk_ready_to_upload(&self, chunk: &ChunkInfo) -> bool {
         self.have
             .as_slice()
@@ -775,5 +783,32 @@ mod tests {
         assert_eq!(ct.per_file_have_bytes()[0], piece_len as u64 * 2);
         assert_eq!(ct.get_hns().have_bytes, piece_len as u64 * 2);
         assert!(!ct.forget_piece(p1, &files), "forgetting twice changes nothing");
+    }
+
+    #[test]
+    fn test_chunks_already_downloaded_are_known() {
+        let piece_len = CHUNK_SIZE * 4;
+        let l = Lengths::new(piece_len as u64 * 2, piece_len).unwrap();
+        let files = vec![FileInfo {
+            relative_filename: "0".into(),
+            offset_in_torrent: 0,
+            piece_range: 0..2,
+            len: piece_len as u64 * 2,
+            attrs: Default::default(),
+        }];
+        let bf_len = l.piece_bitfield_bytes();
+        let have = BF::from_boxed_slice(vec![0u8; bf_len].into_boxed_slice());
+        let mut selected = BF::from_boxed_slice(vec![0u8; bf_len].into_boxed_slice());
+        selected.get_mut(0..2).unwrap().fill(true);
+        let mut ct = ChunkTracker::new(have.into_dyn(), selected, l, &files).unwrap();
+        let p1 = l.validate_piece_index(1).unwrap();
+        let block = vec![0u8; CHUNK_SIZE as usize];
+        ct.mark_chunk_downloaded(&peer_binary_protocol::Piece::from_data(1, CHUNK_SIZE, &block)).unwrap();
+        let downloaded: Vec<bool> = l.iter_chunk_infos(p1).map(|chunk| ct.is_chunk_downloaded(&chunk)).collect();
+        assert_eq!(downloaded, vec![false, true, false, false]);
+        let first: Vec<bool> = l.iter_chunk_infos(l.validate_piece_index(0).unwrap()).map(|chunk| ct.is_chunk_downloaded(&chunk)).collect();
+        assert_eq!(first, vec![false; 4]);
+        ct.mark_piece_broken_if_not_have(p1);
+        assert!(l.iter_chunk_infos(p1).all(|chunk| !ct.is_chunk_downloaded(&chunk)));
     }
 }

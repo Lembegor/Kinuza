@@ -117,6 +117,8 @@ import { autoPlay, choosePick, commitPick, healthOf, inspectPick, requestPick, u
 import { sourceNames } from "../lib/trackers";
 import { usePartyPlayback, type PartyControls } from "./party/usePartyPlayback";
 import { PartyControlButton, PartyPlayerOverlay } from "./party/PartyPlayerOverlay";
+import { CastButton } from "./cast/CastButton";
+import type { CastJob } from "../state/cast";
 import { requestSubtitles, sendReaction, useParty } from "../state/party";
 import { partyReactions } from "../lib/party";
 import type { PartyTrack } from "../lib/party";
@@ -2714,6 +2716,29 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
           ? { label: subtitleLabel, lang: languageCode(media.tracks?.subtitles[Number(subtitleKey.slice(9))]?.language), kind: "internal", index: Number(subtitleKey.slice(9)) }
           : { label: subtitleLabel, lang: "", kind: "external" },
   };
+  const castJob = (): CastJob | null => {
+    if (!source) return null;
+    const tracks = media.tracks;
+    const embedded = subtitleKey?.startsWith("embedded:") ? Number(subtitleKey.slice(9)) : null;
+    const subtitle =
+      embedded !== null
+        ? { kind: "internal" as const, index: embedded, text: tracks?.subtitles[embedded]?.isText ?? true }
+        : subtitleKey !== null && externalSubtitle.current?.text
+          ? { kind: "external" as const, content: externalSubtitle.current.text }
+          : null;
+    saveProgress();
+    return {
+      session,
+      source,
+      start: filmTime(),
+      duration: filmLength() || tracks?.duration || 0,
+      audio: heardAudio && !heardAudio.externalFile ? audioTrack : null,
+      subtitle,
+      subtitleLabel: subtitle ? subtitleLabel : "",
+      tracks: tracks ?? null,
+      burn: false,
+    };
+  };
   const party = usePartyPlayback(
     {
       session,
@@ -3745,6 +3770,7 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
             <Frame size={19} />
           </button>
           <PartyControlButton />
+          <CastButton build={castJob} />
           <button className="player__button" aria-label={t("player.speed")} data-menu-toggle onClick={() => setMenu(menu === "speed" ? null : "speed")}>
             <Gauge size={19} />
             {rate !== 1 && <small>{rate}×</small>}

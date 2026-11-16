@@ -1917,7 +1917,21 @@ impl PeerHandler {
                 }
             };
 
-            for chunk in self.state.lengths.iter_chunk_infos(next) {
+            let chunks: Vec<ChunkInfo> = {
+                let all: Vec<ChunkInfo> = self.state.lengths.iter_chunk_infos(next).collect();
+                let g = self.state.lock_read("missing_chunks");
+                let missing: Vec<ChunkInfo> = match g.get_pieces() {
+                    Ok(pieces) => all
+                        .iter()
+                        .copied()
+                        .filter(|chunk| !pieces.chunks().is_chunk_downloaded(chunk))
+                        .collect(),
+                    Err(_) => Vec::new(),
+                };
+                if missing.is_empty() { all } else { missing }
+            };
+
+            for chunk in chunks {
                 let request = Request {
                     index: next.get(),
                     begin: chunk.offset,

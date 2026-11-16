@@ -237,6 +237,44 @@ class Party(AioHTTPTestCase):
         self.assertNotIn(room["code"], holder.rooms)
 
 
+    async def test_gate_gives_up_on_stuck_members(self):
+        a, b, wa, wb, room, joined = await self.pair()
+        holder = self.app["state"].party
+        live = holder.rooms[room["code"]]
+        await wb.send_json({"t": "status", "s": {"loaded": False}})
+        await wa.send_json({"t": "control", "a": "play"})
+        gate = (await self.until(wa, "state", lambda m: m["state"]["gate"]))["state"]["gate"]
+        await wa.send_json({"t": "ready", "gate": gate["id"]})
+        await self.until(wa, "state", lambda m: m["state"]["gate"] and len(m["state"]["gate"]["waiting"]) == 1)
+        live.gate["since"] = time.time() - party.GATE_STUCK_SECONDS + 5
+        await holder.sweep()
+        self.assertIsNotNone(live.gate)
+        live.gate["since"] = time.time() - party.GATE_STUCK_SECONDS - 1
+        await holder.sweep()
+        started = (await self.until(wa, "state", lambda m: m["state"]["playing"]))["state"]
+        self.assertIsNone(started["gate"])
+        members = await self.until(wa, "members", lambda m: any(x["skipped"] for x in m["members"]))
+        self.assertTrue(next(x for x in members["members"] if x["id"] == b["account"]["id"])["skipped"])
+        note = (await self.until(wa, "chat", lambda m: m["msg"]["kind"] == "skipped"))["msg"]
+        self.assertEqual(note["target"], b["account"]["id"])
+        self.assertEqual(note["from"], 0)
+        await wb.send_json({"t": "status", "s": {"loaded": True, "synced": True}})
+        await self.until(wa, "members", lambda m: not any(x["skipped"] for x in m["members"]))
+        await wa.send_json({"t": "control", "a": "seek", "pos": 300})
+        sought = (await self.until(wa, "state", lambda m: m["state"]["reason"] == "seek"))["state"]
+        await wa.send_json({"t": "ready", "gate": sought["gate"]["id"]})
+        await wb.send_json({"t": "status", "s": {"loaded": True, "pct": 50}})
+        await self.until(wa, "member", lambda m: m["status"].get("pct") == 50)
+        live.gate["since"] = time.time() - party.GATE_STUCK_SECONDS - 1
+        await holder.sweep()
+        self.assertEqual(live.gate["waiting"], {b["account"]["id"]})
+        live.gate["since"] = time.time() - party.GATE_GIVE_UP_SECONDS - 1
+        await holder.sweep()
+        self.assertIsNone(live.gate)
+        self.assertTrue(live.playing)
+        for ws in (wa, wb):
+            await ws.close()
+
 if __name__ == "__main__":
     import unittest
 

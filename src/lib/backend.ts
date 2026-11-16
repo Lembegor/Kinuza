@@ -380,6 +380,55 @@ export interface SoundSegments {
   credits: { start: number; end: number; sceneAfter: boolean } | null;
 }
 
+export interface CastDevice {
+  id: string;
+  name: string;
+  maker: string;
+  model: string;
+  address: string;
+}
+
+export interface CastSubtitleChoice {
+  kind: "none" | "internal" | "external";
+  index?: number;
+  text?: boolean;
+  content?: string;
+}
+
+export interface CastRequest {
+  device: string;
+  infoHash: string;
+  fileIndex: number;
+  fileName: string;
+  title: string;
+  start: number;
+  duration: number;
+  audio: number | null;
+  audioCodec: string;
+  audioChannels: string;
+  videoCodec: string;
+  subtitle: CastSubtitleChoice | null;
+  burn: boolean;
+  level: number;
+}
+
+export interface CastStarted {
+  level: number;
+  direct: boolean;
+  mime: string;
+  url: string;
+  address: string;
+}
+
+export interface CastStatus {
+  active: boolean;
+  state: string;
+  position: number;
+  reported: boolean;
+  duration: number | null;
+  volume: number | null;
+}
+
 export const backend = {
   ffmpegStatus: () => call<FfmpegStatus>("ffmpeg_status"),
   ffmpegInstall: () => call<void>("ffmpeg_install"),
@@ -392,6 +441,14 @@ export const backend = {
   pause: (infoHash: string) => call<void>("torrent_pause", { infoHash }),
   setUpload: (infoHash: string, enabled: boolean) => call<void>("torrent_set_upload", { infoHash, enabled }),
   addPeers: (infoHash: string, peers: string[]) => call<number>("torrent_add_peers", { infoHash, peers }),
+  castDevices: () => call<CastDevice[]>("cast_devices"),
+  castStart: (request: CastRequest) => call<CastStarted>("cast_start", { request }),
+  castStatus: () => call<CastStatus>("cast_status"),
+  castPlay: () => call<void>("cast_play"),
+  castPause: () => call<void>("cast_pause"),
+  castVolume: (value: number) => call<void>("cast_volume", { value }),
+  castSeekNative: (position: number) => call<boolean>("cast_seek_native", { position }),
+  castStop: () => call<void>("cast_stop"),
   resume: (infoHash: string) => call<void>("torrent_resume", { infoHash }),
   excludeFiles: (infoHash: string, files: number[]) => call<void>("torrent_exclude_files", { infoHash, files }),
   focusTorrent: (infoHash: string) => call<void>("torrent_focus", { infoHash }),
@@ -534,6 +591,12 @@ const errorMessages: Record<string, MessageKey> = {
   party_not_allowed: "errors.partyNotAllowed",
   party_no_source: "errors.partyNoSource",
   party_offline: "errors.partyOffline",
+  cast_device_gone: "errors.castDeviceGone",
+  cast_unreachable: "errors.castUnreachable",
+  cast_refused: "errors.castRefused",
+  cast_no_network: "errors.castNoNetwork",
+  cast_server_failed: "errors.castServer",
+  cast_not_active: "errors.castNotActive",
 };
 
 export function describeError(error: unknown): string {

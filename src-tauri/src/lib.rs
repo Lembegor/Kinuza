@@ -4,6 +4,7 @@ mod associations;
 #[path = "associations_linux.rs"]
 mod associations;
 mod account;
+mod cast;
 mod activity;
 mod catalog;
 mod commands;
@@ -78,6 +79,7 @@ pub fn run() {
         .manage(files::FileGrants::default())
         .manage(media_keys::MediaKeys::default())
         .manage(catalog::CatalogState::default())
+        .manage(cast::CastState::default())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
@@ -117,6 +119,14 @@ pub fn run() {
             commands::torrent_resume,
             commands::torrent_set_upload,
             commands::torrent_add_peers,
+            cast::cast_devices,
+            cast::cast_start,
+            cast::cast_status,
+            cast::cast_play,
+            cast::cast_pause,
+            cast::cast_volume,
+            cast::cast_seek_native,
+            cast::cast_stop,
             storage::storage_report,
             storage::storage_clear_part,
             storage::storage_drop_cached,
