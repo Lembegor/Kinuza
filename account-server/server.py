@@ -9,6 +9,7 @@ import httpx
 from aiohttp import web
 
 import google
+from party import Party
 from store import Store, StoreError, clean_code, clean_name
 
 DATA = os.environ.get("ACCOUNT_DATA", "/data")
@@ -40,6 +41,7 @@ class State:
         self.seen_written: dict = {}
         self.last_sync: dict = {}
         self.counters: dict = {}
+        self.party = Party(self)
 
     def count(self, key: tuple, limit: int, window: int) -> bool:
         now = time.time()
@@ -193,6 +195,9 @@ async def delete_me(request: web.Request) -> web.Response:
     async with state.lock:
         state.store.delete_user(user_id)
     state.presence.pop(user_id, None)
+    room = state.party.room_of(user_id)
+    if room:
+        await state.party.remove(room, user_id, "left")
     log.info("deleted user=%s", user_id)
     return web.json_response({"ok": True})
 
@@ -276,6 +281,7 @@ def friend_view(state: State, row, now: float) -> dict:
         "online": online,
         "lastSeen": last_seen,
         "watching": seen.get("watching") if online and row["show_activity"] and seen else None,
+        "room": state.party.friend_room(row["id"]) if not hidden else None,
     }
 
 
@@ -386,12 +392,37 @@ async def guard(request: web.Request, handler):
     except Exception:
         log.exception("request %s failed", request.path)
         return error("account_failed", 500)
+    if isinstance(response, web.WebSocketResponse) or response.prepared:
+        return response
     if "Cache-Control" not in response.headers:
         response.headers["Cache-Control"] = "no-store"
     return response
 
 
+@signed_in
+async def party_ticket(request: web.Request) -> web.Response:
+    state: State = request.app["state"]
+    if not state.count(("ticket", request["user"]["id"]), 120, 3600):
+        return error("party_busy", 429)
+    return web.json_response({"ticket": state.party.ticket(request["user"]["id"])})
+
+
+async def party_socket(request: web.Request) -> web.StreamResponse:
+    return await request.app["state"].party.handle(request)
+
+
+@signed_in
+async def party_wait(request: web.Request) -> web.Response:
+    invites = await request.app["state"].party.wait_invites(request["user"]["id"])
+    return web.json_response({"invites": invites})
+
+
+async def begin(app: web.Application) -> None:
+    app["state"].party.start()
+
+
 async def stop(app: web.Application) -> None:
+    await app["state"].party.stop()
     await app["state"].client.aclose()
 
 
@@ -414,6 +445,10 @@ def build() -> web.Application:
     app.router.add_post("/friends/request", friend_request)
     for name in ("accept", "decline", "cancel", "remove"):
         app.router.add_post(f"/friends/{name}", friend_action(name))
+    app.router.add_post("/party/ticket", party_ticket)
+    app.router.add_get("/party/ws", party_socket)
+    app.router.add_get("/party/wait", party_wait)
+    app.on_startup.append(begin)
     app.on_cleanup.append(stop)
     return app
 

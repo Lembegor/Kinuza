@@ -400,6 +400,8 @@ fn allowed(method: &str, path: &str) -> bool {
             | ("POST", "presence" | "auth/signout" | "auth/signout-all")
             | ("POST", "friends/request" | "friends/accept" | "friends/decline" | "friends/cancel" | "friends/remove")
             | ("GET", "friends/lookup")
+            | ("POST", "party/ticket")
+            | ("GET", "party/wait")
     )
 }
 

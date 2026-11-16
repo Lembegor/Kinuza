@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Bell, CheckCheck, CircleArrowUp, Download, Trash2, Tv, Users } from "lucide-react";
+import { Bell, CheckCheck, CircleArrowUp, Clapperboard, Download, Trash2, Tv, Users } from "lucide-react";
 import { useT } from "../lib/i18n";
 import { useInbox, type InboxKind } from "../state/inbox";
+import { useParty } from "../state/party";
 
 const kindIcons: Record<InboxKind, typeof Bell> = {
   episodes: Tv,
@@ -10,6 +11,7 @@ const kindIcons: Record<InboxKind, typeof Bell> = {
   update: CircleArrowUp,
   info: Bell,
   friend: Users,
+  room: Clapperboard,
 };
 
 function ago(at: number, locale: string): string {
@@ -84,7 +86,10 @@ export function InboxButton() {
                       className={`inbox__item ${item.read ? "" : "is-unread"}`}
                       onClick={() => {
                         useInbox.getState().markRead(item.id);
-                        if (item.link) {
+                        if (item.link?.startsWith("room:")) {
+                          void useParty.getState().join(item.link.slice(5));
+                          setOpen(false);
+                        } else if (item.link) {
                           navigate(item.link);
                           setOpen(false);
                         }

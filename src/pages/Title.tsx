@@ -27,6 +27,7 @@ import { RatingStars, StatusMenu } from "../components/TrackControls";
 import { TitleTime } from "../components/profile/TitleTime";
 import { TrailerOverlay } from "../components/TrailerOverlay";
 import { ShareButton } from "../components/ShareButton";
+import { WatchTogetherButton } from "../components/party/WatchTogether";
 import { backend, describeError, isDesktop } from "../lib/backend";
 import { formatBytes, formatDate, formatRuntime, formatSpeed } from "../lib/format";
 import { t, useT } from "../lib/i18n";
@@ -1056,6 +1057,7 @@ export default function TitlePage() {
                   {t("common.addTorrent")}
                 </button>
               )}
+              <WatchTogetherButton title={shownRef} canPlay={canPlay} onPlay={playResume} />
               <StatusMenu title={shownRef} />
               {data.videos.length > 0 && (
                 <button className="button button--large" aria-haspopup="dialog" onClick={() => setTrailerTitleId(id)}>

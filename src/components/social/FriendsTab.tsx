@@ -8,6 +8,7 @@ import { useUi } from "../../state/ui";
 import { CopyInvite, useAddFriend } from "./AddFriendDialog";
 import { titlePathOf } from "./FriendsButton";
 import { FriendRow, GoogleMark, PersonAvatar } from "./SocialBits";
+import { FriendPartyAction } from "../party/FriendPartyAction";
 
 function syncText(t: ReturnType<typeof useT>["t"], locale: string, state: string, at: number | null, error: string | null): string {
   if (state === "syncing") return t("account.sync.running");
@@ -200,6 +201,7 @@ function FriendsCard() {
             const path = titlePathOf(friend);
             return (
               <FriendRow key={friend.id} friend={friend} onOpen={path ? () => navigate(path) : undefined}>
+                <FriendPartyAction friend={friend} />
                 <button
                   className="icon-button friend-row__remove"
                   aria-label={t("friends.remove.button")}

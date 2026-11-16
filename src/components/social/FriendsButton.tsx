@@ -6,6 +6,7 @@ import { useT } from "../../lib/i18n";
 import { useAccount } from "../../state/account";
 import { useAddFriend } from "./AddFriendDialog";
 import { FriendRow, GoogleMark } from "./SocialBits";
+import { FriendPartyAction } from "../party/FriendPartyAction";
 
 const shownFriends = 12;
 
@@ -124,7 +125,11 @@ export function FriendsButton() {
                 <div className="friends-panel__list">
                   {friends.slice(0, shownFriends).map((friend) => {
                     const path = titlePathOf(friend);
-                    return <FriendRow key={friend.id} friend={friend} onOpen={path ? () => go(path) : undefined} />;
+                    return (
+                      <FriendRow key={friend.id} friend={friend} onOpen={path ? () => go(path) : undefined}>
+                        <FriendPartyAction friend={friend} />
+                      </FriendRow>
+                    );
                   })}
                 </div>
               )}

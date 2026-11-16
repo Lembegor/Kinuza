@@ -13,6 +13,9 @@ TEXTS = {
         "invite.text": "Вас зовут в друзья в Kinuza. Откройте приглашение в приложении - заявка отправится в один клик, и вы будете видеть, кто что смотрит.",
         "invite.code": "Код друга:",
         "invite.badge": "Приглашение из Kinuza",
+        "room.title": "Приглашение смотреть вместе",
+        "room.text": "Вас зовут в комнату Kinuza: фильм идёт у всех синхронно, есть общий чат и реакции. Откройте приглашение в приложении, и вы сразу окажетесь в комнате.",
+        "room.code": "Код комнаты:",
         "open": "Открыть в Kinuza",
         "download": "Скачать Kinuza",
         "movie": "Фильм",
@@ -30,6 +33,9 @@ TEXTS = {
         "invite.text": "Вас кличуть у друзі в Kinuza. Відкрийте запрошення в застосунку - заявка надішлеться в один клік, і ви бачитимете, хто що дивиться.",
         "invite.code": "Код друга:",
         "invite.badge": "Запрошення з Kinuza",
+        "room.title": "Запрошення дивитися разом",
+        "room.text": "Вас кличуть до кімнати Kinuza: фільм іде в усіх синхронно, є спільний чат і реакції. Відкрийте запрошення в застосунку, і ви одразу опинитеся в кімнаті.",
+        "room.code": "Код кімнати:",
         "open": "Відкрити в Kinuza",
         "download": "Завантажити Kinuza",
         "movie": "Фільм",
@@ -47,6 +53,9 @@ TEXTS = {
         "invite.text": "You are invited to be friends in Kinuza. Open the invite in the app - the request goes out in one click, and you will see what each other watches.",
         "invite.code": "Friend code:",
         "invite.badge": "An invite from Kinuza",
+        "room.title": "An invite to watch together",
+        "room.text": "You are invited to a Kinuza room: the film plays in sync for everyone, with a shared chat and reactions. Open the invite in the app and you will land right in the room.",
+        "room.code": "Room code:",
         "open": "Open in Kinuza",
         "download": "Download Kinuza",
         "movie": "Film",
@@ -127,6 +136,13 @@ def render_invite(code: str, language: str, nonce: str) -> str:
     link = f"kinuza://friend/{code}"
     pretty = f"{code[:4]}-{code[4:]}" if len(code) > 4 else code
     return document(language, words, link, f"{SITE}/f/{code}", words["invite.title"], words["invite.title"], words["invite.text"], "", "", f'{words["invite.code"]} {pretty}', words["invite.badge"], "website", nonce, True)
+
+
+def render_room(code: str, language: str, nonce: str) -> str:
+    words = TEXTS[language]
+    link = f"kinuza://room/{code}"
+    pretty = f"{code[:3]}-{code[3:]}"
+    return document(language, words, link, f"{SITE}/r/{code}", words["room.title"], words["room.title"], words["room.text"], "", "", f'{words["room.code"]} {pretty}', words["invite.badge"], "website", nonce, True)
 
 
 def document(language: str, words: dict, link: str, page_url: str, heading: str, name: str, description: str, poster: str, backdrop: str, meta_line: str, badge: str, og_type: str, nonce: str, known: bool) -> str:

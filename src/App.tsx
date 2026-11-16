@@ -6,6 +6,8 @@ import { Onboarding } from "./components/Onboarding";
 import { AppHotkeys, ConfirmDialog, Toasts, UpdateNotice } from "./components/Overlays";
 import { AddFriendDialog, useAddFriend } from "./components/social/AddFriendDialog";
 import { SignInWaiting } from "./components/social/SocialBits";
+import { InviteDialog, JoinRoomDialog, RoomPanel } from "./components/party/RoomPanel";
+import { openRoomLink, startInviteLoop } from "./state/party";
 import { useAccount } from "./state/account";
 import { PageStack } from "./components/PageStack";
 import { WhatsNew } from "./components/WhatsNew";
@@ -112,6 +114,10 @@ function openLaunchRequest(request: LaunchRequest): void {
   lastLaunch = { key, at: Date.now() };
   if (request.kind === "friend") {
     useAddFriend.getState().show(request.value);
+    return;
+  }
+  if (request.kind === "room") {
+    openRoomLink(request.value);
     return;
   }
   if (request.kind === "title") {
@@ -274,7 +280,9 @@ export default function App() {
   const ready = settingsLoaded && libraryLoaded;
   useLaunchRequests(ready);
   useEffect(() => {
-    if (ready) void useAccount.getState().init();
+    if (!ready) return;
+    void useAccount.getState().init();
+    startInviteLoop();
   }, [ready]);
   useLinkHandling(ready && !introducing);
 
@@ -308,6 +316,9 @@ export default function App() {
         <ConfirmDialog />
         <SignInWaiting />
         <AddFriendDialog />
+        <RoomPanel />
+        <JoinRoomDialog />
+        <InviteDialog />
         <AppHotkeys />
         <WhatsNew ready={!introducing} />
         <UpdateNotice />

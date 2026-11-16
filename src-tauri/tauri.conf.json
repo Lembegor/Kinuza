@@ -34,7 +34,7 @@
         "style-src": "'self' 'unsafe-inline'",
         "img-src": "'self' data: blob: https: http://127.0.0.1:*",
         "media-src": "'self' blob: http://127.0.0.1:*",
-        "connect-src": "'self' ipc: http://ipc.localhost http://127.0.0.1:* https://api.themoviedb.org https://image.tmdb.org https://channeluza.com https://kinuza.channeluza.com https://graphql.anilist.co",
+        "connect-src": "'self' ipc: http://ipc.localhost http://127.0.0.1:* https://api.themoviedb.org https://image.tmdb.org https://channeluza.com https://kinuza.channeluza.com wss://channeluza.com wss://kinuza.channeluza.com ws://127.0.0.1:* https://graphql.anilist.co",
         "frame-src": "https://www.youtube-nocookie.com https://www.youtube.com",
         "font-src": "'self' data:",
         "object-src": "'none'",

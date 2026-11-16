@@ -907,6 +907,23 @@ impl Engine {
         }
     }
 
+    pub fn add_peers(&self, info_hash: &str, peers: &[SocketAddr]) -> Result<usize> {
+        let handle = self.find(info_hash)?;
+        {
+            let mut known = self.known_peers.lock().unwrap();
+            let list = known.entry(handle.info_hash().as_string()).or_default();
+            for peer in peers {
+                if !list.contains(peer) {
+                    list.insert(0, *peer);
+                }
+            }
+        }
+        let Some(live) = handle.live() else { return Ok(0) };
+        let added = peers.iter().filter(|address| live.add_peer_if_not_seen(**address).unwrap_or(false)).count();
+        tracing::info!("engine: {} connects to {added} room peers", &info_hash[..info_hash.len().min(8)]);
+        Ok(added)
+    }
+
     fn reconnect_known_peers(&self, handle: &TorrentHandle) {
         let peers = self.known_peers.lock().unwrap().get(&handle.info_hash().as_string()).cloned().unwrap_or_default();
         if peers.is_empty() {
@@ -1161,8 +1178,13 @@ impl Engine {
     }
 
     pub async fn inspect(&self, source: AddTorrent<'static>) -> Result<TorrentPreview> {
+        self.inspect_with_peers(source, Vec::new()).await
+    }
+
+    pub async fn inspect_with_peers(&self, source: AddTorrent<'static>, peers: Vec<SocketAddr>) -> Result<TorrentPreview> {
         let options = AddTorrentOptions {
             list_only: true,
+            initial_peers: (!peers.is_empty()).then_some(peers),
             ..Default::default()
         };
         let response = tokio::time::timeout(

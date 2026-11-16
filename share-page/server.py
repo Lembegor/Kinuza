@@ -162,6 +162,13 @@ async def invite_page(request: web.Request) -> web.Response:
     return html_response(page.render_invite(code, language, nonce), nonce)
 
 
+async def room_page(request: web.Request) -> web.Response:
+    code = request.match_info["code"].upper()
+    language = page.pick_language(request.headers.get("Accept-Language", ""))
+    nonce = secrets.token_urlsafe(16)
+    return html_response(page.render_room(code, language, nonce), nonce)
+
+
 async def privacy_page(request: web.Request) -> web.Response:
     language = request.query.get("lang") or page.pick_language(request.headers.get("Accept-Language", ""))
     return html_response(privacy.render_privacy(language if language in page.LANGUAGES else "ru"), None)
@@ -176,6 +183,7 @@ def main() -> None:
     app["titles"] = Titles()
     app.router.add_get(r"/t/{kind:movie|tv}/{ident:\d{1,9}}", title_page)
     app.router.add_get(r"/f/{code:[A-Za-z0-9]{8}}", invite_page)
+    app.router.add_get(r"/r/{code:[A-Za-z0-9]{6}}", room_page)
     app.router.add_get("/privacy", privacy_page)
     app.on_cleanup.append(stop)
     web.run_app(app, host=HOST, port=PORT, access_log=None)

@@ -45,6 +45,12 @@ class Invite(unittest.TestCase):
         self.assertIn("ABCD-2345", body)
         self.assertIn("Приглашение в друзья", body)
 
+    def test_room_invite_opens_the_room_link(self):
+        body = page.render_room("KX74QP", "en", "n")
+        self.assertIn('href="kinuza://room/KX74QP"', body)
+        self.assertIn("KX7-4QP", body)
+        self.assertIn("watch together", body)
+
     def test_privacy_in_every_language(self):
         import privacy
         for language in ("ru", "uk", "en"):

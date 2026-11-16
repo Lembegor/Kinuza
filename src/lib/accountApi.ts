@@ -27,6 +27,16 @@ export interface Friend {
   online: boolean;
   lastSeen: number | null;
   watching: Watching | null;
+  room?: { code: string; title: string | null; count: number } | null;
+}
+
+export interface PartyInvite {
+  code: string;
+  from: number;
+  name: string;
+  avatar: string | null;
+  title: string | null;
+  at: number;
 }
 
 export interface Person {
@@ -91,6 +101,8 @@ export const accountApi = {
   decline: (id: number) => request<Social>("POST", "friends/decline", { id }),
   cancel: (id: number) => request<Social>("POST", "friends/cancel", { id }),
   removeFriend: (id: number) => request<Social>("POST", "friends/remove", { id }),
+  partyTicket: () => request<{ ticket: string }>("POST", "party/ticket"),
+  partyWait: () => request<{ invites: PartyInvite[] }>("GET", "party/wait"),
   pull: (known: number) => call<BackupPull>("account_sync_pull", { known }),
   push: (revision: number, text: string) => call<number>("account_sync_push", { revision, text }),
 };

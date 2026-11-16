@@ -51,6 +51,7 @@ export class MpvVideo {
   chapterList: MpvChapter[] = [];
 
   private time = 0;
+  private timeAt = 0;
   private length = Number.NaN;
   private pausedNow = true;
   private volumeNow = 1;
@@ -100,6 +101,12 @@ export class MpvVideo {
 
   get duration(): number {
     return this.length;
+  }
+
+  get preciseTime(): number {
+    if (this.seekTarget !== null) return this.seekTarget;
+    if (this.pausedNow || this.waiting || this.seekingNow || !this.timeAt) return this.time;
+    return this.time + Math.min(0.5, (performance.now() - this.timeAt) / 1000) * this.rateNow;
   }
 
   get paused(): boolean {
@@ -355,6 +362,7 @@ export class MpvVideo {
       case "time-pos":
         if (typeof data === "number") {
           this.time = data;
+          this.timeAt = performance.now();
           this.handlers.onTimeUpdate?.();
         }
         break;

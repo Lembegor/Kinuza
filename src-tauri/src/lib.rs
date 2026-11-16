@@ -116,6 +116,7 @@ pub fn run() {
             commands::torrent_pause,
             commands::torrent_resume,
             commands::torrent_set_upload,
+            commands::torrent_add_peers,
             storage::storage_report,
             storage::storage_clear_part,
             storage::storage_drop_cached,

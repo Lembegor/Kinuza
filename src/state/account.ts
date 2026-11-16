@@ -586,8 +586,9 @@ export const useAccount = create<AccountState>((set, get) => ({
 export function friendStatus(friend: Friend, locale: string): string {
   if (friend.watching) {
     const episode = friend.watching.season !== undefined && friend.watching.episode !== undefined ? ` · ${t("title.episodeShort", { season: friend.watching.season, episode: friend.watching.episode })}` : "";
-    return `${t("friends.status.watching")} ${friend.watching.title}${episode}`;
+    return `${t("friends.status.watching")} ${friend.watching.title}${episode}${friend.room ? ` · ${t("friends.status.together")}` : ""}`;
   }
+  if (friend.room) return t("friends.status.inRoom");
   if (friend.online) return t("friends.status.online");
   if (!friend.lastSeen) return t("friends.status.offline");
   const minutes = Math.max(1, Math.round((Date.now() / 1000 - friend.lastSeen) / 60));

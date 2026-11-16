@@ -115,6 +115,11 @@ import {
 import { audioWish, subtitleWish, wantedAudioLanguage } from "../lib/voicePreference";
 import { autoPlay, choosePick, commitPick, healthOf, inspectPick, requestPick, useAutoPick, type PickCandidate, type PickTarget } from "../state/autoPick";
 import { sourceNames } from "../lib/trackers";
+import { usePartyPlayback, type PartyControls } from "./party/usePartyPlayback";
+import { PartyControlButton, PartyPlayerOverlay } from "./party/PartyPlayerOverlay";
+import { requestSubtitles, sendReaction, useParty } from "../state/party";
+import { partyReactions } from "../lib/party";
+import type { PartyTrack } from "../lib/party";
 
 const controlsHideDelayMs = 3000;
 const progressSaveIntervalMs = 5000;
@@ -780,6 +785,7 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
   const onPage = useSettings((state) => state.playerPlacement === "page");
   const hovered = useRef(false);
   const videoRef = useRef<VideoWithExtras>(null);
+  const partyRef = useRef<PartyControls | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const root = rootRef.current;
@@ -1285,6 +1291,10 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
   const togglePlay = useCallback(() => {
     const video = videoRef.current;
     if (!video) return;
+    if (partyRef.current?.active) {
+      partyRef.current.toggle();
+      return;
+    }
     if (video.paused) void video.play().catch(() => undefined);
     else video.pause();
   }, []);
@@ -1307,6 +1317,7 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
     setEnded(false);
     setCountdown(null);
     lastSeekAt.current = Date.now();
+    partyRef.current?.seeked(target);
     if (voiceStream.current) {
       clearTimeout(voiceRestart.current);
       voiceRestart.current = setTimeout(() => {
@@ -1386,7 +1397,7 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
     nextEpisode && duration >= upNextMinDurationSeconds && !credits?.sceneAfter ? (credits?.start ?? duration - upNextTailSeconds) : null;
 
   const playNext = useCallback(() => {
-    if (!nextEpisode) return;
+    if (!nextEpisode || partyRef.current?.blocksNext) return;
     const length = filmLength();
     if (upNextFrom !== null && filmTime() >= upNextFrom && Number.isFinite(length) && length > 0) {
       useLibrary.getState().setProgress(session.unitKey, {
@@ -1414,7 +1425,7 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
   const [upNextDismissed, setUpNextDismissed] = useState(false);
   const [upNextLeft, setUpNextLeft] = useState<number | null>(null);
   useEffect(() => setUpNextDismissed(false), [session.unitKey]);
-  const upNextVisible = upNextFrom !== null && current >= upNextFrom && !upNextDismissed && !ended && countdown === null && !failed;
+  const upNextVisible = upNextFrom !== null && current >= upNextFrom && !upNextDismissed && !ended && countdown === null && !failed && !partyRef.current?.blocksNext;
 
   useEffect(() => {
     if (!upNextVisible || !settings.autoNextEpisode) {
@@ -1927,7 +1938,8 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
     unattendedEpisodes = 0;
   }, []);
   useEffect(() => {
-    if (askStill && metadataReady) videoRef.current?.pause();
+    if (askStill && metadataReady && !partyRef.current?.active) videoRef.current?.pause();
+    else if (askStill && partyRef.current?.active) setAskStill(false);
   }, [askStill, metadataReady]);
   const stillHere = () => {
     unattendedEpisodes = 0;
@@ -2101,6 +2113,12 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
     PageDown: () => jumpChapter(1),
     PageUp: () => jumpChapter(-1),
     MediaPlayPause: togglePlay,
+    ...(partyRef.current?.active
+      ? {
+          ...Object.fromEntries(partyReactions.map((reaction, index) => [String(index + 1), () => sendReaction(reaction)])),
+          Enter: () => useParty.getState().setPanel(true, "chat"),
+        }
+      : {}),
     MediaTrackNext: playNext,
     MediaStop: () => videoRef.current?.pause(),
   };
@@ -2126,7 +2144,7 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
         hold.timer = setTimeout(() => {
           hold.timer = undefined;
           const element = videoRef.current;
-          if (!element || element.paused) return;
+          if (!element || element.paused || partyRef.current?.active) return;
           hold.active = true;
           hold.rate = element.playbackRate;
           element.playbackRate = holdSpeedRate;
@@ -2139,6 +2157,10 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
       const stepRate = (direction: 1 | -1) => {
         const index = playbackRates.indexOf(rate) + direction;
         const next = playbackRates[Math.min(playbackRates.length - 1, Math.max(0, index))];
+        if (partyRef.current?.setRate(next)) {
+          showHint(t("player.hint.speed", { rate: next }));
+          return;
+        }
         if (video) video.playbackRate = next;
         setRate(next);
         rememberForTitle(session.title, { rate: next });
@@ -2680,6 +2702,53 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
 
   useConvertedAudio(videoRef, source ?? null, heardConverted, volume, muted, audioDelay);
 
+  const heardAudio = audioTrack !== null ? media.tracks?.audio[audioTrack] : undefined;
+  const partyTracks: { audio?: PartyTrack; sub?: PartyTrack } = {
+    ...(heardAudio && audioTrack !== null
+      ? { audio: { label: soundInfo(heardAudio, locale, originalLanguage || undefined, audioGuess(heardAudio)).name, lang: languageCode(heardAudio.language), kind: externalAudio ? "external" : "internal", index: audioTrack } }
+      : {}),
+    sub:
+      subtitleKey === null
+        ? { label: "", lang: "", kind: "none" }
+        : subtitleKey.startsWith("embedded:")
+          ? { label: subtitleLabel, lang: languageCode(media.tracks?.subtitles[Number(subtitleKey.slice(9))]?.language), kind: "internal", index: Number(subtitleKey.slice(9)) }
+          : { label: subtitleLabel, lang: "", kind: "external" },
+  };
+  const party = usePartyPlayback(
+    {
+      session,
+      source,
+      video: () => videoRef.current,
+      preciseTime: () => (conversionRef.current ?? 0) + (usingMpv ? mpvPlayer.video.preciseTime : (videoRef.current?.currentTime ?? 0)),
+      filmLength,
+      seekTo,
+      metadataReady,
+      buffering,
+      buffered,
+      rate,
+      setRate,
+      finished: !!torrent && source !== undefined && (() => { const file = torrent.files.find((item) => item.index === source.fileIndex); return !!file && file.length > 0 && file.downloaded >= file.length; })(),
+      downloadSpeed: torrent?.downloadSpeed ?? 0,
+      tracks: partyTracks,
+      subtitle: () => (externalSubtitle.current?.text ? { name: externalSubtitle.current.title || "subtitles.srt", text: externalSubtitle.current.text } : null),
+      applySubtitle: (name, text) => applySubtitles(new TextEncoder().encode(text).buffer as ArrayBuffer, `party:${name}`, name),
+      applyTracks: (audio, sub, from) => {
+        const tracks = media.tracks;
+        if (audio && audio.index !== undefined && audio.kind !== "external") {
+          const track = tracks?.audio[audio.index];
+          if (track) chooseAudioTrack(track);
+        }
+        if (!sub || sub.kind === "none") disableSubtitles();
+        else if (sub.kind === "internal" && sub.index !== undefined) {
+          const track = tracks?.subtitles[sub.index];
+          if (track) selectEmbeddedSubtitle(track, true);
+        } else requestSubtitles(from);
+        setMenu(null);
+      },
+    },
+    partyRef,
+  );
+
   useEffect(() => {
     if (!metadataReady || subtitlesDecided.current) return;
     if (media.ffmpegInstalled === null || (media.ffmpegInstalled && media.tracks === null)) return;
@@ -2720,6 +2789,10 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
   };
 
   const selectRate = (value: number) => {
+    if (partyRef.current?.setRate(value)) {
+      setMenu(null);
+      return;
+    }
     if (videoRef.current) videoRef.current.playbackRate = value;
     setRate(value);
     rememberForTitle(session.title, { rate: value });
@@ -3007,7 +3080,7 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
     endedRef.current = true;
     saveProgress();
     setEnded(true);
-    if (nextEpisode && settings.autoNextEpisode) setCountdown(nextEpisodeCountdownSeconds);
+    if (nextEpisode && settings.autoNextEpisode && !partyRef.current?.blocksNext) setCountdown(nextEpisodeCountdownSeconds);
   };
   const endedRef = useRef(false);
   endedRef.current = ended;
@@ -3023,10 +3096,14 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
   }, [current, duration, ended, failed, filmTime, filmLength]);
 
   const handlers: MediaHandlers = {
-    onPlay: () => setPlaying(true),
+    onPlay: () => {
+      setPlaying(true);
+      partyRef.current?.localPaused(false);
+    },
     onPause: () => {
       setPlaying(false);
       saveProgress();
+      partyRef.current?.localPaused(true);
     },
     onWaiting: () => setBuffering(true),
     onPlaying: () => {
@@ -3238,6 +3315,7 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
           </button>
         </div>
       )}
+      <PartyPlayerOverlay active={party.active} foreign={party.foreign} />
       <div className="player__top" data-tauri-drag-region={placement === "full" ? true : undefined}>
         <button
           className="player__back"
@@ -3666,6 +3744,7 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
           <button className={`player__button ${zoom !== 1 || aspect !== "auto" ? "is-on" : ""}`} aria-label={t("player.picture")} title={t("player.picture")} data-menu-toggle onClick={() => setMenu(menu === "picture" ? null : "picture")}>
             <Frame size={19} />
           </button>
+          <PartyControlButton />
           <button className="player__button" aria-label={t("player.speed")} data-menu-toggle onClick={() => setMenu(menu === "speed" ? null : "speed")}>
             <Gauge size={19} />
             {rate !== 1 && <small>{rate}×</small>}

@@ -18,8 +18,9 @@ where
     args.into_iter().find_map(|argument| {
         let lower = argument.to_ascii_lowercase();
         if lower.starts_with(&format!("{}://", crate::share_links::SCHEME)) {
-            return friend_link(&argument)
+            return code_link(&argument, "friend", 6..=12)
                 .map(|value| LaunchRequest { kind: "friend", value })
+                .or_else(|| code_link(&argument, "room", 6..=6).map(|value| LaunchRequest { kind: "room", value }))
                 .or_else(|| title_link(&argument).map(|value| LaunchRequest { kind: "title", value }));
         }
         if lower.starts_with("magnet:?") {
@@ -43,13 +44,13 @@ where
     })
 }
 
-fn friend_link(argument: &str) -> Option<String> {
+fn code_link(argument: &str, host: &str, lengths: std::ops::RangeInclusive<usize>) -> Option<String> {
     let url = tauri::Url::parse(argument).ok()?;
-    if url.host_str()? != "friend" {
+    if url.host_str()? != host {
         return None;
     }
     let code = url.path().trim_matches('/');
-    let valid = (6..=12).contains(&code.len()) && code.chars().all(|c| c.is_ascii_alphanumeric());
+    let valid = lengths.contains(&code.len()) && code.chars().all(|c| c.is_ascii_alphanumeric());
     valid.then(|| code.to_ascii_uppercase())
 }
 
@@ -96,6 +97,8 @@ mod tests {
         assert_eq!(read("kinuza://evil/movie/1"), None);
         assert_eq!(read("kinuza://title/movie/1/2"), None);
         assert_eq!(read("kinuza://friend/abcd2345"), Some(("friend", "ABCD2345".to_owned())));
+        assert_eq!(read("kinuza://room/kx74qp"), Some(("room", "KX74QP".to_owned())));
+        assert_eq!(read("kinuza://room/kx74qpz"), None);
         assert_eq!(read("kinuza://friend/ab"), None);
         assert_eq!(read("kinuza://friend/abcd-2345"), None);
     }

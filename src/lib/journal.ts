@@ -7,7 +7,7 @@ const maxEntries = 200;
 const saveDelayMs = 500;
 const maxDetailLength = 300;
 
-export type JournalArea = "catalog" | "library" | "downloads" | "player" | "import" | "settings" | "updates" | "system" | "account";
+export type JournalArea = "catalog" | "library" | "downloads" | "player" | "import" | "settings" | "updates" | "system" | "account" | "party";
 
 export interface JournalEntry {
   time: number;

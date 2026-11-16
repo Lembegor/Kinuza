@@ -51,6 +51,7 @@ pub async fn torrent_inspect(
     state: State<'_, AppState>,
     link: Option<String>,
     path: Option<String>,
+    peers: Option<Vec<String>>,
 ) -> CommandResult<TorrentPreview> {
     let source = match (link, path) {
         (Some(link), _) => {
@@ -75,7 +76,8 @@ pub async fn torrent_inspect(
         }
         (None, None) => return Err("no_source".to_owned()),
     };
-    state.engine.inspect(source).await.map_err(to_message)
+    let peers: Vec<std::net::SocketAddr> = peers.unwrap_or_default().iter().take(16).filter_map(|peer| peer.parse().ok()).collect();
+    state.engine.inspect_with_peers(source, peers).await.map_err(to_message)
 }
 
 fn is_supported_link(link: &str) -> bool {
@@ -113,6 +115,12 @@ pub async fn torrent_pause(state: State<'_, AppState>, info_hash: String) -> Com
 #[tauri::command(async)]
 pub fn torrent_set_upload(state: State<'_, AppState>, info_hash: String, enabled: bool) -> CommandResult<()> {
     state.engine.set_upload(&info_hash, enabled).map_err(to_message)
+}
+
+#[tauri::command(async)]
+pub fn torrent_add_peers(state: State<'_, AppState>, info_hash: String, peers: Vec<String>) -> CommandResult<usize> {
+    let addresses: Vec<std::net::SocketAddr> = peers.iter().take(16).filter_map(|peer| peer.parse().ok()).collect();
+    state.engine.add_peers(&info_hash, &addresses).map_err(to_message)
 }
 
 #[tauri::command]

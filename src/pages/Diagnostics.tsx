@@ -201,6 +201,7 @@ const areaNames: Record<JournalArea, MessageKey> = {
   updates: "journal.area.updates",
   system: "journal.area.system",
   account: "journal.area.account",
+  party: "journal.area.party",
 };
 
 function areaName(area: JournalArea): string {

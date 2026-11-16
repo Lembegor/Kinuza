@@ -50,7 +50,7 @@ export interface AppInfo {
 }
 
 export interface LaunchRequest {
-  kind: "magnet" | "file" | "title" | "friend";
+  kind: "magnet" | "file" | "title" | "friend" | "room";
   value: string;
 }
 
@@ -384,13 +384,14 @@ export const backend = {
   ffmpegStatus: () => call<FfmpegStatus>("ffmpeg_status"),
   ffmpegInstall: () => call<void>("ffmpeg_install"),
   mediaTracks: (infoHash: string, fileIndex: number) => call<MediaTracks>("media_tracks", { infoHash, fileIndex }),
-  inspectLink: (link: string) => call<TorrentPreview>("torrent_inspect", { link }),
+  inspectLink: (link: string, peers: string[] = []) => call<TorrentPreview>("torrent_inspect", { link, peers }),
   inspectFile: (path: string) => call<TorrentPreview>("torrent_inspect", { path }),
   addTorrent: (infoHash: string, files: number[], downloadDir: string | null) =>
     call<void>("torrent_add", { infoHash, files, downloadDir }),
   listTorrents: () => call<TorrentView[]>("torrent_list"),
   pause: (infoHash: string) => call<void>("torrent_pause", { infoHash }),
   setUpload: (infoHash: string, enabled: boolean) => call<void>("torrent_set_upload", { infoHash, enabled }),
+  addPeers: (infoHash: string, peers: string[]) => call<number>("torrent_add_peers", { infoHash, peers }),
   resume: (infoHash: string) => call<void>("torrent_resume", { infoHash }),
   excludeFiles: (infoHash: string, files: number[]) => call<void>("torrent_exclude_files", { infoHash, files }),
   focusTorrent: (infoHash: string) => call<void>("torrent_focus", { infoHash }),
@@ -525,6 +526,14 @@ const errorMessages: Record<string, MessageKey> = {
   sync_newer: "errors.syncNewer",
   sync_damaged: "errors.syncDamaged",
   avatar_too_large: "errors.avatarTooLarge",
+  party_not_found: "errors.partyNotFound",
+  party_full: "errors.partyFull",
+  party_banned: "errors.partyBanned",
+  party_old_app: "errors.partyOldApp",
+  party_busy: "errors.partyBusy",
+  party_not_allowed: "errors.partyNotAllowed",
+  party_no_source: "errors.partyNoSource",
+  party_offline: "errors.partyOffline",
 };
 
 export function describeError(error: unknown): string {
