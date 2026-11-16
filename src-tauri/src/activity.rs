@@ -163,22 +163,22 @@ pub fn prune(data_dir: &Path, before: i64) -> Result<usize, String> {
     Ok(dropped)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn activity_edit(state: State<'_, AppState>, remove: Vec<String>, upsert: Vec<Value>) -> Result<usize, String> {
     edit(&state.data_dir, &remove, &upsert)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn activity_prune(state: State<'_, AppState>, before: i64) -> Result<usize, String> {
     prune(&state.data_dir, before)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn activity_append(state: State<'_, AppState>, events: Vec<Value>) -> Result<usize, String> {
     append(&state.data_dir, &events)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn activity_read(state: State<'_, AppState>, since: Option<i64>) -> Vec<Value> {
     read(&state.data_dir, since.unwrap_or(0))
 }

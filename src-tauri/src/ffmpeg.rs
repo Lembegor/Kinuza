@@ -171,7 +171,7 @@ pub fn command(executable: &Path) -> Command {
     command
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn ffmpeg_status(app: State<'_, AppState>, ffmpeg: State<'_, FfmpegState>) -> FfmpegStatus {
     let total = ffmpeg.total_bytes.load(Ordering::Relaxed);
     FfmpegStatus {

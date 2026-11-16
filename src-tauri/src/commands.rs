@@ -100,7 +100,7 @@ pub async fn torrent_add(
         .map_err(to_message)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn torrent_list(state: State<'_, AppState>) -> Vec<TorrentView> {
     state.engine.list()
 }
@@ -110,7 +110,7 @@ pub async fn torrent_pause(state: State<'_, AppState>, info_hash: String) -> Com
     state.engine.pause(&info_hash).await.map_err(to_message)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn torrent_set_upload(state: State<'_, AppState>, info_hash: String, enabled: bool) -> CommandResult<()> {
     state.engine.set_upload(&info_hash, enabled).map_err(to_message)
 }
@@ -156,7 +156,7 @@ pub async fn torrent_focus(state: State<'_, AppState>, info_hash: String) -> Com
     state.engine.focus(&info_hash).await.map_err(to_message)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn torrent_reorder(state: State<'_, AppState>, info_hashes: Vec<String>) {
     state.engine.reorder(&info_hashes);
 }
@@ -182,7 +182,7 @@ pub fn torrent_warm(state: State<'_, AppState>, info_hash: String, file_index: u
     });
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn torrent_hold(state: State<'_, AppState>, info_hash: String) {
     state.engine.hold_online(&info_hash);
 }
@@ -196,7 +196,7 @@ pub async fn torrent_release(state: State<'_, AppState>, info_hash: String) -> C
     released.map_err(to_message)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn torrent_set_policy(state: State<'_, AppState>, policy: crate::engine::DownloadPolicy) {
     state.engine.set_policy(policy);
 }
@@ -209,7 +209,7 @@ pub struct StorageInfo {
     cache_bytes: u64,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn storage_info(state: State<'_, AppState>, download_dir: Option<String>) -> CommandResult<StorageInfo> {
     let folder = download_dir
         .filter(|dir| !dir.trim().is_empty())
@@ -268,7 +268,7 @@ fn disk_space(_folder: &std::path::Path) -> Option<StorageInfo> {
     None
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn file_location(
     state: State<'_, AppState>,
     info_hash: String,
@@ -311,7 +311,7 @@ pub async fn open_external(
     Ok(player.name.to_owned())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn torrent_file_map(state: State<'_, AppState>, info_hash: String, file_index: usize, buckets: usize) -> CommandResult<Vec<u8>> {
     state.engine.file_pieces(&info_hash, file_index).map(|pieces| pieces.buckets(buckets)).map_err(to_message)
 }

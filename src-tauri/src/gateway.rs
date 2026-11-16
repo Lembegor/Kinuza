@@ -16,6 +16,7 @@ const APP_KEY: &str = "tB1Ref_s4XVHOuc-yEep4je7F7gcIlaUv7WU9krMIi0";
 const TOPIC_URL: &str = "https://rutracker.org/forum/viewtopic.php?t=";
 const ERROR_PREFIX: &str = "gateway_";
 const DOWN: &str = "gateway_down";
+const STALL_SECONDS: u64 = 20;
 
 fn client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
@@ -23,6 +24,7 @@ fn client() -> &'static reqwest::Client {
         reqwest::Client::builder()
             .user_agent(concat!("Kinuza/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(10))
+            .read_timeout(Duration::from_secs(STALL_SECONDS))
             .timeout(Duration::from_secs(100))
             .build()
             .expect("gateway client")
@@ -72,31 +74,41 @@ fn error_code(raw: &str) -> String {
 
 static WORKING_MIRROR: AtomicUsize = AtomicUsize::new(0);
 
-async fn send(path: &str, query: &[(&str, String)]) -> Result<reqwest::Response, String> {
+async fn send(path: &str, query: &[(&str, String)]) -> Result<(reqwest::StatusCode, bytes::Bytes), String> {
     let first = WORKING_MIRROR.load(Ordering::Relaxed) % MIRRORS.len();
+    let mut answer = None;
     for step in 0..MIRRORS.len() {
         let index = (first + step) % MIRRORS.len();
         let mirror = MIRRORS[index];
-        match client().get(format!("{mirror}{path}")).header("X-Kinuza-Key", APP_KEY).query(query).send().await {
-            Ok(response) => {
+        let attempt = async {
+            let response = client().get(format!("{mirror}{path}")).header("X-Kinuza-Key", APP_KEY).query(query).send().await?;
+            let status = response.status();
+            Ok::<_, reqwest::Error>((status, response.bytes().await?))
+        }
+        .await;
+        match attempt {
+            Ok((status, body)) if status.is_success() || serde_json::from_slice::<ErrorBody>(&body).is_ok() => {
                 WORKING_MIRROR.store(index, Ordering::Relaxed);
-                return Ok(response);
+                return Ok((status, body));
             }
-            Err(error) => tracing::warn!("gateway: {path} unreachable at {mirror}: {error}"),
+            Ok((status, body)) => {
+                tracing::warn!("gateway: {path} answered {status} without a gateway error at {mirror}");
+                answer = Some((status, body));
+            }
+            Err(error) => tracing::warn!("gateway: {path} failed at {mirror}: {error}"),
         }
     }
-    Err(DOWN.to_owned())
+    answer.ok_or_else(|| DOWN.to_owned())
 }
 
-async fn get(path: &str, query: &[(&str, String)]) -> Result<reqwest::Response, String> {
-    let response = send(path, query).await?;
-    if response.status().is_success() {
-        return Ok(response);
+async fn get(path: &str, query: &[(&str, String)]) -> Result<bytes::Bytes, String> {
+    let (status, body) = send(path, query).await?;
+    if status.is_success() {
+        return Ok(body);
     }
-    let status = response.status();
-    let body = response.json::<ErrorBody>().await.map(|body| body.error).unwrap_or_default();
-    tracing::warn!("gateway: {path} answered {status} {body}");
-    Err(error_code(&body))
+    let code = serde_json::from_slice::<ErrorBody>(&body).map(|body| body.error).unwrap_or_default();
+    tracing::warn!("gateway: {path} answered {status} {code}");
+    Err(error_code(&code))
 }
 
 fn items_of(body: SearchBody) -> Vec<RutrackerItem> {
@@ -120,7 +132,7 @@ pub async fn gateway_search(query: String, page: Option<u32>, kind_name: Option<
         &[("q", query), ("page", page.unwrap_or(0).to_string()), ("kind", kind(kind_name).to_owned())],
     )
     .await?;
-    let body = response.json::<SearchBody>().await.map_err(|_| DOWN.to_owned())?;
+    let body = serde_json::from_slice::<SearchBody>(&response).map_err(|_| DOWN.to_owned())?;
     Ok(items_of(body))
 }
 
@@ -138,8 +150,7 @@ pub async fn gateway_torrent_inspect(
     if let Some(seconds) = max_age {
         query.push(("maxAge", seconds.to_string()));
     }
-    let response = get("torrent", &query).await?;
-    let bytes = response.bytes().await.map_err(|_| DOWN.to_owned())?;
+    let bytes = get("torrent", &query).await?;
     if bytes.first() != Some(&b'd') {
         return Err("torrent_file_unavailable".to_owned());
     }
@@ -153,13 +164,13 @@ pub async fn gateway_video_sizes(ids: Vec<String>, kind_name: Option<String>) ->
         return Ok(HashMap::new());
     }
     let response = get("sizes", &[("ids", ids.join(",")), ("kind", kind(kind_name).to_owned())]).await?;
-    response.json::<HashMap<String, VideoSize>>().await.map_err(|_| DOWN.to_owned())
+    serde_json::from_slice::<HashMap<String, VideoSize>>(&response).map_err(|_| DOWN.to_owned())
 }
 
 #[tauri::command]
 pub async fn gateway_status() -> GatewayStatus {
     match get("status", &[]).await {
-        Ok(response) => response.json::<GatewayStatus>().await.unwrap_or(GatewayStatus { state: "down".to_owned() }),
+        Ok(response) => serde_json::from_slice::<GatewayStatus>(&response).unwrap_or(GatewayStatus { state: "down".to_owned() }),
         Err(_) => GatewayStatus { state: "down".to_owned() },
     }
 }

@@ -149,7 +149,7 @@ fn build_report(app: &tauri::AppHandle, data_dir: &Path, request: &ReportRequest
     sanitize(&report)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn report_build(app: tauri::AppHandle, state: State<'_, AppState>, request: ReportRequest) -> String {
     build_report(&app, &state.data_dir, &request)
 }

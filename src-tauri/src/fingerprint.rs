@@ -48,6 +48,7 @@ const CREDITS_SHORTEST_SECONDS: f64 = 15.0;
 const SCENE_SHORTEST_SECONDS: f64 = 15.0;
 const SCENE_SOUND_SECONDS: f64 = 8.0;
 const SCENE_SOUND_SHARE: f64 = 0.5;
+const REPEATED_TAIL_SHORTEST_SECONDS: f64 = 4.0;
 
 const ERROR_DECODER_MISSING: &str = "decoder_missing";
 const ERROR_PRINT_FAILED: &str = "print_failed";
@@ -388,8 +389,19 @@ pub fn find_credits(target: &Print, neighbours: &[Print], duration: f64) -> Opti
     let run = pick_agreed(candidates)?;
     let start = duration + time_of(target, run.first);
     let end = (duration + time_of(target, run.last + 1)).min(duration);
-    let rest = &target.quiet[(run.last + 1).min(target.quiet.len())..];
-    let sound_seconds = rest.iter().filter(|quiet| !**quiet).count() as f64 * hop_seconds();
+    let tail_from = (run.last + 1).min(target.quiet.len());
+    let rest = &target.quiet[tail_from..];
+    let repeated = neighbours
+        .iter()
+        .flat_map(|other| shared_runs(target, other, REPEATED_TAIL_SHORTEST_SECONDS))
+        .filter(|shared| shared.last >= tail_from)
+        .collect::<Vec<_>>();
+    let unique_sound = rest
+        .iter()
+        .enumerate()
+        .filter(|(index, quiet)| !**quiet && !repeated.iter().any(|shared| shared.first <= tail_from + index && tail_from + index <= shared.last))
+        .count();
+    let sound_seconds = unique_sound as f64 * hop_seconds();
     let rest_seconds = duration - end;
     let scene_after = rest_seconds >= SCENE_SHORTEST_SECONDS
         && sound_seconds >= SCENE_SOUND_SECONDS
@@ -858,6 +870,26 @@ mod tests {
         let second = to_samples(&episode(&[speech(220.0, 63), song.clone()]), 1.0, 2);
         let credits = find_credits(&fingerprint(&first, -300.0), &[fingerprint(&second, -290.0)], 1300.0).expect("credits found");
         assert!(!credits.scene_after);
+    }
+
+    #[test]
+    fn a_studio_outro_repeated_every_episode_is_not_a_scene() {
+        let song = melody(70.0, 81);
+        let outro = speech(25.0, 82);
+        let first = to_samples(&episode(&[speech(200.0, 83), song.clone(), speech(6.0, 85), outro.clone()]), 1.0, 1);
+        let second = to_samples(&episode(&[speech(230.0, 84), song.clone(), speech(3.0, 86), outro.clone()]), 1.0, 2);
+        let credits = find_credits(&fingerprint(&first, -295.0), &[fingerprint(&second, -295.0)], 1400.0).expect("credits found");
+        assert!(!credits.scene_after);
+    }
+
+    #[test]
+    fn a_scene_before_the_studio_outro_is_still_noticed() {
+        let song = melody(70.0, 91);
+        let outro = speech(20.0, 92);
+        let first = to_samples(&episode(&[speech(160.0, 93), song.clone(), speech(40.0, 94), outro.clone()]), 1.0, 1);
+        let second = to_samples(&episode(&[speech(220.0, 95), song.clone(), outro.clone()]), 1.0, 2);
+        let credits = find_credits(&fingerprint(&first, -290.0), &[fingerprint(&second, -290.0)], 1400.0).expect("credits found");
+        assert!(credits.scene_after);
     }
 
     #[test]

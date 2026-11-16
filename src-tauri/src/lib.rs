@@ -101,6 +101,7 @@ pub fn run() {
             };
             app.manage(state);
             catalog::start(app.handle().clone());
+            machine::watch_window_thread(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

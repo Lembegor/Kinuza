@@ -605,7 +605,7 @@ pub async fn catalog_search(app: AppHandle, query: String) -> Result<Vec<String>
     .map_err(|error| error.to_string())?
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn catalog_status(app: AppHandle) -> CatalogStatus {
     app.state::<CatalogState>().status.lock().map(|status| status.clone()).unwrap_or_default()
 }

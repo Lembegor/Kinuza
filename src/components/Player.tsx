@@ -189,10 +189,11 @@ const wheelVolumeStep = 0.05;
 let unattendedEpisodes = 0;
 let clockFallback = 0;
 const clockFallbacks = ["audio", "desync"];
+const clockCheckLeewayMs = 400;
 const diagnosticsEveryMs = 30_000;
 const firstDiagnosticsMs = 10_000;
 const setupLogDelayMs = 4000;
-const clockCheckMs = 3000;
+const clockCheckMs = 2000;
 const clockFastRatio = 1.4;
 const clockJumpRatio = 12;
 const clockBadChecks = 2;
@@ -214,6 +215,8 @@ interface SkipSegment {
 }
 
 const sceneAfterShortestSeconds = 15;
+const menuCloseClickMs = 500;
+const trailingChapter = /preview|next (episode|time)|trailer|teaser|logo|превью|анонс|следующ|трейлер|тизер|логотип/i;
 const soundNeighbourOffsets = [-1, 1, -2, 2];
 const soundNeighboursUsed = 3;
 
@@ -225,7 +228,17 @@ function skipSegments(chapters: Chapter[], sound: SoundSegments | null, duration
   const segments: SkipSegment[] = chapters.flatMap((chapter) => {
     const kind = skipKind(chapter);
     if (!kind) return [];
-    const sceneAfter = kind === "credits" && duration > 0 && chapter.end < duration - sceneAfterShortestSeconds;
+    const sceneAfter =
+      kind === "credits" &&
+      duration > 0 &&
+      chapter.end < duration - sceneAfterShortestSeconds &&
+      chapters.some(
+        (other) =>
+          other.start >= chapter.end - 1 &&
+          Math.min(other.end, duration) - other.start >= sceneAfterShortestSeconds &&
+          !skipKind(other) &&
+          !trailingChapter.test(other.title),
+      );
     return [{ kind, start: chapter.start, end: chapter.end, sceneAfter }];
   });
   if (sound?.intro && !segments.some((segment) => segment.kind === "intro")) {
@@ -1060,13 +1073,14 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
   }, [startHeld, metadataReady, releaseStart]);
 
   const generation = mpvPlayer.generation;
+  const [clockStep, setClockStep] = useState(clockFallback);
   useEffect(() => {
-    if (usingMpv && mpv.smoothMotion) void mpv.set("interpolation", settings.smoothMotion).catch(() => undefined);
-  }, [usingMpv, settings.smoothMotion, generation]);
-
-  useEffect(() => {
-    if (usingMpv && clockFallback > 0) void mpv.set("video-sync", clockFallbacks[clockFallback - 1]).catch(() => undefined);
-  }, [usingMpv, generation]);
+    if (!usingMpv) return;
+    const smooth = mpv.smoothMotion && settings.smoothMotion && clockStep === 0;
+    if (mpv.smoothMotion) void mpv.set("interpolation", smooth).catch(() => undefined);
+    const sync = clockStep > 0 ? clockFallbacks[clockStep - 1] : smooth ? "display-resample" : "audio";
+    void mpv.set("video-sync", sync).catch(() => undefined);
+  }, [usingMpv, settings.smoothMotion, generation, clockStep]);
 
   useEffect(() => {
     if (usingMpv) void mpv.set("audio-delay", audioDelay).catch(() => undefined);
@@ -1840,6 +1854,24 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
     return () => root.removeEventListener("wheel", onWheel);
   }, [placement, changeVolume, wakeControls]);
 
+  const menuClosedAt = useRef(0);
+  useEffect(() => {
+    if (menu === null) return;
+    const closeOutside = (event: PointerEvent) => {
+      if (event.button !== 0) return;
+      if ((event.target as HTMLElement | null)?.closest(".player__menu, [data-menu-toggle]")) return;
+      menuClosedAt.current = performance.now();
+      setMenu(null);
+    };
+    document.addEventListener("pointerdown", closeOutside, true);
+    return () => document.removeEventListener("pointerdown", closeOutside, true);
+  }, [menu]);
+  const clickPicture = () => {
+    if (performance.now() - menuClosedAt.current < menuCloseClickMs) return;
+    if (placement === "docked") onReturn();
+    else togglePlay();
+  };
+
   const controlsShown = controlsVisible || !playing || menu !== null || failed;
   const skipKey = skippable ? `${skippable.kind}:${skippable.start}` : null;
   const [skipFresh, setSkipFresh] = useState(false);
@@ -2177,9 +2209,14 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
     if (embeddedSubtitle !== null) setCues(embeddedCues);
   }, [embeddedCues, embeddedSubtitle]);
 
-  const rememberSubtitles = (language: string | null, byUser: boolean) => {
+  const rememberSubtitles = (language: string | null, byUser: boolean, track?: SubtitleTrackInfo) => {
     subtitlesDecided.current = true;
-    if (byUser && language) rememberForTitle(session.title, { subtitleLanguage: language });
+    if (!byUser || (!language && !track)) return;
+    rememberForTitle(session.title, {
+      ...(language ? { subtitleLanguage: language } : {}),
+      subtitleTitle: track?.title ?? "",
+      subtitleSigns: track ? showsSignsOnly(track) : false,
+    });
   };
 
   const shiftSubtitles = (step: number) => {
@@ -2214,7 +2251,7 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
     setSubtitleKey(`embedded:${track.index}`);
     setSubtitleLabel(embeddedSubtitleLabel(track, locale));
     setMenu(null);
-    rememberSubtitles(languageCode(track.language), byUser);
+    rememberSubtitles(languageCode(track.language), byUser, track);
   };
 
   const applySubtitles = (bytes: ArrayBuffer, key: string, label: string) => {
@@ -2421,7 +2458,19 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
       list.find((track) => (usingMpv ? track.isDefault : playsUnconverted(track))) ??
       list[0];
     const inLanguage = wanted ? tracks.filter((track) => languageCode(track.language) === wanted) : [];
+    const savedVoice: VoiceLike | null = preferences?.audioAuthor
+      ? { code: preferences.audioLanguage ?? "", kind: (preferences.audioKind || null) as VoiceLike["kind"], author: preferences.audioAuthor }
+      : null;
+    const remembered =
+      (preferences?.audioTitle ? tracks.find((track) => track.title === preferences.audioTitle) : undefined) ??
+      (savedVoice
+        ? tracks.find(
+            (track) =>
+              !commentaryTrackTitle.test(track.title) && sameVoice(soundInfo(track, locale, originalLanguage || undefined, audioGuess(track)), savedVoice),
+          )
+        : undefined);
     const choice =
+      remembered ??
       pickFrom(inLanguage.filter((track) => !commentaryTrackTitle.test(track.title))) ??
       pickFrom(inLanguage) ??
       (asked ? undefined : tracks.find(isOriginalTrack)) ??
@@ -2449,8 +2498,14 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
     pickedAudio.current = true;
     applyAudioTrack(track.index);
     setMenu(null);
-    const chosen = languageCode(track.language);
-    if (chosen) rememberForTitle(session.title, { audioLanguage: chosen, audioTitle: track.title });
+    const voice = soundInfo(track, locale, originalLanguage || undefined, audioGuess(track));
+    rememberForTitle(session.title, {
+      ...(voice.code ? { audioLanguage: voice.code } : {}),
+      audioTitle: track.title,
+      audioAuthor: voice.author,
+      audioKind: voice.kind ?? "",
+      ...(voice.author ? { releaseVoice: voice.author } : {}),
+    });
   };
 
   useConvertedAudio(videoRef, source ?? null, heardConverted, volume, muted, audioDelay);
@@ -2464,12 +2519,25 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
     const asked = preferences?.subtitleLanguage || settings.subtitleLanguage;
     const wanted = asked || language;
     if (wanted === subtitlesOff) return;
+    const savedTitle = preferences?.subtitleTitle;
+    const sameTitle = savedTitle
+      ? (media.tracks?.subtitles ?? []).find(
+          (track) => showable(track) && track.title === savedTitle && (!asked || !languageCode(track.language) || languageCode(track.language) === asked),
+        )
+      : undefined;
+    if (sameTitle) {
+      selectEmbeddedSubtitle(sameTitle, false);
+      return;
+    }
     const heard = audioTrack !== null ? languageCode(media.tracks?.audio[audioTrack]?.language) : "";
     if (!asked && heard === wanted) return;
 
     const embedded = (media.tracks?.subtitles ?? []).filter((track) => showable(track) && languageCode(track.language) === wanted);
     const full =
-      embedded.find((track) => track.isText && !showsSignsOnly(track)) ?? embedded.find((track) => !showsSignsOnly(track)) ?? embedded[0];
+      (preferences?.subtitleSigns ? embedded.find((track) => showsSignsOnly(track)) : undefined) ??
+      embedded.find((track) => track.isText && !showsSignsOnly(track)) ??
+      embedded.find((track) => !showsSignsOnly(track)) ??
+      embedded[0];
     const file = subtitleOptions.find((option) => option.languageCode === wanted);
     if (full) selectEmbeddedSubtitle(full, false);
     else if (file) void loadTorrentSubtitle(file, false);
@@ -2596,8 +2664,12 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
   }, [usingMpv, metadataReady, source?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const clockWarned = useRef(false);
+  const lastStallAt = useRef(0);
   useEffect(() => {
-    if (!usingMpv || !playing || buffering) return;
+    lastStallAt.current = performance.now();
+  }, [buffering]);
+  useEffect(() => {
+    if (!usingMpv || !playing) return;
     const rateNow = () => videoRef.current?.playbackRate || 1;
     let last = { time: filmTime(), at: performance.now(), rate: rateNow() };
     let bad = 0;
@@ -2605,10 +2677,17 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
       const now = { time: filmTime(), at: performance.now(), rate: rateNow() };
       const wall = (now.at - last.at) / 1000;
       const ratio = (now.time - last.time) / (wall * now.rate);
-      const steady =
-        now.rate === last.rate && !holdSpeed.current.active && Date.now() - lastSeekAt.current > clockCheckMs * 2 && ratio < clockJumpRatio;
+      const counted =
+        !bufferingNow.current &&
+        lastStallAt.current < last.at - clockCheckLeewayMs &&
+        now.rate === last.rate &&
+        !holdSpeed.current.active &&
+        Date.now() - lastSeekAt.current > clockCheckMs * 2 &&
+        ratio > 0 &&
+        ratio < clockJumpRatio;
       last = now;
-      bad = steady && ratio > clockFastRatio ? bad + 1 : 0;
+      if (!counted) return;
+      bad = ratio > clockFastRatio ? bad + 1 : 0;
       if (bad < clockBadChecks) return;
       bad = 0;
       if (clockWarned.current) return;
@@ -2623,17 +2702,18 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
             void mpv.set("speed", now.rate).catch(() => undefined);
             return;
           }
+          while (clockFallbacks[clockFallback] && clockFallbacks[clockFallback] === stats["video-sync"]) clockFallback += 1;
           const next = clockFallbacks[clockFallback];
           if (next) clockFallback += 1;
           else clockWarned.current = true;
           void backend.appLog(
             `player: video ran ${ratio.toFixed(1)}x faster than the clock at ${Math.round(now.time)}s speed=${value("speed")} sync=${value("video-sync")} display=${value("display-fps")}/${value("estimated-display-fps")} jitter=${value("vsync-jitter")} ao=${value("current-ao")} device=${value("audio-device")}${next ? `, switching video sync to ${next}` : ", nothing left to switch"}`,
           );
-          if (next) void mpv.set("video-sync", next).catch(() => undefined);
+          setClockStep(clockFallback);
         });
     }, clockCheckMs);
     return () => clearInterval(timer);
-  }, [usingMpv, playing, buffering, source?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [usingMpv, playing, source?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!buffering || !metadataReady || !source || playedSeconds.current < 5) return;
@@ -2917,7 +2997,7 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
         hovered.current = false;
       }}
     >
-      {usingMpv && <div className="player__surface" onClick={placement === "docked" ? onReturn : togglePlay} onDoubleClick={toggleFullscreen} />}
+      {usingMpv && <div className="player__surface" onClick={clickPicture} onDoubleClick={toggleFullscreen} />}
 
       {url && mpvChoice.mode === "unavailable" && (
         <video
@@ -2927,7 +3007,7 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
           crossOrigin="anonymous"
           style={pictureStyle}
           autoPlay
-          onClick={placement === "docked" ? onReturn : togglePlay}
+          onClick={clickPicture}
           onDoubleClick={toggleFullscreen}
           onPlay={handlers.onPlay}
           onPause={handlers.onPause}
@@ -3401,25 +3481,25 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
 
           <div className="player__spacer" />
 
-          <button className={`player__button ${cues.length > 0 || (usingMpv && subtitleKey !== null) ? "is-on" : ""}`} aria-label={t("common.subtitles")} title={`${t("common.subtitles")} (C)`} onClick={() => setMenu(menu === "subtitles" ? null : "subtitles")}>
+          <button className={`player__button ${cues.length > 0 || (usingMpv && subtitleKey !== null) ? "is-on" : ""}`} aria-label={t("common.subtitles")} title={`${t("common.subtitles")} (C)`} data-menu-toggle onClick={() => setMenu(menu === "subtitles" ? null : "subtitles")}>
             <Captions size={20} />
           </button>
           <button
             className={`player__button ${settings.audioMode !== "off" ? "is-on" : ""}`}
             aria-label={t("player.audioTrack")}
             title={`${t("player.audioTrack")} (A)`}
-            onClick={() => setMenu(menu === "audio" ? null : "audio")}
+            data-menu-toggle onClick={() => setMenu(menu === "audio" ? null : "audio")}
           >
             <AudioLines size={19} />
           </button>
-          <button className={`player__button ${zoom !== 1 || aspect !== "auto" ? "is-on" : ""}`} aria-label={t("player.picture")} title={t("player.picture")} onClick={() => setMenu(menu === "picture" ? null : "picture")}>
+          <button className={`player__button ${zoom !== 1 || aspect !== "auto" ? "is-on" : ""}`} aria-label={t("player.picture")} title={t("player.picture")} data-menu-toggle onClick={() => setMenu(menu === "picture" ? null : "picture")}>
             <Frame size={19} />
           </button>
-          <button className="player__button" aria-label={t("player.speed")} onClick={() => setMenu(menu === "speed" ? null : "speed")}>
+          <button className="player__button" aria-label={t("player.speed")} data-menu-toggle onClick={() => setMenu(menu === "speed" ? null : "speed")}>
             <Gauge size={19} />
             {rate !== 1 && <small>{rate}×</small>}
           </button>
-          <button className="player__button player__button--quality" aria-label={t("player.quality")} onClick={() => setMenu(menu === "quality" ? null : "quality")}>
+          <button className="player__button player__button--quality" aria-label={t("player.quality")} data-menu-toggle onClick={() => setMenu(menu === "quality" ? null : "quality")}>
             <Settings2 size={19} />
             <small>{source.quality || t("common.video")}</small>
           </button>

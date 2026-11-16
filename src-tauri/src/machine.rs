@@ -70,3 +70,39 @@ fn describe() -> Vec<String> {
 fn describe() -> Vec<String> {
     vec![format!("os: {}", run("uname", &["-sr"]).unwrap_or_default())]
 }
+
+const WINDOW_PING_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+const WINDOW_STALL_SECONDS: u64 = 3;
+
+pub fn watch_window_thread(app: tauri::AppHandle) {
+    use std::sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    };
+    let started = std::time::Instant::now();
+    let answered = Arc::new(AtomicU64::new(0));
+    std::thread::spawn(move || {
+        let mut stalled_since: Option<u64> = None;
+        loop {
+            std::thread::sleep(WINDOW_PING_EVERY);
+            let now = started.elapsed().as_secs();
+            let flag = answered.clone();
+            if app.run_on_main_thread(move || flag.store(started.elapsed().as_secs(), Ordering::Relaxed)).is_err() {
+                return;
+            }
+            let last = answered.load(Ordering::Relaxed);
+            let behind = now.saturating_sub(last);
+            match stalled_since {
+                None if behind >= WINDOW_STALL_SECONDS && last > 0 => {
+                    tracing::warn!("window: not answering for {behind}s");
+                    stalled_since = Some(last);
+                }
+                Some(since) if behind < WINDOW_STALL_SECONDS => {
+                    tracing::warn!("window: answering again after {}s", now.saturating_sub(since));
+                    stalled_since = None;
+                }
+                _ => {}
+            }
+        }
+    });
+}

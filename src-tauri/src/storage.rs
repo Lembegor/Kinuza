@@ -71,7 +71,7 @@ fn old_logs_bytes(folder: &Path) -> u64 {
         .unwrap_or(0)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn storage_report(app: AppHandle, state: State<'_, AppState>, download_dir: Option<String>) -> StorageReport {
     let data_dir = &state.data_dir;
     let downloads = download_dir
@@ -129,7 +129,7 @@ fn remove_children(folder: &Path, keep: Option<&str>) -> u64 {
     freed
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn storage_clear_part(app: AppHandle, state: State<'_, AppState>, id: String) -> Result<u64, String> {
     let data_dir = &state.data_dir;
     let freed = match id.as_str() {

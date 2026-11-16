@@ -3,8 +3,12 @@ import type { Progress, ReleaseWatch, Source, TitleRef, TrackEntry } from "../st
 export interface TitlePreferences {
   audioLanguage?: string;
   audioTitle?: string;
+  audioAuthor?: string;
+  audioKind?: string;
   releaseVoice?: string;
   subtitleLanguage?: string;
+  subtitleTitle?: string;
+  subtitleSigns?: boolean;
   rate?: number;
   subtitleDelay?: number;
   audioDelay?: number;

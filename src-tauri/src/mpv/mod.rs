@@ -257,7 +257,7 @@ pub struct MpvStatus {
     total_bytes: u64,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn mpv_status(handle: AppHandle, app: State<'_, AppState>, mpv: State<'_, MpvState>) -> MpvStatus {
     let total = mpv.total_bytes.load(Ordering::Relaxed);
     MpvStatus {

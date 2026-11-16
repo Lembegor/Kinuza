@@ -33,7 +33,7 @@ const WINDOWS_OPTIONS: &[(&str, &str)] = &[
     ("vo", "gpu-next"),
     ("gpu-api", "d3d11"),
     ("profile", "high-quality"),
-    ("video-sync", "display-resample"),
+    ("video-sync", "audio"),
     ("background-color", "#000000"),
 ];
 
