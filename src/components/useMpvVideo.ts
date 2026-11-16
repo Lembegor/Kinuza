@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { MediaTracks } from "../lib/backend";
+import { backend, type MediaTracks } from "../lib/backend";
 import { report } from "../lib/journal";
 import { mpv, type MpvChapter, type MpvEvent, type MpvTrack } from "../lib/mpv";
 
@@ -26,9 +26,20 @@ const exactSeekDelayMs = 350;
 const restartLimit = 1;
 const pictureSettleMs = 60;
 const seekGiveUpMs = 5000;
+const pictureCheckMs = 2500;
+
+function pictureShown(): boolean {
+  return document.documentElement.classList.contains("is-mpv-picture");
+}
 
 function showPicture(shown: boolean): void {
   document.documentElement.classList.toggle("is-mpv-picture", shown);
+}
+
+function where(url: string | null): string {
+  if (!url) return "-";
+  const found = /\/(?:stream|voice)\/([0-9a-f]{8})[0-9a-f]*\/(\d+)/i.exec(url);
+  return found ? `${found[1]}/${found[2]}` : "other";
 }
 
 export class MpvVideo {
@@ -61,6 +72,9 @@ export class MpvVideo {
   private outputReady = false;
   private frameShown = false;
   private pictureTimer: ReturnType<typeof setTimeout> | undefined;
+  private pictureState = "";
+  private stuckSince = 0;
+  private checking = false;
 
   get currentTime(): number {
     return this.seekTarget ?? this.time;
@@ -144,7 +158,8 @@ export class MpvVideo {
     this.rateNow = rate;
   }
 
-  async load(url: string, start: number, startPaused = false): Promise<void> {
+  async load(url: string, start: number, startPaused = false, reason = "open"): Promise<void> {
+    void backend.appLog(`player: mpv loads ${where(url)} at ${Math.round(start)}s paused=${startPaused} reason=${reason}`);
     this.url = url;
     this.time = start;
     this.length = Number.NaN;
@@ -232,26 +247,89 @@ export class MpvVideo {
     this.restarts += 1;
     const position = this.currentTime;
     report("player", "journal.mpv.restarted");
-    void this.load(this.url, position).catch(() => this.handlers.onError?.());
+    void this.load(this.url, position, false, "mpv went away").catch(() => this.handlers.onError?.());
     return true;
+  }
+
+  private notePicture(shown: boolean): void {
+    const state = shown ? "shown" : `hidden width=${this.width} output=${this.outputReady} frame=${this.frameShown}`;
+    if (state === this.pictureState) return;
+    this.pictureState = state;
+    if (this.url) void backend.appLog(`player: picture ${state} at ${Math.round(this.time)}s`);
   }
 
   private refreshPicture(): void {
     clearTimeout(this.pictureTimer);
     if (!(this.width > 0 && this.outputReady && this.frameShown)) {
       showPicture(false);
+      this.notePicture(false);
       return;
     }
-    this.pictureTimer = setTimeout(() => showPicture(this.width > 0 && this.outputReady && this.frameShown), pictureSettleMs);
+    this.pictureTimer = setTimeout(() => {
+      const shown = this.width > 0 && this.outputReady && this.frameShown;
+      showPicture(shown);
+      this.notePicture(shown);
+    }, pictureSettleMs);
+  }
+
+  private placementNoted = "";
+
+  private notePlacement(): void {
+    const root = document.documentElement.classList;
+    const placement = root.contains("is-player-inline") ? "inline" : root.contains("is-player-docked") ? "docked" : "full";
+    const slot = placement === "inline" ? document.querySelector(".stage__slot") : null;
+    const covered = slot !== null && getComputedStyle(slot).backgroundColor !== "rgba(0, 0, 0, 0)";
+    const state = `${placement}${covered ? " covered" : ""}`;
+    if (state === this.placementNoted) return;
+    this.placementNoted = state;
+    if (covered) void backend.appLog(`player: the ${placement} slot paints over the picture (stage playing=${document.querySelector(".stage.is-playing") !== null})`);
+  }
+
+  checkPicture(): void {
+    const playing = this.url !== null && this.loaded && !this.pausedNow && !this.waiting;
+    if (playing && pictureShown()) this.notePlacement();
+    if (!playing || pictureShown()) {
+      this.stuckSince = 0;
+      return;
+    }
+    const now = performance.now();
+    if (this.stuckSince === 0) {
+      this.stuckSince = now;
+      return;
+    }
+    if (now - this.stuckSince < pictureCheckMs || this.checking) return;
+    this.checking = true;
+    void mpv
+      .stats(["estimated-vf-fps", "width", "height", "frame-drop-count"])
+      .then((stats) => {
+        const fps = Number(stats["estimated-vf-fps"]);
+        const width = Number(stats.width);
+        if (!(fps > 0) || !(width > 0) || pictureShown() || this.pausedNow) return;
+        void backend.appLog(
+          `player: picture was hidden while mpv showed ${fps.toFixed(1)} fps (width=${this.width} output=${this.outputReady} frame=${this.frameShown}), showing it`,
+        );
+        this.width = width;
+        this.height = Number(stats.height) || this.height;
+        this.outputReady = true;
+        this.frameShown = true;
+        this.refreshPicture();
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        this.checking = false;
+        this.stuckSince = 0;
+      });
   }
 
   handle(event: MpvEvent): void {
     if (event.event === "playback-restart") {
+      if (!this.frameShown) void backend.appLog(`player: mpv shows the first frame at ${Math.round(this.time)}s`);
       this.frameShown = true;
       this.refreshPicture();
       return;
     }
     if (event.event === "file-loaded") {
+      void backend.appLog(`player: mpv opened ${where(this.url)}`);
       this.loaded = true;
       this.announceMetadata();
       this.onTracksChanged?.();
@@ -264,6 +342,7 @@ export class MpvVideo {
       return;
     }
     if (event.event === "shutdown") {
+      void backend.appLog(`player: mpv connection closed at ${Math.round(this.time)}s, ${this.url ? "restarting" : "idle"}`);
       this.outputReady = false;
       this.frameShown = false;
       this.refreshPicture();
@@ -370,8 +449,10 @@ export function useMpvVideo(enabled: boolean): { video: MpvVideo; tracks: MediaT
     });
     document.documentElement.classList.add("is-mpv");
     void mpv.surface(true).catch(() => undefined);
+    const pictureTimer = setInterval(() => video.checkPicture(), 1000);
     return () => {
       cancelled = true;
+      clearInterval(pictureTimer);
       stop?.();
       video.onTracksChanged = null;
       video.onFileLoaded = null;

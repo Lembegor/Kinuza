@@ -198,6 +198,11 @@ export async function convertedStreamUrl(infoHash: string, fileIndex: number, au
   return `${info.streamBaseUrl}/video/${infoHash}/${fileIndex}?${query}`;
 }
 
+export async function voiceStreamUrl(infoHash: string, fileIndex: number, track: number, from: number, stretch: number): Promise<string> {
+  const info = await getAppInfo();
+  return `${info.streamBaseUrl}/voice/${infoHash}/${fileIndex}?track=${track}&from=${Math.max(0, from).toFixed(3)}&stretch=${stretch.toFixed(7)}`;
+}
+
 export async function audioStreamUrl(infoHash: string, fileIndex: number, track: number, start: number): Promise<string> {
   const info = await getAppInfo();
   return `${info.streamBaseUrl}/audio/${infoHash}/${fileIndex}?track=${track}&start=${start.toFixed(3)}`;
@@ -367,6 +372,7 @@ export interface AudioTrackInfo {
 export interface PrintTarget {
   infoHash: string;
   fileIndex: number;
+  stretch?: number;
 }
 
 export interface SoundSegments {

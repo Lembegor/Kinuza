@@ -1,4 +1,4 @@
-import { pictureBadge, sourceName } from "../lib/releaseNames";
+import { cutLabel, pictureBadge, sourceName } from "../lib/releaseNames";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Check, LoaderCircle, Play, Search } from "lucide-react";
 import { arcsOfSeason, inLayout, type EpisodeLayout } from "../lib/episodeLayout";
@@ -12,6 +12,7 @@ import { usePlayerPlacement } from "../state/playerPlacement";
 import { useUi } from "../state/ui";
 import { useHoverWarm } from "../state/warmup";
 import { autoPlay, pickKey, preparePick, requestPick, useAutoPick, type PickCandidate, type PickEntry, type PickTarget } from "../state/autoPick";
+import { sourceNames } from "../lib/trackers";
 
 const specialsSeason = 0;
 
@@ -293,9 +294,15 @@ export function PickNote({ entry, chosen }: { entry: PickEntry | undefined; chos
     return (
       <>
         <i className={`health health--${chosen.health}`} />
-        {[pictureBadge(chosen.resolution, chosen.quality).label, sourceName(chosen.quality).name, chosen.voiceText || chosen.voices].filter(Boolean).join(" · ")} ·{" "}
+        {[pictureBadge(chosen.resolution, chosen.quality).label, sourceName(chosen.quality).name, cutLabel(chosen.title), chosen.voiceText || chosen.voices].filter(Boolean).join(" · ")} ·{" "}
         {tn("stage.pick.seeds", chosen.seeds)}
+        {chosen.source && chosen.source !== "rutracker" && <> · {t("release.from", { source: sourceNames[chosen.source] })}</>}
         {chosen.health !== "good" && <em>{t(chosen.health === "weak" ? "stage.pick.weak" : "stage.pick.poor")}</em>}
+        {chosen.donorId ? (
+          <> · <em className="stage__note-info">{t("release.voiceFromOther")}</em></>
+        ) : chosen.original ? (
+          <> · <em className="stage__note-info">{t("release.originalOnly")}</em></>
+        ) : null}
       </>
     );
   }

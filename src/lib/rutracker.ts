@@ -1,11 +1,20 @@
 import { backend, isDesktop, type TorrentPreview } from "./backend";
 
+export type ReleaseSource = "rutracker" | "nnm" | "yts" | "eztv" | "aniliberty" | "sukebei";
+
 export interface RutrackerItem {
   id: string;
   title: string;
   size: string;
   seeds: number;
   pageUrl: string;
+  source?: ReleaseSource;
+  infoHash?: string;
+  magnet?: string;
+  link?: string;
+  name?: string;
+  minutes?: number;
+  episodes?: { season: number; first: number; last: number };
 }
 
 export interface VideoSize {

@@ -132,7 +132,7 @@ export function recordItem(record: CatalogRecord, lang: Language = language()): 
     popularity: record.p,
     genreIds: record.g ?? [],
     language: record.l,
-    isAnime: (record.g ?? []).includes(animationGenreId) && record.l === "ja",
+    isAnime: (record.g ?? []).includes(animationGenreId) && (record.l === "ja" || /[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(record.o ?? "")),
   };
 }
 

@@ -72,6 +72,11 @@ export interface Settings {
   spoilerStills: boolean;
   gridDensity: GridDensity;
   accent: string;
+  homeOrder: string[];
+  homeHidden: string[];
+  homeFreshTab: string;
+  homePopularTab: string;
+  continueHidden: Record<string, number>;
   version: number;
 }
 
@@ -118,6 +123,11 @@ const defaults: Settings = {
   spoilerStills: true,
   gridDensity: "normal",
   accent: "",
+  homeOrder: [],
+  homeHidden: [],
+  homeFreshTab: "",
+  homePopularTab: "",
+  continueHidden: {},
   version: currentVersion,
 };
 

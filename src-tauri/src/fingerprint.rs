@@ -95,14 +95,46 @@ impl Part {
 pub struct PrintTarget {
     info_hash: String,
     file_index: usize,
+    #[serde(default)]
+    stretch: Option<f64>,
 }
 
 impl PrintTarget {
     fn key(&self) -> Option<String> {
         let hash = self.info_hash.to_ascii_lowercase();
-        (!hash.is_empty() && hash.len() <= 64 && hash.chars().all(|letter| letter.is_ascii_hexdigit()))
-            .then(|| format!("{hash}-{}", self.file_index))
+        if hash.is_empty() || hash.len() > 64 || !hash.chars().all(|letter| letter.is_ascii_hexdigit()) {
+            return None;
+        }
+        Some(match self.stretch_factor() {
+            Some(factor) => format!("{hash}-{}-s{}", self.file_index, (factor * 1_000_000.0).round() as i64),
+            None => format!("{hash}-{}", self.file_index),
+        })
     }
+
+    fn stretch_factor(&self) -> Option<f64> {
+        self.stretch.filter(|factor| (STRETCH_LOWEST..=STRETCH_HIGHEST).contains(factor) && (factor - 1.0).abs() > 1e-6)
+    }
+}
+
+const STRETCH_LOWEST: f64 = 0.9;
+const STRETCH_HIGHEST: f64 = 1.1;
+
+/// Plays `samples` slower by `factor` (below 1 stretches the sound), the way mpv's asetrate does.
+fn stretched(samples: &[i16], factor: f64) -> Vec<i16> {
+    if samples.len() < 2 {
+        return samples.to_vec();
+    }
+    let length = (samples.len() as f64 / factor) as usize;
+    (0..length)
+        .map(|index| {
+            let position = index as f64 * factor;
+            let left = position.floor() as usize;
+            let right = (left + 1).min(samples.len() - 1);
+            let weight = position - left as f64;
+            let left = samples[left.min(samples.len() - 1)] as f64;
+            (left + (samples[right] as f64 - left) * weight).round() as i16
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -617,7 +649,10 @@ pub async fn audio_print(
         }
     };
     let samples = match decoded {
-        Ok(Ok(samples)) => samples,
+        Ok(Ok(samples)) => match target.stretch_factor() {
+            Some(factor) => stretched(&samples, factor),
+            None => samples,
+        },
         Ok(Err(error)) => {
             tracing::warn!("fingerprint: {key} {}: {error:#}", part.name());
             return Err(ERROR_PRINT_FAILED.to_owned());
@@ -814,6 +849,30 @@ mod tests {
         let found = offset_between(&first, &second).expect("the shared music should line up");
         assert!((found.seconds - 4.0).abs() < 0.15, "offset {}", found.seconds);
         assert!(found.matched_seconds > 30.0, "matched {}", found.matched_seconds);
+    }
+
+    #[test]
+    fn a_faster_dub_lines_up_once_stretched() {
+        let music = melody(140.0, 21);
+        let original = to_samples(&music, 1.0, 1);
+        let fast = stretched(&original, 25.0 / 23.976);
+        let plain = offset_between(&fingerprint(&original, 0.0), &fingerprint(&fast, 0.0));
+        assert!(plain.is_none_or(|found| found.matched_seconds < 30.0), "the raw faster sound should not match well");
+        let slowed = stretched(&fast, 24_000.0 / 25_025.0);
+        let found = offset_between(&fingerprint(&original, 0.0), &fingerprint(&slowed, 0.0)).expect("stretched sound lines up");
+        assert!(found.seconds.abs() < 0.2, "offset {}", found.seconds);
+        assert!(found.matched_seconds > 60.0, "matched {}", found.matched_seconds);
+    }
+
+    #[test]
+    fn stretch_keys_differ_from_the_plain_print() {
+        let plain = PrintTarget { info_hash: "AB".repeat(20), file_index: 3, stretch: None };
+        let slow = PrintTarget { stretch: Some(24_000.0 / 25_025.0), ..plain.clone() };
+        let bogus = PrintTarget { stretch: Some(2.0), ..plain.clone() };
+        assert_eq!(plain.key().unwrap(), format!("{}-3", "ab".repeat(20)));
+        assert_eq!(slow.key().unwrap(), format!("{}-3-s959041", "ab".repeat(20)));
+        assert_eq!(bogus.key(), plain.key());
+        assert_eq!(stretched(&[0, 100, 200, 300], 0.5).len(), 8);
     }
 
     #[test]

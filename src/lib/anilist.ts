@@ -18,6 +18,8 @@ export interface AnimePart {
   year: number | null;
   cover: string | null;
   episodes: number | null;
+  adult: boolean;
+  synonyms: string[];
 }
 
 export interface AnimeInfo {
@@ -31,13 +33,15 @@ interface RawMedia {
   type?: string;
   format?: string | null;
   episodes?: number | null;
+  isAdult?: boolean | null;
+  synonyms?: string[] | null;
   title?: { romaji?: string | null; english?: string | null };
   startDate?: { year?: number | null; month?: number | null; day?: number | null };
   coverImage?: { large?: string | null };
   relations?: { edges?: { relationType?: string; node?: RawMedia }[] };
 }
 
-const fields = `id idMal type format episodes title { romaji english } startDate { year month day } coverImage { large }`;
+const fields = `id idMal type format episodes isAdult synonyms title { romaji english } startDate { year month day } coverImage { large }`;
 const withRelations = `${fields} relations { edges { relationType node { ${fields} } } }`;
 
 const askTimeoutMs = 15000;
@@ -73,6 +77,8 @@ function toPart(raw: RawMedia): AnimePart | null {
     year: year ?? null,
     cover: raw.coverImage?.large ?? null,
     episodes: raw.episodes ?? null,
+    adult: raw.isAdult === true,
+    synonyms: (raw.synonyms ?? []).filter((name): name is string => typeof name === "string"),
   };
 }
 

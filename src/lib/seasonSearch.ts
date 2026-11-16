@@ -69,7 +69,8 @@ function isGeneric(text: string): boolean {
 
 const outsideSeasons = /\[(?:OVA|OAD|Movie|Фильм)\]|\((?:ОВА|OVA|OAD|фильм|movie)|(?:^|[\s.:/])(?:фильм|movie)(?=[\s.:/,]|$)/i;
 const joinedNames = /\s*(?:&|\/|\+)\s*|\s+(?:and|и|і)\s+/i;
-const wholeShow = /полный сериал|все сезоны|усі сезони|complete series|all seasons/i;
+const specialsOnly = /спецвыпуск|спецвипуск|\bspecials?\b/i;
+const wholeShow =/полный сериал|все сезоны|усі сезони|complete series|all seasons/i;
 
 export function distinctiveNames(name: string, showWords: ReadonlySet<string>): string[] {
   const tail = name.includes(":") ? name.slice(name.lastIndexOf(":") + 1) : name;
@@ -182,6 +183,13 @@ function between(range: [number, number], known: ReadonlySet<number>): number[] 
   return numbers;
 }
 
+function airedAround(profiles: SeasonProfile[], numbers: number[], years: [number, number], firstYear: number): boolean {
+  if (years[0] === firstYear) return true;
+  const spans = profiles.filter((profile) => numbers.includes(profile.number) && profile.years).map((profile) => profile.years!);
+  if (spans.length === 0) return true;
+  return spans.some(([first, last]) => first - 1 <= years[1] && years[0] <= last + 1);
+}
+
 export function matchSeasons(title: string, profiles: SeasonProfile[], anime: boolean): SeasonMatch | null {
   if (profiles.length === 0) return null;
   const years = releaseYears(title);
@@ -202,7 +210,12 @@ export function matchSeasons(title: string, profiles: SeasonProfile[], anime: bo
   const tv = tvSeasons(title);
   const byTv = tv ? between(tv, known) : [];
 
-  if (!anime && byNumber.length > 0) return { seasons: byNumber, kind: "number" };
+  if (!anime && stated && byNumber.length === 0 && stated[0] > Math.max(...known)) return { seasons: [], kind: "number" };
+  if (!anime && !stated && specialsOnly.test(title)) return { seasons: [], kind: "name" };
+  if (!anime && byNumber.length > 0) {
+    if (years && !airedAround(profiles, byNumber, years, firstYear)) return { seasons: [], kind: "year" };
+    return { seasons: byNumber, kind: "number" };
+  }
   if (byYear.length > 0 && byYear.length < profiles.length) return { seasons: byYear, kind: "year" };
   if (byNumber.length > 0) return { seasons: byNumber, kind: "number" };
   if (byTv.length > 0) return { seasons: byTv, kind: "tv" };

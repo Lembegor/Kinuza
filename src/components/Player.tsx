@@ -41,6 +41,7 @@ import {
   backend,
   convertedStreamUrl,
   describeError,
+  voiceStreamUrl,
   getAppInfo,
   isDesktop,
   streamUrl,
@@ -94,7 +95,7 @@ import { warmFile } from "../state/warmup";
 import { placementFor, usePlayerPlacement, type Placement } from "../state/playerPlacement";
 import { usePlayerHost } from "./player/usePlayerHost";
 import { LanguageFlag } from "./LanguageFlag";
-import { pictureBadge, pictureMarks, sourceName, voiceGroups } from "../lib/releaseNames";
+import { cutName, pictureBadge, pictureMarks, releaseCut, sourceName, voiceGroups } from "../lib/releaseNames";
 import type { ReleaseVoice } from "../lib/trackNames";
 import type { PickHealth } from "../state/autoPick";
 import {
@@ -111,6 +112,7 @@ import {
   type VoiceLike,
 } from "../lib/trackNames";
 import { autoPlay, choosePick, commitPick, healthOf, inspectPick, requestPick, useAutoPick, type PickCandidate, type PickTarget } from "../state/autoPick";
+import { sourceNames } from "../lib/trackers";
 
 const controlsHideDelayMs = 3000;
 const progressSaveIntervalMs = 5000;
@@ -174,6 +176,20 @@ const plainSoundFolder = /^(sound|sounds|audio|звук|озвучка|озву�
 const maxTorrentAudio = 16;
 const syncPrintSeconds = 300;
 const syncLeastSeconds = 20;
+const voiceStretches = [24_000 / 25_025, 25_025 / 24_000, 1000 / 1001, 1001 / 1000];
+const voiceRestartMs = 350;
+
+interface VoiceStream {
+  infoHash: string;
+  fileIndex: number;
+  track: number;
+  stretch: number;
+  shift: number;
+  key: string;
+  guess: TrackGuess;
+  release: boolean;
+  url: string;
+}
 let windowFullscreenKept = false;
 let miniWindowKept = false;
 
@@ -487,6 +503,7 @@ function ReleaseList({
         const origin = sourceName(candidate.quality);
         const whole = candidate.sizeBytes > 0 ? formatBytes(candidate.sizeBytes) : candidate.sizeText;
         const perUnit = series && (candidate.units ?? 0) > 1 && candidate.sizeBytes > 0;
+        const cut = releaseCut(candidate.title);
         return (
           <button key={candidate.id} className="release-row" title={candidate.title} disabled={busy !== null} onClick={() => onPick(candidate)}>
             <span className={`release-row__badge release-row__badge--${badge.tone}`}>{badge.label}</span>
@@ -496,11 +513,18 @@ function ReleaseList({
                 {(candidate.marks ?? []).map((mark) => (
                   <em key={mark}>{mark}</em>
                 ))}
+                {cut && <em className="release-row__cut">{cutName(cut)}</em>}
+                {candidate.source && candidate.source !== "rutracker" && <em className="release-row__source">{sourceNames[candidate.source]}</em>}
                 <span className="release-row__size" title={perUnit ? t("release.wholeSize", { size: whole }) : undefined}>
                   {perUnit ? t("release.aboutPerEpisode", { size: formatBytes(candidate.sizeBytes / candidate.units) }) : whole}
                 </span>
               </span>
               <ReleaseVoices voices={candidate.voiceTracks ?? []} locale={locale} />
+              {candidate.donorId ? (
+                <span className="release-row__note">{t("release.voiceFromOther")}</span>
+              ) : candidate.original ? (
+                <span className="release-row__note">{t("release.originalOnly")}</span>
+              ) : null}
             </span>
             <span className={`release-row__seeds release-row__seeds--${candidate.health}`} title={tn("stage.pick.seeds", candidate.seeds)}>
               {busy === candidate.id ? (
@@ -824,6 +848,13 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
   const rememberForTitle = useLibrary((state) => state.setTitlePreferences);
   const [subtitleDelay, setSubtitleDelay] = useState(preferences?.subtitleDelay ?? 0);
   const [audioDelay, setAudioDelay] = useState(preferences?.audioDelay ?? 0);
+  const audioDelayNow = useRef(audioDelay);
+  audioDelayNow.current = audioDelay;
+  const [voiceAt, setVoiceAt] = useState(0);
+  const [filterStretch, setFilterStretch] = useState(1);
+  const voiceStream = useRef<VoiceStream | null>(null);
+  const voiceRestart = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const startVoiceNow = useRef<(stream: VoiceStream, at: number) => Promise<void>>(async () => undefined);
   const chapters = media.tracks?.chapters ?? [];
 
   const [conversionStart, setConversionStart] = useState<number | null>(null);
@@ -1083,8 +1114,8 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
   }, [usingMpv, settings.smoothMotion, generation, clockStep]);
 
   useEffect(() => {
-    if (usingMpv) void mpv.set("audio-delay", audioDelay).catch(() => undefined);
-  }, [usingMpv, audioDelay, generation]);
+    if (usingMpv) void mpv.set("audio-delay", audioDelay + voiceAt).catch(() => undefined);
+  }, [usingMpv, audioDelay, voiceAt, generation]);
 
   useEffect(() => {
     if (usingMpv) void mpv.set("sub-scale", settings.subtitleScale).catch(() => undefined);
@@ -1105,8 +1136,8 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
   }, [usingMpv, sessionQuality, generation]);
 
   useEffect(() => {
-    if (usingMpv) void mpv.audioFilter(settings.audioMode).catch(() => undefined);
-  }, [usingMpv, settings.audioMode, generation]);
+    if (usingMpv) void mpv.audioFilter(settings.audioMode, filterStretch).catch(() => undefined);
+  }, [usingMpv, settings.audioMode, filterStretch, generation]);
 
   useEffect(() => {
     if (!usingMpv) return;
@@ -1260,6 +1291,13 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
     setEnded(false);
     setCountdown(null);
     lastSeekAt.current = Date.now();
+    if (voiceStream.current) {
+      clearTimeout(voiceRestart.current);
+      voiceRestart.current = setTimeout(() => {
+        const stream = voiceStream.current;
+        if (stream) void startVoiceNow.current(stream, filmTime());
+      }, voiceRestartMs);
+    }
     void backend.appLog(`player: seek ${Math.round(target - jump)}s -> ${Math.round(target)}s${segmentSkip.current ? " (skip)" : ""}`);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -1454,6 +1492,10 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
   const otherReleases = (pickEntry?.candidates ?? []).filter(
     (candidate) => candidate.id !== currentRelease?.id && pickEntry?.hashes[candidate.id] !== source?.infoHash,
   );
+  const voiceSources = [
+    ...otherReleases,
+    ...(pickEntry?.donors ?? []).filter((donor) => !otherReleases.some((candidate) => candidate.id === donor.id) && donor.id !== currentRelease?.id),
+  ];
 
   useEffect(() => {
     if (pickTarget && (menu === "quality" || menu === "audio" || slowSource)) void requestPick(pickTarget);
@@ -1520,6 +1562,7 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
     try {
       const url = await streamUrl(infoHash, fileIndex);
       let offset: number | null = null;
+      let stretch = 1;
       if (sync) {
         showHint(t("player.voice.syncing"));
         const reference = { infoHash: source.infoHash, fileIndex: source.fileIndex };
@@ -1528,6 +1571,17 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
           await Promise.all([backend.audioPrint(reference, "head", syncPrintSeconds), backend.audioPrint(other, "head", syncPrintSeconds)]);
           const found = await backend.audioOffset(reference, other);
           if (found && found.matchedSeconds >= syncLeastSeconds) offset = found.seconds;
+          for (const factor of offset === null ? voiceStretches : []) {
+            if (!sameSource()) return;
+            const slowed = { ...other, stretch: factor };
+            await backend.audioPrint(slowed, "head", syncPrintSeconds);
+            const matched = await backend.audioOffset(reference, slowed);
+            if (matched && matched.matchedSeconds >= syncLeastSeconds) {
+              offset = matched.seconds;
+              stretch = factor;
+              break;
+            }
+          }
         } catch {
           offset = null;
         }
@@ -1558,16 +1612,37 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
         fits(fitting) > 0
           ? fitting
           : (found.find((track) => languageCode(track.language) === wanted) ?? found.find((track) => languageCode(track.language) !== originalLanguage) ?? found[0]);
-      const address = chosen.externalFile ?? url;
-      const id = mpvPlayer.video.audioId(chosen.index);
-      if (id !== null) await mpv.set("aid", id).catch(() => undefined);
-      setAudioTrack(chosen.index);
       if (externalAudio) {
         const left = outside.current[externalAudio.url];
         if (left) left.delay = audioDelay;
       } else {
         delayBeforeBorrow.current = audioDelay;
       }
+      if (stretch !== 1 && offset !== null && htmlMedia.ffmpegInstalled === true) {
+        const ordered = [...found].sort((a, b) => a.index - b.index);
+        const stream: VoiceStream = { infoHash, fileIndex, track: Math.max(0, ordered.indexOf(chosen)), stretch, shift: offset, key, guess, release, url };
+        for (const track of found) {
+          const raw = mpvPlayer.video.audioId(track.index);
+          if (raw !== null) await mpv.command("audio-remove", raw).catch(() => undefined);
+        }
+        voiceStream.current = stream;
+        pickedAudio.current = true;
+        setFilterStretch(1);
+        setAudioDelay(0);
+        await startVoice(stream, filmTime());
+        showHint(t("player.voice.synced"));
+        void backend.appLog(
+          `player: outside sound ${key} from ${infoHash.slice(0, 8)} file ${fileIndex} track ${stream.track}, speed ${stretch.toFixed(5)}, offset=${offset.toFixed(2)}, corrected stream`,
+        );
+        return;
+      }
+      const address = chosen.externalFile ?? url;
+      const id = mpvPlayer.video.audioId(chosen.index);
+      if (id !== null) await mpv.set("aid", id).catch(() => undefined);
+      setAudioTrack(chosen.index);
+      voiceStream.current = null;
+      setVoiceAt(0);
+      setFilterStretch(stretch);
       const delay = sync && offset !== null ? Math.round(-offset * 100) / 100 : 0;
       outside.current[address] = { key, delay, guess, release };
       setExternalAudio({ key, url: address });
@@ -1577,7 +1652,7 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
       else if (sync) toast(t("player.voice.noSync"), "info");
       else showHint(audioFace(chosen, locale, originalLanguage || undefined, guess).name);
       void backend.appLog(
-        `player: outside sound ${key} from ${infoHash.slice(0, 8)} file ${fileIndex}, tracks=${found.length}, offset=${offset === null ? "none" : offset.toFixed(2)}`,
+        `player: outside sound ${key} from ${infoHash.slice(0, 8)} file ${fileIndex}, tracks=${found.length}, offset=${offset === null ? "none" : offset.toFixed(2)}${stretch !== 1 ? `, speed ${stretch.toFixed(5)} by the mpv filter` : ""}`,
       );
     } catch (error) {
       if (sameSource()) toast(describeError(error), "error");
@@ -1663,7 +1738,7 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
       });
     }
     if (!pickTarget) return rows;
-    for (const candidate of otherReleases) {
+    for (const candidate of voiceSources) {
       (candidate.voiceTracks ?? []).forEach((item, index) => {
         if (item.kind === "original") return;
         const voice: VoiceLike = { code: item.language, kind: item.kind, author: item.author };
@@ -1693,10 +1768,47 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
 
   useEffect(() => {
     outside.current = {};
+    voiceStream.current = null;
+    clearTimeout(voiceRestart.current);
+    setVoiceAt(0);
+    setFilterStretch(1);
     if (!externalAudio) return;
     setExternalAudio(null);
     setAudioDelay(delayBeforeBorrow.current);
   }, [source?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const voicedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!usingMpv || !source?.donorId || !pickTarget || !metadataReady || externalAudio || audioBusy) return;
+    if (voicedFor.current === source.id) return;
+    const tracks = media.tracks?.audio;
+    if (!tracks || tracks.length === 0) return;
+    const wanted = preferences?.audioLanguage || settings.audioLanguage;
+    voicedFor.current = source.id;
+    if (!wanted || wanted === originalLanguage) return;
+    if (tracks.some((track) => languageCode(track.language) === wanted)) return;
+    const donorId = source.donorId;
+    const startedFor = source.id;
+    void (async () => {
+      await requestPick(pickTarget).catch(() => undefined);
+      const entry = useAutoPick.getState().entries[session.unitKey];
+      const known = [...(entry?.donors ?? []), ...(entry?.candidates ?? [])];
+      const donor = known.find((candidate) => candidate.id === donorId) ?? entry?.donors?.[0];
+      if (!donor || liveSourceId.current !== startedFor) {
+        void backend.appLog(`player: no voice donor found for ${source.pickId ?? source.infoHash.slice(0, 8)}`);
+        return;
+      }
+      const remembered = (preferences?.audioAuthor || preferences?.releaseVoice || "").toLowerCase();
+      const order: (string | null)[] = ["dub", "mvo", "dvo", "avo", "vo", null];
+      const voices = (donor.voiceTracks ?? []).filter((voice) => voice.language === wanted && voice.kind !== "original");
+      const voice =
+        voices.find((item) => remembered && item.author.toLowerCase().includes(remembered)) ??
+        [...voices].sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind))[0];
+      if (!voice) return;
+      void backend.appLog(`player: borrowing the ${wanted} voice "${voice.author || voice.kind || "-"}" from ${donor.id} for ${source.pickId ?? "-"}`);
+      await borrowVoice(donor, voice, `borrow:${donor.id}:auto`);
+    })();
+  }, [usingMpv, source?.id, metadataReady, media.tracks, pickTarget, externalAudio, audioBusy]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const nextPicked = useRef<string | null>(null);
   useEffect(() => {
@@ -2481,8 +2593,41 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
     releaseStart();
   }, [media.tracks, metadataReady, originalLanguage, originalSettled, probeSettled, applyAudioTrack]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const startVoice = async (stream: VoiceStream, at: number) => {
+    const begin = Math.max(at, -stream.shift);
+    const address = await voiceStreamUrl(stream.infoHash, stream.fileIndex, stream.track, stream.stretch * (begin + stream.shift), stream.stretch);
+    if (voiceStream.current !== stream) return;
+    const heard = () => mpvPlayer.video.tracks()?.audio ?? [];
+    const mark = `/voice/${stream.infoHash}/${stream.fileIndex}`;
+    for (const track of heard()) {
+      if (!track.externalFile?.includes(mark) || track.externalFile === address) continue;
+      const raw = mpvPlayer.video.audioId(track.index);
+      if (raw !== null) await mpv.command("audio-remove", raw).catch(() => undefined);
+    }
+    setVoiceAt(begin);
+    await mpv.set("audio-delay", audioDelayNow.current + begin).catch(() => undefined);
+    await mpv.command("audio-add", address, "select").catch(() => undefined);
+    const startedAt = Date.now();
+    const added = () => heard().find((track) => track.externalFile === address);
+    while (voiceStream.current === stream && !added() && Date.now() - startedAt < audioAttachWaitMs) await new Promise((resolve) => setTimeout(resolve, 250));
+    const track = added();
+    if (!track || voiceStream.current !== stream) return;
+    const id = mpvPlayer.video.audioId(track.index);
+    if (id !== null) await mpv.set("aid", id).catch(() => undefined);
+    setAudioTrack(track.index);
+    outside.current[address] = { key: stream.key, delay: audioDelayNow.current, guess: stream.guess, release: stream.release };
+    setExternalAudio({ key: stream.key, url: address });
+  };
+  startVoiceNow.current = startVoice;
+
   const chooseAudioTrack = (track: AudioTrackInfo) => {
     const next = track.externalFile ? outside.current[track.externalFile] : undefined;
+    if (voiceStream.current && track.externalFile !== externalAudio?.url) {
+      voiceStream.current = null;
+      clearTimeout(voiceRestart.current);
+      setVoiceAt(0);
+    }
+    if (!track.externalFile || track.externalFile !== externalAudio?.url) setFilterStretch(1);
     if (externalAudio && externalAudio.url !== track.externalFile) {
       const left = outside.current[externalAudio.url];
       if (left) left.delay = audioDelay;

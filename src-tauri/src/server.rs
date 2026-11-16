@@ -119,6 +119,25 @@ struct AudioQuery {
     start: f64,
 }
 
+#[derive(Deserialize)]
+struct VoiceQuery {
+    #[serde(default)]
+    track: usize,
+    #[serde(default)]
+    from: f64,
+    stretch: f64,
+}
+
+const VOICE_RATE: u32 = 48_000;
+const VOICE_BITRATE: &str = "320k";
+
+fn voice_filter(stretch: f64) -> Option<String> {
+    (0.9..=1.1).contains(&stretch).then(|| {
+        let slowed = (VOICE_RATE as f64 * stretch).round() as u32;
+        format!("aresample={VOICE_RATE},asetrate={slowed},aresample={VOICE_RATE}")
+    })
+}
+
 pub async fn start(engine: Arc<Engine>, token: String, data_dir: std::path::PathBuf) -> anyhow::Result<String> {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
     let port = listener.local_addr()?.port();
@@ -140,6 +159,7 @@ pub async fn start(engine: Arc<Engine>, token: String, data_dir: std::path::Path
         .route("/{token}/peek/{info_hash}/{file_index}", get(peek_file))
         .route("/{token}/thumbnail/{info_hash}/{file_index}", get(thumbnail))
         .route("/{token}/audio/{info_hash}/{file_index}", get(stream_audio))
+        .route("/{token}/voice/{info_hash}/{file_index}", get(stream_voice))
         .route("/{token}/subtitles/{info_hash}/{file_index}", get(read_subtitles))
         .route("/{token}/video/{info_hash}/{file_index}", get(stream_converted))
         .route("/{token}/hls/{info_hash}/{file_index}/{name}", get(stream_hls))
@@ -268,6 +288,34 @@ async fn stream_audio(
         .args(["-loglevel", "error", "-ss", &start, "-i", &input, "-map", &track])
         .args(["-vn", "-sn", "-dn", "-ac", "2", "-c:a", "aac", "-b:a", AUDIO_BITRATE, "-f", "adts", "pipe:1"]);
     pipe_conversion(&state, format!("audio:{info_hash}:{file_index}"), command, AUDIO_CHUNK_BYTES, "audio/aac")
+}
+
+async fn stream_voice(
+    State(state): State<ServerState>,
+    Path((token, info_hash, file_index)): Path<(String, String, usize)>,
+    Query(query): Query<VoiceQuery>,
+) -> Response {
+    if token != *state.token {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let Some(filter) = voice_filter(query.stretch) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    if !query.from.is_finite() || query.from < 0.0 {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    let Some(executable) = ffmpeg::executable(&state.data_dir) else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "ffmpeg_missing").into_response();
+    };
+    let input = format!("{}/stream/{}/{}", state.base_url, info_hash, file_index);
+    let from = format!("{:.3}", query.from);
+    let track = format!("0:a:{}", query.track);
+
+    let mut command = ffmpeg::command(&executable);
+    command
+        .args(["-loglevel", "error", "-ss", &from, "-i", &input, "-map", &track, "-vn", "-sn", "-dn", "-af", &filter])
+        .args(["-c:a", "aac", "-b:a", VOICE_BITRATE, "-f", "matroska", "-live", "1", "pipe:1"]);
+    pipe_conversion(&state, format!("voice:{info_hash}:{file_index}"), command, AUDIO_CHUNK_BYTES, "audio/x-matroska")
 }
 
 #[derive(Deserialize)]
@@ -653,6 +701,13 @@ fn mime_for(file_name: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn voice_filter_keeps_sane_speeds() {
+        assert_eq!(voice_filter(24_000.0 / 25_025.0).as_deref(), Some("aresample=48000,asetrate=46034,aresample=48000"));
+        assert!(voice_filter(2.0).is_none());
+        assert!(voice_filter(f64::NAN).is_none());
+    }
 
     #[test]
     fn ranges_are_parsed() {

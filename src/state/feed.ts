@@ -549,7 +549,7 @@ export function usePersonalFeed(): PersonalFeed {
   }, []);
 
   useEffect(() => {
-    if (pinnedRows === null && storedRows !== null) setPinnedRows(storedRows);
+    if ((pinnedRows === null || pinnedRows.length === 0) && storedRows !== null && storedRows !== pinnedRows) setPinnedRows(storedRows);
   }, [pinnedRows, storedRows]);
 
   useEffect(() => {

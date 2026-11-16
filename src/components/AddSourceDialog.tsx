@@ -18,6 +18,7 @@ import { TrackerSearch } from "./TrackerSearch";
 import { arcsOfSeason, isRecut, type Coverage } from "../lib/episodeLayout";
 import { warmFile } from "../state/warmup";
 import { buildEpisodeRows, videoFiles, type EpisodeRowState } from "../lib/episodeRows";
+import { isRutrackerId } from "../lib/trackers";
 
 const titleSearchDebounceMs = 350;
 const titleSearchLimit = 8;
@@ -526,7 +527,7 @@ function AddSourceFlow({ request }: { request: AddSourceRequest }) {
       );
       await backend.addTorrent(preview.infoHash, downloaded, downloadDir);
       useLibrary.getState().addSources(entries.map((entry) => ({ unitKey: entry.unitKey, source: toSource(preview, entry.file) })));
-      if (target.title.type === "tv" && topic.current) {
+      if (target.title.type === "tv" && topic.current && isRutrackerId(topic.current)) {
         useReleaseWatch
           .getState()
           .follow({

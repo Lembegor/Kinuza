@@ -253,7 +253,10 @@ void *kinuza_video_attach(void *webviewPointer, mpv_handle *mpv) {
 void kinuza_video_set_shown(void *video, bool shown) {
     KinuzaVideoView *view = (__bridge KinuzaVideoView *)video;
     dispatch_async(dispatch_get_main_queue(), ^{
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
         view.hidden = !shown;
+        [CATransaction commit];
         [view.webview setValue:@(!shown) forKey:@"drawsBackground"];
         if (shown) {
             [view.videoLayer setNeedsDisplay];
@@ -263,7 +266,7 @@ void kinuza_video_set_shown(void *video, bool shown) {
 
 void kinuza_video_place(void *video, int x, int y, int width, int height) {
     KinuzaVideoView *view = (__bridge KinuzaVideoView *)video;
-    dispatch_async(dispatch_get_main_queue(), ^{
+    dispatch_block_t place = ^{
         NSView *webview = view.webview;
         NSView *parent = view.superview;
         if (!webview || !parent) {
@@ -275,9 +278,22 @@ void kinuza_video_place(void *video, int x, int y, int width, int height) {
         CGFloat h = MAX(1, height / scale);
         CGFloat left = area.origin.x + x / scale;
         CGFloat top = parent.isFlipped ? area.origin.y + y / scale : area.origin.y + area.size.height - y / scale - h;
+        NSRect frame = NSMakeRect(left, top, w, h);
+        if (NSEqualRects(view.frame, frame) && view.autoresizingMask == NSViewNotSizable) {
+            return;
+        }
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
         view.autoresizingMask = NSViewNotSizable;
-        view.frame = NSMakeRect(left, top, w, h);
-    });
+        view.frame = frame;
+        view.videoLayer.frame = view.bounds;
+        [CATransaction commit];
+    };
+    if ([NSThread isMainThread]) {
+        place();
+    } else {
+        dispatch_async(dispatch_get_main_queue(), place);
+    }
 }
 
 void kinuza_video_detach(void *video) {

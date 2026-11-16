@@ -1,5 +1,5 @@
 import type { Dismissal } from "../lib/account";
-import type { TasteSeed } from "../lib/backend";
+import type { TasteFilters, TasteResponse, TasteSeed } from "../lib/backend";
 import { readBehaviour, type Behaviour } from "../lib/behaviour";
 import { catalogSearch } from "../lib/catalog";
 import { currentLanguage, t } from "../lib/i18n";
@@ -79,11 +79,21 @@ function rounded(values: number[]): number[] {
   return values.map((value) => Number(value.toFixed(3)));
 }
 
-export async function buildEngineFeed(
+interface Prepared {
+  now: number;
+  behaviour: Behaviour;
+  signals: TasteSignal[];
+  seeds: TasteSeed[];
+  intent: Intent;
+  exclude: string[];
+  avoidPeople: number[];
+}
+
+async function prepare(
   tracked: Record<string, TrackEntry>,
   progress: Record<string, Progress>,
   dismissed: Record<string, Dismissal>,
-): Promise<EngineRow[] | null> {
+): Promise<Prepared | null> {
   if (!engineAvailable()) return null;
   const now = Date.now();
   const events = await readActivity(now - historyDays * msPerDay).catch(() => []);
@@ -93,7 +103,6 @@ export async function buildEngineFeed(
   const dismissals = dismissalSignals(dismissed, tracked, now);
   const interests = interestSignals(behaviour, tracked, dismissed, now);
   const { intent, seeds: searchSeeds } = await searchIntent(behaviour, now);
-
   const seeds: TasteSeed[] = [
     ...signals.filter((signal) => signal.weight > 0).map((signal) => seedFromSignal(signal)),
     ...interests.map((signal) => seedFromSignal(signal)),
@@ -102,31 +111,82 @@ export async function buildEngineFeed(
     ...dismissals.map((signal) => seedFromSignal(signal, dismissed[key(signal.title)])),
   ];
   const avoidPeople = Object.values(dismissed).flatMap((dismissal) => (dismissal.reason === "person" && dismissal.personId !== undefined ? [dismissal.personId] : []));
-  const exclude = [...Object.keys(tracked), ...Object.keys(dismissed)];
-  const response = await askEngine(seeds, { exclude, avoidPeople });
-  if (!response || response.candidates.length === 0) return null;
+  const exclude = [...Object.keys(tracked), ...Object.keys(progress).map(showKey), ...Object.keys(dismissed)];
+  return { now, behaviour, signals, seeds, intent, exclude: [...new Set(exclude)], avoidPeople };
+}
 
+function showKey(unit: string): string {
+  return unit.split(":").slice(0, 2).join(":");
+}
+
+function namer(signals: TasteSignal[], items: Map<string, MediaItem>): (titleKey: string) => string {
+  const signalTitles = new Map<string, TasteSignal>(signals.map((signal) => [key(signal.title), signal]));
+  return (titleKey: string) => {
+    const signal = signalTitles.get(titleKey);
+    if (!signal || signal.weight < reasonWeight) return "";
+    return items.get(titleKey)?.title || signal.title.title || "";
+  };
+}
+
+async function scoreFor(prepared: Prepared, response: TasteResponse, tracked: Record<string, TrackEntry>, progress: Record<string, Progress>, dismissed: Record<string, Dismissal>) {
   const impressions = await loadImpressions();
-  const outcomes: OutcomeInput = { tracked, progress, dismissed, behaviour, now };
+  const outcomes: OutcomeInput = { tracked, progress, dismissed, behaviour: prepared.behaviour, now: prepared.now };
   const learned = await retrainIfDue(impressions, outcomes).catch(() => null);
   const weights = blended(learned);
-  const scored = scoreAll({ response, behaviour, impressions, intent, uiLanguage: currentLanguage(), weights, now });
+  return {
+    impressions,
+    outcomes,
+    list: scoreAll({ response, behaviour: prepared.behaviour, impressions, intent: prepared.intent, uiLanguage: currentLanguage(), weights, now: prepared.now }),
+  };
+}
+
+export async function buildEnginePicks(
+  tracked: Record<string, TrackEntry>,
+  progress: Record<string, Progress>,
+  dismissed: Record<string, Dismissal>,
+  filters: TasteFilters,
+  limit: number,
+): Promise<EngineItem[] | null> {
+  const prepared = await prepare(tracked, progress, dismissed);
+  if (!prepared) return null;
+  const response = await askEngine(prepared.seeds, { exclude: prepared.exclude, avoidPeople: prepared.avoidPeople, filters });
+  if (!response) return null;
+  const { list } = await scoreFor(prepared, response, tracked, progress, dismissed);
+  const top = diversify(list, limit);
+  const referenced = new Set<string>();
+  for (const entry of top) for (const near of entry.candidate.nearest) referenced.add(near.key);
+  const items = await itemsFor([...top.map((entry) => entry.candidate.key), ...referenced]);
+  const nameOf = namer(prepared.signals, items);
+  return top.flatMap((entry) => {
+    const item = items.get(entry.candidate.key);
+    if (!item || !item.poster) return [];
+    return [{ ...item, note: noteFor(entry, nameOf), signals: rounded(entry.x), countries: entry.candidate.countries }];
+  });
+}
+
+export async function buildEngineFeed(
+  tracked: Record<string, TrackEntry>,
+  progress: Record<string, Progress>,
+  dismissed: Record<string, Dismissal>,
+): Promise<EngineRow[] | null> {
+  const prepared = await prepare(tracked, progress, dismissed);
+  if (!prepared) return null;
+  const { now, signals, exclude, avoidPeople } = prepared;
+  const response = await askEngine(prepared.seeds, { exclude, avoidPeople });
+  if (!response || response.candidates.length === 0) return null;
+
+  const { impressions, outcomes, list: scored } = await scoreFor(prepared, response, tracked, progress, dismissed);
 
   const random = seededRandom(Math.floor(now / msPerDay) * 7919 + 17);
   const arms = armStats(impressions, outcomes);
   const exploring = await exploration(response.profile.genres, arms, exclude, random);
 
-  const signalTitles = new Map<string, TasteSignal>(signals.map((signal) => [key(signal.title), signal]));
   const referenced = new Set<string>();
   for (const entry of scored.slice(0, 400)) for (const near of entry.candidate.nearest) referenced.add(near.key);
   for (const cluster of response.clusters) cluster.seeds.slice(0, 2).forEach((seed) => referenced.add(seed));
   const candidateKeys = [...new Set([...scored.slice(0, 400).map((entry) => entry.candidate.key), ...exploring.map((entry) => entry.candidate.key)])];
   const items = await itemsFor([...candidateKeys, ...referenced]);
-  const nameOf = (titleKey: string) => {
-    const signal = signalTitles.get(titleKey);
-    if (!signal || signal.weight < reasonWeight) return "";
-    return items.get(titleKey)?.title || signal.title.title || "";
-  };
+  const nameOf = namer(signals, items);
 
   const shown = new Set<string>();
   const rows: EngineRow[] = [];

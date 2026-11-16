@@ -1585,6 +1585,16 @@ button.release-row:hover:not(:disabled) {
   font-size: 12px;
 }
 
+.release-row__head .release-row__source {
+  border-color: rgba(120, 190, 255, 0.45);
+  color: rgba(170, 215, 255, 0.95);
+}
+
+.release-row__note {
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 11.5px;
+}
+
 .release-row__voices {
   display: flex;
   flex-wrap: wrap;
@@ -1719,3 +1729,8 @@ html.is-mpv-picture.is-player-inline .player-punch {
   color: #ff8d90;
 }
 
+
+.release-row__head .release-row__cut {
+  border-color: rgba(205, 160, 255, 0.45);
+  color: rgba(225, 200, 255, 0.95);
+}

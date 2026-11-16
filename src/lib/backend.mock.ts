@@ -210,6 +210,36 @@ export async function mockInvoke(command: string, args: Record<string, unknown> 
       return Object.fromEntries(((args.imdbIds as string[]) ?? []).map((imdbId) => [imdbId, { rating: 8.8, votes: 2_600_000 }]));
     case "gateway_status":
       return { state: mockGatewayFailure() ? "login_required" : "ready" };
+    case "trackers_search": {
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      const custom = (globalThis as { __kinuzaMockTrackers?: unknown }).__kinuzaMockTrackers;
+      if (typeof custom === "function") return (custom as (query: unknown) => unknown)(args.query);
+      if (custom) return custom;
+      const query = (args.query ?? {}) as { kind?: string; year?: number | null };
+      if (query.kind !== "movie") return { items: [], sources: { eztv: "empty", nnm: "empty" } };
+      const year = query.year ?? 2010;
+      return {
+        items: [
+          {
+            source: "yts", id: "a".repeat(40), title: `Demo Film (${year}) [${year}, BDRip 1080p] [AVC] Original (Eng)`, name: "Demo Film 1080p BluRay",
+            size: "1.60 GB", sizeBytes: 1717986918, seeds: 940, leeches: 30, infoHash: "a".repeat(40), magnet: "", page: "https://example.com/", torrent: "",
+            minutes: 120, season: null, episodeFirst: null, episodeLast: null,
+          },
+          {
+            source: "nnm", id: "1870807", title: `Демо фильм / Demo Film (Режиссёр) [${year}, WEB-DLRip 720p] [AVC] Dub (HDRezka) + Original (Eng) + Sub (Rus)`,
+            name: "Демо фильм / Demo Film", size: "1.46 GB", sizeBytes: 1567663063, seeds: 12, leeches: 2, infoHash: "b".repeat(40), magnet: "",
+            page: "https://example.com/", torrent: "1418568", minutes: 120, season: null, episodeFirst: null, episodeLast: null,
+          },
+        ],
+        sources: { yts: "ok", nnm: "ok" },
+      };
+    }
+    case "trackers_inspect": {
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      const inspect = (globalThis as { __kinuzaMockInspect?: (id: string) => unknown }).__kinuzaMockInspect;
+      if (inspect) return inspect(`${String(args.source)}:${String(args.id)}`);
+      return demoPreview;
+    }
     case "gateway_search":
     case "gateway_video_sizes":
     case "gateway_torrent_inspect": {
@@ -222,6 +252,8 @@ export async function mockInvoke(command: string, args: Record<string, unknown> 
     }
     case "rutracker_search": {
       await new Promise((resolve) => setTimeout(resolve, 500));
+      const recorded = (globalThis as { __kinuzaMockSearch?: (query: string, page: number) => unknown }).__kinuzaMockSearch;
+      if (recorded) return recorded(String(args.query ?? ""), Number(args.page ?? 0));
       const sample = (globalThis as { __kinuzaMockTracker?: string[] }).__kinuzaMockTracker;
       if (sample) {
         if (Number(args.page ?? 0) > 0) return [];
@@ -248,8 +280,11 @@ export async function mockInvoke(command: string, args: Record<string, unknown> 
     case "rutracker_video_sizes":
       await new Promise((resolve) => setTimeout(resolve, 1500));
       return { [demoTrackerItems[3].id]: { width: 1024, height: 426 } };
-    case "rutracker_torrent_inspect":
+    case "rutracker_torrent_inspect": {
+      const inspect = (globalThis as { __kinuzaMockInspect?: (id: string) => unknown }).__kinuzaMockInspect;
+      if (inspect) return inspect(String(args.id ?? ""));
       return String(args.id ?? "").startsWith("7100") ? demoSeriesPreview : demoPreview;
+    }
     case "rutracker_magnet":
       return `magnet:?xt=urn:btih:${demoPreview.infoHash}`;
     case "app_info":

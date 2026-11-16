@@ -5,6 +5,32 @@ export type ChangelogLine = string | { heading: string };
 export type Changelog = Record<AppLanguage, ChangelogLine[]>;
 
 export const changelog: Record<string, Changelog> = {
+  "0.6.0": {
+    ru: [
+      "Поиск раздач сразу на RuTracker, NNM-Club, YTS, EZTV, AniLiberty и Sukebei.",
+      "Полностью новая главная страница",
+      "Предпочитаемая озвучка из другой раздачи подключается к лучшему видео с оригинальной дорожкой.",
+      "Автоподбор точнее находит нужный сериал, сезон и серию, в том числе у аниме.",
+      "Лучше запоминаются выбранные озвучка и субтитры.",
+      "Много мелких правок.",
+    ],
+    en: [
+      "Releases are searched on RuTracker, NNM-Club, YTS, EZTV, AniLiberty and Sukebei at once.",
+      "A completely new home page",
+      "Your preferred voice-over from another release is added to the best video with the original audio.",
+      "Auto-pick finds the right show, season and episode more reliably, anime included.",
+      "The chosen voice-over and subtitles are remembered better.",
+      "Lots of small fixes.",
+    ],
+    uk: [
+      "Пошук роздач одразу на RuTracker, NNM-Club, YTS, EZTV, AniLiberty і Sukebei.",
+      "Повністю нова головна сторінка",
+      "Улюблена озвучка з іншої роздачі додається до найкращого відео з оригінальною доріжкою.",
+      "Автопідбір точніше знаходить потрібний серіал, сезон і серію, зокрема в аніме.",
+      "Краще запам'ятовуються обрані озвучка й субтитри.",
+      "Багато дрібних правок.",
+    ],
+  },
   "0.5.7": {
     ru: [
       "Профиль со статистикой: аватар справа в шапке открывает общее время на фильмы, сериалы и аниме, активность за год, часы по месяцам, оценки, жанры и привычки. Всё считается только на этом компьютере.",

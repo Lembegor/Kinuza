@@ -156,10 +156,10 @@ function numericRange(title: string): Coverage | null {
     const last = Number(found[2]);
     if (first >= 1 && last >= first) return { first, last };
   }
-  for (const pattern of singlePatterns) {
-    const found = pattern.exec(title);
-    if (found) return { first: Number(found[1]), last: Number(found[1]) };
-  }
+  const labelled = singlePatterns[0].exec(title);
+  if (labelled) return { first: Number(labelled[1]), last: Number(labelled[1]) };
+  const counted = singlePatterns[1].exec(title);
+  if (counted && Number(counted[1]) >= 1) return { first: 1, last: Number(counted[1]) };
   return null;
 }
 
@@ -223,8 +223,10 @@ export function longEpisodeOf(path: string, layout: EpisodeLayout): { season: nu
   if (labelled && fits(Number(labelled[1]))) return { season: null, episode: Number(labelled[1]) };
   const dashed = / [-–] (\d{1,4})(?:v\d)?(?=[ ._\[(]|$)/.exec(file);
   if (dashed && fits(Number(dashed[1]))) return { season: null, episode: Number(dashed[1]) };
+  const bracketed = /\[(\d{1,4})(?:v\d)?\]/.exec(file);
+  if (bracketed && fits(Number(bracketed[1]))) return { season: null, episode: Number(bracketed[1]) };
   const cleaned = file.replace(/\[[^\]]*\]|\([^)]*\)/g, " ").replace(fileNoise, " ");
-  for (const found of cleaned.matchAll(/(?:^|[ ._-])(\d{1,4})(?=[ ._-]|$)/g)) {
+  for (const found of cleaned.matchAll(/(?:^|[ ._-])(\d{1,4})(?:v\d)?(?=[ ._-]|$)/g)) {
     const value = Number(found[1]);
     if (fits(value)) return { season: null, episode: value };
   }

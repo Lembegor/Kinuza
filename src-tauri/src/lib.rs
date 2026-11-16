@@ -28,6 +28,7 @@ mod server;
 mod storage;
 mod store;
 mod taste;
+mod trackers;
 mod tray;
 
 use std::{
@@ -201,6 +202,8 @@ pub fn run() {
             gateway::gateway_torrent_inspect,
             gateway::gateway_video_sizes,
             gateway::gateway_status,
+            trackers::trackers_search,
+            trackers::trackers_inspect,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Kinuza")

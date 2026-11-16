@@ -17,6 +17,7 @@ export interface UpNextEpisode {
   episode: number;
   name: string;
   still: string | null;
+  airDate: string;
   lastActivity: number;
 }
 
@@ -84,6 +85,7 @@ async function nextEpisodeAfter(place: SeriesPlace, today: string): Promise<UpNe
     episode: next.episode,
     name: next.name,
     still: next.still,
+    airDate: next.airDate,
     lastActivity: place.lastActivity,
   };
 }

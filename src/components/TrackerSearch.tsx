@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUp, ChevronDown, ExternalLink, HardDrive, LoaderCircle, LogIn, Monitor, Search, Server, Sparkles } from "lucide-react";
 import { animeInfo } from "../lib/anilist";
-import { isDesktop, type TorrentPreview } from "../lib/backend";
+import { backend, isDesktop, type TorrentPreview } from "../lib/backend";
 import { t, useT, type MessageKey } from "../lib/i18n";
 import {
   isVideoRelease,
@@ -27,6 +27,8 @@ import { useUi, type AddSourceTarget } from "../state/ui";
 import { LanguageFlags } from "./LanguageFlags";
 import { releaseVoices, voicesSummary } from "../lib/trackNames";
 import { recordActivity, titleOf } from "../state/activity";
+import { inspectTracker, isRutrackerId, searchTrackers, sourceNames } from "../lib/trackers";
+import { cutLabel } from "../lib/releaseNames";
 
 const pageLookupLimit = 20;
 const anySeason = 0;
@@ -360,7 +362,9 @@ export function TrackerSearch({
         state.done.add(taskKey(task));
         setExtraLeft(state.queue.filter((item) => item.generation === state.generation).length + (task.quiet ? 1 : 0));
         try {
+          const startedAt = Date.now();
           const found = await rutracker.search(task.query, task.quiet, task.page);
+          void backend.appLog(`tracker: rutracker "${task.query.slice(0, 80)}" page ${task.page} gave ${found.length} in ${Date.now() - startedAt} ms`);
           if (task.generation !== state.generation) continue;
           setItems((known) => mergeItems(known, found));
           const pages = task.season === null ? mainQueryPages : extraQueryPages;
@@ -410,6 +414,42 @@ export function TrackerSearch({
       setRoute(chosen);
       enqueue([{ query, page: 0, quiet: false, season: null }]);
     });
+    void searchOthers(query, generation);
+  };
+
+  const searchOthers = async (query: string, generation: number) => {
+    const state = runner.current;
+    const tmdbEnglish = (otherLanguages.data ?? [])[1]?.name ?? "";
+    try {
+      const imdb = await tmdb.imdbId(target.title.type, target.title.id).catch(() => "");
+      const animeEntry = isAnime
+        ? await animeInfo({ names: [target.originalTitle ?? "", target.title.title], type: target.title.type, year: Number(target.title.year) || null }).catch(() => null)
+        : null;
+      const latin = /^[\p{Script=Latin}\p{N}\p{P}\p{S}\p{Zs}]+$/u;
+      const animeLatin = [animeEntry?.current.english ?? "", animeEntry?.current.romaji ?? "", ...(animeEntry?.current.synonyms ?? [])].find(
+        (name) => name && latin.test(name) && !/[○◯●＊*]/.test(name),
+      );
+      const english = tmdbEnglish && latin.test(tmdbEnglish) ? tmdbEnglish : (animeLatin ?? tmdbEnglish);
+      const found = await searchTrackers({
+        kind: target.title.type,
+        title: query,
+        original: target.originalTitle ?? "",
+        english,
+        year: Number(target.title.year) || null,
+        imdb,
+        season: target.title.type === "tv" ? (target.pinnedSeason ?? target.defaultSeason ?? null) : null,
+        episode: null,
+        anime: isAnime,
+        adult: animeEntry?.current.adult ?? false,
+        language: target.originalLanguage ?? "",
+      });
+      if (state.generation !== generation) return;
+      void backend.appLog(`tracker: other trackers "${query.slice(0, 80)}" gave ${found.items.length} (${Object.entries(found.sources).map(([name, value]) => `${name}=${value}`).join(" ")})`);
+      setItems((known) => mergeItems(known, found.items));
+      setLoading(false);
+    } catch (error) {
+      void backend.appLog(`tracker: other trackers failed: ${String(error).slice(0, 120)}`);
+    }
   };
 
   useEffect(() => {
@@ -466,7 +506,7 @@ export function TrackerSearch({
       })
       .slice(0, pageLookupLimit)
       .map((item) => item.id)
-      .filter((id) => !lookups.asked.has(id));
+      .filter((id) => isRutrackerId(id) && !lookups.asked.has(id));
     if (wanted.length === 0) return;
     for (const id of wanted) {
       lookups.asked.add(id);
@@ -527,11 +567,21 @@ export function TrackerSearch({
     [rows, prefs.videoOnly, prefs.voices, season],
   );
 
-  const visible = useMemo(() => {
-    const matching =
+  const strictlyVisible = useMemo(
+    () =>
       prefs.resolutions.length === 0
         ? beforeResolution
-        : beforeResolution.filter((row) => prefs.resolutions.includes(resolutionFilterOf(row.resolution) ?? ""));
+        : beforeResolution.filter((row) => prefs.resolutions.includes(resolutionFilterOf(row.resolution) ?? "")),
+    [beforeResolution, prefs.resolutions],
+  );
+  const looseRows = useMemo(
+    () => rows.filter((row) => (!prefs.videoOnly || row.isVideo) && (othersShown || seasonGroup(row.match, season) !== "other")),
+    [rows, prefs.videoOnly, othersShown, season],
+  );
+  const filtersLoosened = strictlyVisible.length === 0 && (prefs.voices.length > 0 || prefs.resolutions.length > 0) && looseRows.length > 0;
+
+  const visible = useMemo(() => {
+    const matching = filtersLoosened ? looseRows : strictlyVisible;
     if (prefs.sort === "seeds") return matching;
     if (prefs.sort === "best") {
       const { preferredQuality, audioLanguage, subtitleLanguage } = useSettings.getState();
@@ -545,7 +595,15 @@ export function TrackerSearch({
     }
     const direction = prefs.sort === "sizeDesc" ? -1 : 1;
     return [...matching].sort((a, b) => direction * (a.sizeBytes - b.sizeBytes));
-  }, [beforeResolution, prefs.resolutions, prefs.sort, language, target.originalLanguage]);
+  }, [strictlyVisible, looseRows, filtersLoosened, prefs.sort, language, target.originalLanguage]);
+
+  useEffect(() => {
+    if (loading || items.length === 0) return;
+    const filters = [...prefs.voices, ...prefs.resolutions, prefs.videoOnly ? "video" : ""].filter(Boolean).join(",") || "none";
+    void backend.appLog(
+      `tracker: "${activeQuery.trim().slice(0, 80)}" ${items.length} found, ${strictlyVisible.length} pass filters=${filters}${filtersLoosened ? ", showing all instead" : ""}`,
+    );
+  }, [loading, items.length, strictlyVisible.length, filtersLoosened]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const groupOrder: SeasonGroup[] = ["season", "several", "unknown", "other"];
   const grouped = useMemo(() => {
@@ -605,7 +663,7 @@ export function TrackerSearch({
       quality: row.resolution,
     });
     setResolvingId(row.item.id);
-    const release = rutracker.inspectRelease(row.item.id);
+    const release = isRutrackerId(row.item.id) ? rutracker.inspectRelease(row.item.id) : inspectTracker(row.item.id);
     release.catch(() => undefined).finally(() => setResolvingId(null));
     if (layout && row.coverage?.kind === "recut") {
       const arc = row.coverage.range ? arcOf(layout, row.coverage.range.first) : null;
@@ -634,7 +692,7 @@ export function TrackerSearch({
       <div className="archive__head">
         <Search size={16} />
         <strong>{t("tracker.title")}</strong>
-        <span>RuTracker.org</span>
+        <span>{t("tracker.sources")}</span>
       </div>
 
       {route === "server" && !needsAuth && serverProblem === null && (
@@ -836,6 +894,14 @@ export function TrackerSearch({
             </p>
           ) : (
             <div className="tracker-list">
+              {filtersLoosened && (
+                <p className="archive__note">
+                  {t("tracker.filtersLoosened")}{" "}
+                  <button type="button" className="link-button" onClick={resetFilters}>
+                    {t("tracker.resetFilters")}
+                  </button>
+                </p>
+              )}
               {grouped.map((row, index) => {
                 const group = seasonGroup(row.match, season);
                 const long = layout ? longGroupOf(row, wantedRange) : null;
@@ -1075,6 +1141,7 @@ function TrackerItem({
                 : matchLabel(row.match, release.scope, anime);
             return label ? <span className="tracker-item__tag tracker-item__tag--scope">{label}</span> : null;
           })()}
+          {cutLabel(item.title) && <span className="tracker-item__tag tracker-item__tag--cut">{cutLabel(item.title)}</span>}
           {(layout ? release.tags.filter((tag) => !/^\d{1,4}(\s*[-–]\s*\d{1,4})?(\s*\+\s*\d{1,3})?(\s*(из|of)\s*\S+)?$/i.test(tag.trim())) : release.tags).map((tag) => (
             <span key={tag} className="tracker-item__tag">
               {tag}
@@ -1090,6 +1157,7 @@ function TrackerItem({
               <ArrowUp size={13} />
               {item.seeds}
             </span>
+            {item.source && item.source !== "rutracker" && <span className="tracker-item__source">{sourceNames[item.source]}</span>}
           </div>
         </div>
         <strong className={`tracker-item__name ${isVideo ? "" : "tracker-item__name--full"}`} title={item.title}>

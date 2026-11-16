@@ -566,14 +566,30 @@ pub async fn mpv_add_subtitle_text(
 }
 
 #[tauri::command]
-pub async fn mpv_audio_filter(app: AppHandle, state: State<'_, AppState>, mpv: State<'_, MpvState>, mode: String) -> Result<(), String> {
+pub async fn mpv_audio_filter(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    mpv: State<'_, MpvState>,
+    mode: String,
+    stretch: Option<f64>,
+) -> Result<(), String> {
     let filter = AUDIO_FILTERS
         .iter()
         .find(|(name, _)| *name == mode)
         .map(|(_, filter)| *filter)
         .ok_or_else(|| "mpv_property_refused".to_owned())?;
-    send(&app, &mpv, &state.data_dir, json!(["set_property", "af", filter])).await.map(|_| ())
+    let chain = match stretch.filter(|factor| (0.9..=1.1).contains(factor) && (factor - 1.0).abs() > 1e-6) {
+        Some(factor) => {
+            let slowed = (STRETCH_RATE as f64 * factor).round() as u32;
+            let speed = format!("lavfi=[aresample={STRETCH_RATE},asetrate={slowed},aresample={STRETCH_RATE}]");
+            if filter.is_empty() { speed } else { format!("{speed},{filter}") }
+        }
+        None => filter.to_owned(),
+    };
+    send(&app, &mpv, &state.data_dir, json!(["set_property", "af", chain])).await.map(|_| ())
 }
+
+const STRETCH_RATE: u32 = 48_000;
 
 #[tauri::command]
 pub async fn mpv_stats(

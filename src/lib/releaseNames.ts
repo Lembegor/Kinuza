@@ -25,6 +25,33 @@ const kindOrder: VoiceKind[] = ["dub", "mvo", "dvo", "avo", "vo", "original"];
 const shownAuthors = 3;
 export const pictureMarks = ["Dolby Vision", "HDR"];
 
+export type CutKind = "director" | "extended" | "theatrical" | "unrated" | "final" | "ultimate" | "special" | "imax";
+
+const cutKinds: [RegExp, CutKind][] = [
+  [/director'?s[\s._-]*(?:cut|edition|version)|режисс[её]рск\S*\s+(?:верси|редакци|монтаж)/i, "director"],
+  [/final[\s._-]*cut|финальн\S*\s+верси/i, "final"],
+  [/ultimate[\s._-]*(?:cut|edition)/i, "ultimate"],
+  [/extended|(?:расширенн|удлин[её]нн)\S*\s+(?:верси|издани|редакци)/i, "extended"],
+  [/theatrical|(?:театральн|прокатн)\S*\s+(?:верси|вариант|редакци)/i, "theatrical"],
+  [/unrated|uncut|без\s+цензуры/i, "unrated"],
+  [/special[\s._-]*edition|специальное\s+издание/i, "special"],
+  [/\bimax\b/i, "imax"],
+];
+
+export function releaseCut(...texts: (string | null | undefined)[]): CutKind | null {
+  const text = texts.filter(Boolean).join(" ");
+  return cutKinds.find(([pattern]) => pattern.test(text))?.[1] ?? null;
+}
+
+export function cutName(kind: CutKind): string {
+  return t(`release.cut.${kind}`);
+}
+
+export function cutLabel(...texts: (string | null | undefined)[]): string {
+  const kind = releaseCut(...texts);
+  return kind ? cutName(kind) : "";
+}
+
 export function sourceKind(text: string): SourceKind | null {
   return sourceKinds.find(([pattern]) => pattern.test(text))?.[1] ?? null;
 }

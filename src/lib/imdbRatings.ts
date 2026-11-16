@@ -36,7 +36,7 @@ function storedIds(): Promise<Map<string, string>> {
 }
 
 function remember(key: string, imdbId: string): void {
-  if (!ids) return;
+  if (!ids || !imdbId) return;
   ids.set(key, imdbId);
   while (ids.size > maxStored) ids.delete(ids.keys().next().value as string);
   clearTimeout(saveTimer);
@@ -64,7 +64,7 @@ function limited<T>(task: () => Promise<T>): Promise<T> {
 async function imdbIdOf(type: MediaType, id: number): Promise<string> {
   const key = `${type}:${id}`;
   const stored = (await storedIds()).get(key);
-  if (stored !== undefined) return stored;
+  if (stored) return stored;
   const known = idRequests.get(key);
   if (known) return known;
   const local = await catalogRecord(type, id).catch(() => null);
@@ -110,35 +110,44 @@ function ratingOf(imdbId: string): Promise<ImdbRating | null> {
   });
 }
 
+const freshRatings = new Map<string, number>();
+
+export function noteTitleRating(type: MediaType, id: number, rating: number, imdbId: string | null): void {
+  const key = `${type}:${id}`;
+  if (rating > 0) freshRatings.set(key, rating);
+  if (imdbId && /^tt\d+$/.test(imdbId)) void storedIds().then(() => remember(key, imdbId));
+}
+
+export async function fallbackRating(type: MediaType, id: number, listRating: number): Promise<number | null> {
+  const record = await catalogRecord(type, id).catch(() => null);
+  if (record && record.c > 0 && record.v > 0) return record.v;
+  const fresh = freshRatings.get(`${type}:${id}`);
+  if (fresh !== undefined) return fresh;
+  return listRating > 0 ? listRating : null;
+}
+
 export async function imdbRatingOf(type: MediaType, id: number): Promise<ImdbRating | null> {
   if (!isDesktop) return null;
   const imdbId = await imdbIdOf(type, id);
   return imdbId ? ratingOf(imdbId) : null;
 }
 
-export function useImdbRating(
-  type: MediaType,
-  id: number,
-  catalogRating: number,
-): { ref: React.RefObject<HTMLSpanElement | null>; rating: number | null | undefined } {
+export function useImdbRating(type: MediaType, id: number, listRating: number): { ref: React.RefObject<HTMLSpanElement | null>; rating: number | null | undefined } {
   const ref = useRef<HTMLSpanElement | null>(null);
-  const [rating, setRating] = useState<number | null | undefined>(isDesktop ? undefined : catalogRating > 0 ? catalogRating : null);
+  const [rating, setRating] = useState<number | null | undefined>(undefined);
 
   useEffect(() => {
-    if (!isDesktop) {
-      setRating(catalogRating > 0 ? catalogRating : null);
-      return;
-    }
     const element = ref.current;
     let cancelled = false;
     setRating(undefined);
-    const settle = (imdb: ImdbRating | null) => {
-      if (!cancelled) setRating(imdb ? imdb.rating : catalogRating > 0 ? catalogRating : null);
-    };
     const start = () =>
-      void imdbIdOf(type, id)
-        .then((imdbId) => (imdbId ? ratingOf(imdbId) : null))
-        .then(settle, () => settle(null));
+      void imdbRatingOf(type, id)
+        .catch(() => null)
+        .then((imdb) => (imdb ? imdb.rating : fallbackRating(type, id, listRating)))
+        .catch(() => null)
+        .then((value) => {
+          if (!cancelled) setRating(value);
+        });
     const observer = new IntersectionObserver(
       (entries) => {
         if (!entries.some((entry) => entry.isIntersecting)) return;
@@ -153,7 +162,7 @@ export function useImdbRating(
       cancelled = true;
       observer.disconnect();
     };
-  }, [type, id, catalogRating]);
+  }, [type, id, listRating]);
 
   return { ref, rating };
 }

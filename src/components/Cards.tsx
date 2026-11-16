@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { noteOpened, noteShown, type ShownItem } from "../state/impressions";
 import { useNavigate } from "react-router-dom";
 import { Check, ChevronLeft, ChevronRight, Clock, CloudOff, LoaderCircle, Star, ThumbsDown } from "lucide-react";
@@ -12,7 +12,7 @@ import { TrackBadge } from "./TrackControls";
 import { applyStatus } from "../state/titleStatus";
 import { CatalogRating } from "./CatalogRating";
 
-type CardItem = TitleRef & Partial<Pick<MediaItem, "rating" | "isAnime">> & { note?: string };
+export type CardItem = TitleRef & Partial<Pick<MediaItem, "rating" | "isAnime">> & { note?: string; noteAccent?: boolean };
 
 export function typeLabel(item: Pick<CardItem, "type" | "isAnime">): string {
   if (item.isAnime) return t("common.type.anime");
@@ -135,7 +135,7 @@ export function PosterCard({ item }: { item: CardItem }) {
       <div className="poster-card__title">{title}</div>
       <div className="poster-card__meta">
         {item.note ? (
-          <span>{item.note}</span>
+          <span className={item.noteAccent ? "is-accent" : undefined}>{item.note}</span>
         ) : (
           <>
             {item.year && <span>{item.year}</span>}
@@ -154,7 +154,7 @@ const shownPeople = 4;
 const seenShare = 0.6;
 const seenAfterMs = 1000;
 
-function useShownOnce(slotRef: React.RefObject<HTMLDivElement | null>, item: CardItem, rowId: string | undefined): void {
+export function useShownOnce(slotRef: React.RefObject<HTMLDivElement | null>, item: CardItem, rowId: string | undefined): void {
   useEffect(() => {
     const slot = slotRef.current;
     if (!slot || !rowId) return;
@@ -180,37 +180,10 @@ function useShownOnce(slotRef: React.RefObject<HTMLDivElement | null>, item: Car
   }, [slotRef, item, rowId]);
 }
 
-function DismissibleCard({ item, onDismiss, rowId }: { item: CardItem; onDismiss: (item: CardItem, detail: DismissDetail) => void; rowId?: string }) {
+export function DismissChoices({ item, onChoose }: { item: Pick<CardItem, "type" | "id">; onChoose: (detail: DismissDetail) => void }) {
   const { t } = useT();
-  const [open, setOpen] = useState(false);
   const [people, setPeople] = useState<{ id: number; name: string }[] | null>(null);
   const [loadingPeople, setLoadingPeople] = useState(false);
-  const slotRef = useRef<HTMLDivElement>(null);
-  useShownOnce(slotRef, item, rowId);
-
-  useEffect(() => {
-    if (!open) return;
-    const onPointer = (event: MouseEvent) => {
-      if (!slotRef.current?.contains(event.target as Node)) setOpen(false);
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
-    };
-    window.addEventListener("mousedown", onPointer);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("mousedown", onPointer);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  const finish = (detail: DismissDetail) => {
-    const slot = slotRef.current;
-    const neighbour = slot?.nextElementSibling ?? slot?.previousElementSibling;
-    neighbour?.querySelector<HTMLElement>(".poster-card__open")?.focus();
-    setOpen(false);
-    onDismiss(item, detail);
-  };
 
   const askPeople = async () => {
     setLoadingPeople(true);
@@ -222,6 +195,75 @@ function DismissibleCard({ item, onDismiss, rowId }: { item: CardItem; onDismiss
     } finally {
       setLoadingPeople(false);
     }
+  };
+
+  return (
+    <div className="dismiss-menu" role="menu" aria-label={t("feed.dismiss.why")}>
+      <strong>{t("feed.dismiss.why")}</strong>
+      {people === null ? (
+        <>
+          <button role="menuitem" onClick={() => onChoose({ reason: "seen" })}>
+            {t("feed.dismiss.seen")}
+          </button>
+          <button role="menuitem" onClick={() => onChoose({ reason: "genre" })}>
+            {t("feed.dismiss.genre")}
+          </button>
+          <button role="menuitem" disabled={loadingPeople} onClick={() => void askPeople()}>
+            {t("feed.dismiss.person")}
+            {loadingPeople && <LoaderCircle size={13} className="spin" />}
+          </button>
+          <button role="menuitem" onClick={() => onChoose({ reason: "other" })}>
+            {t("feed.dismiss.other")}
+          </button>
+        </>
+      ) : (
+        <>
+          {people.map((person) => (
+            <button key={person.id} role="menuitem" onClick={() => onChoose({ reason: "person", personId: person.id, personName: person.name })}>
+              {person.name}
+            </button>
+          ))}
+          <button role="menuitem" onClick={() => onChoose({ reason: "other" })}>
+            {people.length > 0 ? t("feed.dismiss.nobody") : t("feed.dismiss.other")}
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+export function useDismissOutside(open: boolean, rootRef: React.RefObject<HTMLElement | null>, close: () => void): void {
+  useEffect(() => {
+    if (!open) return;
+    const onPointer = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) close();
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    window.addEventListener("mousedown", onPointer);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onPointer);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open, rootRef, close]);
+}
+
+function DismissibleCard({ item, onDismiss, rowId }: { item: CardItem; onDismiss: (item: CardItem, detail: DismissDetail) => void; rowId?: string }) {
+  const { t } = useT();
+  const [open, setOpen] = useState(false);
+  const slotRef = useRef<HTMLDivElement>(null);
+  useShownOnce(slotRef, item, rowId);
+  const close = useCallback(() => setOpen(false), []);
+  useDismissOutside(open, slotRef, close);
+
+  const finish = (detail: DismissDetail) => {
+    const slot = slotRef.current;
+    const neighbour = slot?.nextElementSibling ?? slot?.previousElementSibling;
+    neighbour?.querySelector<HTMLElement>(".poster-card__open")?.focus();
+    setOpen(false);
+    onDismiss(item, detail);
   };
 
   return (
@@ -238,51 +280,50 @@ function DismissibleCard({ item, onDismiss, rowId }: { item: CardItem; onDismiss
         title={t("feed.dismiss")}
         aria-label={t("feed.dismiss.label", { title: item.title })}
         aria-expanded={open}
-        onClick={() => {
-          setPeople(null);
-          setOpen((value) => !value);
-        }}
+        onClick={() => setOpen((value) => !value)}
       >
         <ThumbsDown size={15} />
       </button>
-      {open && (
-        <div className="dismiss-menu" role="menu" aria-label={t("feed.dismiss.why")}>
-          <strong>{t("feed.dismiss.why")}</strong>
-          {people === null ? (
-            <>
-              <button role="menuitem" onClick={() => finish({ reason: "seen" })}>
-                {t("feed.dismiss.seen")}
-              </button>
-              <button role="menuitem" onClick={() => finish({ reason: "genre" })}>
-                {t("feed.dismiss.genre")}
-              </button>
-              <button role="menuitem" disabled={loadingPeople} onClick={() => void askPeople()}>
-                {t("feed.dismiss.person")}
-                {loadingPeople && <LoaderCircle size={13} className="spin" />}
-              </button>
-              <button role="menuitem" onClick={() => finish({ reason: "other" })}>
-                {t("feed.dismiss.other")}
-              </button>
-            </>
-          ) : (
-            <>
-              {people.map((person) => (
-                <button key={person.id} role="menuitem" onClick={() => finish({ reason: "person", personId: person.id, personName: person.name })}>
-                  {person.name}
-                </button>
-              ))}
-              <button role="menuitem" onClick={() => finish({ reason: "other" })}>
-                {people.length > 0 ? t("feed.dismiss.nobody") : t("feed.dismiss.other")}
-              </button>
-            </>
-          )}
-        </div>
-      )}
+      {open && <DismissChoices item={item} onChoose={finish} />}
     </div>
   );
 }
 
-export function Row({ title, children }: { title: string; children: ReactNode }) {
+export interface RowMore {
+  label: string;
+  onClick: () => void;
+}
+
+function moveFocus(track: HTMLDivElement, event: React.KeyboardEvent<HTMLDivElement>): void {
+  if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+  const cards = [...track.children] as HTMLElement[];
+  const current = cards.findIndex((card) => card.contains(document.activeElement));
+  if (current < 0) return;
+  const next = cards[current + (event.key === "ArrowRight" ? 1 : -1)];
+  const target = next?.querySelector<HTMLElement>("button, a[href]");
+  if (!target) return;
+  event.preventDefault();
+  target.focus();
+  target.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
+}
+
+export function Row({
+  title,
+  children,
+  aside,
+  more,
+  menu,
+  lead,
+  className = "",
+}: {
+  title: string;
+  children: ReactNode;
+  lead?: ReactNode;
+  aside?: ReactNode;
+  more?: RowMore;
+  menu?: ReactNode;
+  className?: string;
+}) {
   const { t } = useT();
   const trackRef = useRef<HTMLDivElement>(null);
   const scroll = (direction: 1 | -1) => {
@@ -290,19 +331,30 @@ export function Row({ title, children }: { title: string; children: ReactNode })
     if (track) track.scrollBy({ left: direction * track.clientWidth * 0.85, behavior: "smooth" });
   };
   return (
-    <section className="row">
+    <section className={`row ${className}`}>
       <div className="row__head">
         <h2>{title}</h2>
-        <div className="row__arrows">
-          <button aria-label={t("common.back")} onClick={() => scroll(-1)}>
-            <ChevronLeft size={18} />
-          </button>
-          <button aria-label={t("common.forward")} onClick={() => scroll(1)}>
-            <ChevronRight size={18} />
-          </button>
+        {aside && <div className="row__aside">{aside}</div>}
+        <div className="row__end">
+          {more && (
+            <button className="row__more" onClick={more.onClick}>
+              {more.label}
+              <ChevronRight size={15} />
+            </button>
+          )}
+          <div className="row__arrows">
+            <button aria-label={t("common.back")} onClick={() => scroll(-1)}>
+              <ChevronLeft size={18} />
+            </button>
+            <button aria-label={t("common.forward")} onClick={() => scroll(1)}>
+              <ChevronRight size={18} />
+            </button>
+          </div>
+          {menu}
         </div>
       </div>
-      <div className="row__track" ref={trackRef}>
+      {lead}
+      <div className="row__track" ref={trackRef} onKeyDown={(event) => trackRef.current && moveFocus(trackRef.current, event)}>
         {children}
       </div>
     </section>
@@ -314,15 +366,28 @@ export function PosterRow({
   items,
   onDismiss,
   rowId,
+  aside,
+  more,
+  menu,
+  lead,
+  className,
+  empty,
 }: {
   title: string;
   items: CardItem[] | null;
+  lead?: ReactNode;
+  empty?: ReactNode;
   onDismiss?: (item: TitleRef, detail: DismissDetail) => void;
   rowId?: string;
+  aside?: ReactNode;
+  more?: RowMore;
+  menu?: ReactNode;
+  className?: string;
 }) {
-  if (items && items.length === 0) return null;
+  if (items && items.length === 0 && !empty) return null;
   return (
-    <Row title={title}>
+    <Row title={title} aside={aside} more={more} menu={menu} lead={lead} className={className}>
+      {items && items.length === 0 && empty}
       {items
         ? items.map((item) =>
             onDismiss ? (

@@ -19,6 +19,7 @@ import Diagnostics from "./pages/Diagnostics";
 import CalendarPage from "./pages/Calendar";
 import Downloads from "./pages/Downloads";
 import Home from "./pages/Home";
+import ForYou from "./pages/ForYou";
 import Library from "./pages/Library";
 import Profile from "./pages/Profile";
 import PersonPage from "./pages/Person";
@@ -157,6 +158,7 @@ function useLinkHandling(ready: boolean): void {
 const pageRoutes = (
   <>
     <Route path="/" element={<Home />} />
+    <Route path="/for-you" element={<ForYou />} />
     <Route path="/browse" element={<Browse />} />
     <Route path="/search" element={<Search />} />
     <Route path="/title/:type/:id" element={<TitlePage />} />

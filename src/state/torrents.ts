@@ -96,8 +96,8 @@ export function fileOf(torrent: TorrentView | undefined, fileIndex: number): Tor
 
 export function fileProgress(torrent: TorrentView | undefined, fileIndex: number): number {
   const file = fileOf(torrent, fileIndex);
-  if (!file || file.length === 0) return 0;
-  return Math.min(1, file.downloaded / file.length);
+  if (!file || !(file.length > 0)) return 0;
+  return Math.min(1, (Number(file.downloaded) || 0) / file.length);
 }
 
 export function torrentProgress(torrent: TorrentView): number {

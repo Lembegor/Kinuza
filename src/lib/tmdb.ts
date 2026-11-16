@@ -147,6 +147,7 @@ export function noteCatalogTrouble(): void {
   void checkCatalogRoute();
 }
 const animationGenreId = 16;
+const japaneseKana = /[\p{Script=Hiragana}\p{Script=Katakana}]/u;
 const catalogLocales = {
   en: { language: "en-US", region: "US" },
   uk: { language: "uk-UA", region: "UA" },
@@ -547,7 +548,11 @@ function toItem(raw: Raw, fallbackType?: MediaType): MediaItem | null {
     popularity: raw.popularity ?? 0,
     genreIds,
     language: raw.original_language ?? "",
-    isAnime: genreIds.includes(animationGenreId) && raw.original_language === "ja",
+    isAnime:
+      genreIds.includes(animationGenreId) &&
+      (raw.original_language === "ja" ||
+        ((raw.origin_country ?? []) as string[]).includes("JP") ||
+        japaneseKana.test((type === "movie" ? raw.original_title : raw.original_name) ?? "")),
   };
 }
 
@@ -678,6 +683,36 @@ export const tmdb = {
       "vote_count.gte": 200,
     }),
 
+  trendingMovies: () => list("/trending/movie/week", "movie"),
+  digitalMovies(sinceDays: number): Promise<MediaItem[]> {
+    const since = new Date(Date.now() - sinceDays * 86_400_000).toISOString().slice(0, isoDateLength);
+    const today = new Date().toISOString().slice(0, isoDateLength);
+    return list("/discover/movie", "movie", {
+      with_release_type: "4|5",
+      "release_date.gte": since,
+      "release_date.lte": today,
+      sort_by: "popularity.desc",
+      "vote_count.gte": 20,
+    });
+  },
+  airingSeries(sinceDays: number, anime: boolean): Promise<MediaItem[]> {
+    const since = new Date(Date.now() - sinceDays * 86_400_000).toISOString().slice(0, isoDateLength);
+    const today = new Date().toISOString().slice(0, isoDateLength);
+    const kind: Record<string, string | number> = anime
+      ? { with_genres: animationGenreId, with_original_language: "ja", "vote_count.gte": 20 }
+      : { without_genres: `${animationGenreId},10763,10764,10767`, "vote_count.gte": 50 };
+    return list("/discover/tv", "tv", { ...kind, "air_date.gte": since, "air_date.lte": today, sort_by: "popularity.desc" });
+  },
+  moodList(type: MediaType, mood: { genres?: number[]; withoutGenres?: number[]; minRuntime?: number; maxRuntime?: number; anime?: boolean }): Promise<MediaItem[]> {
+    const params: Record<string, string | number> = { sort_by: "popularity.desc", "vote_count.gte": type === "movie" ? 400 : 150, "vote_average.gte": 6.8 };
+    const genres = mood.anime ? [animationGenreId] : (mood.genres ?? []);
+    if (genres.length > 0) params.with_genres = genres.join("|");
+    if (mood.anime) params.with_original_language = "ja";
+    if (mood.withoutGenres?.length) params.without_genres = mood.withoutGenres.join(",");
+    if (mood.minRuntime) params["with_runtime.gte"] = mood.minRuntime;
+    if (mood.maxRuntime) params["with_runtime.lte"] = mood.maxRuntime;
+    return list(`/discover/${type}`, type, params);
+  },
   search: (query: string) => list("/search/multi", undefined, { query, page: 1 }),
 
   async searchEverything(query: string, page: number): Promise<SearchPage> {

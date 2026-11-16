@@ -32,6 +32,8 @@ import { t, useT } from "../lib/i18n";
 import { arcOf, episodeLayout, inLayout, type Arc, type EpisodeLayout } from "../lib/episodeLayout";
 import { localizedTexts, needsLocalizing } from "../lib/localized";
 import { imageUrl, tmdb, type Details, type Episode, type MediaType } from "../lib/tmdb";
+import { fallbackRating, noteTitleRating } from "../lib/imdbRatings";
+import { cutLabel } from "../lib/releaseNames";
 import { tagLabel } from "../lib/tags";
 import { useAsync } from "../lib/useAsync";
 import { checkAvailability, checkedOf, useAvailability } from "../state/availability";
@@ -44,7 +46,8 @@ import { recordActivity, titleOf } from "../state/activity";
 import { sortSources } from "../lib/sources";
 import { useHoverWarm, warmTitleResume } from "../state/warmup";
 import { PickNote, PlayerStage, StageEpisodes, playOnStage, useStagePick, useStageSession } from "../components/PlayerStage";
-import { autoPlay, commitPick, preparePick, type PickTarget } from "../state/autoPick";
+import { autoPlay, commitPick, forgetPicks, preparePick, type PickEntry, type PickTarget } from "../state/autoPick";
+import { qualityRank } from "../lib/parse";
 
 type EpisodePickBase = Omit<PickTarget, "season" | "episode">;
 
@@ -181,6 +184,7 @@ function MovieSources({ title, target, hideEmpty }: { title: TitleRef; target: A
               <div className="source-row__main">
                 <div className="source-row__title">
                   <span className="quality-tag">{source.quality || t("common.video")}</span>
+                  {cutLabel(source.torrentName, source.fileName) && <span className="tag tag--cut">{cutLabel(source.torrentName, source.fileName)}</span>}
                   {source.tags.map((tag) => (
                     <span key={tag} className="tag">
                       {tag}
@@ -201,6 +205,72 @@ function MovieSources({ title, target, hideEmpty }: { title: TitleRef; target: A
           ))}
         </div>
       )}
+    </section>
+  );
+}
+
+function SeasonSources({ title, season }: { title: TitleRef; season: number }) {
+  const prefix = unitKey("tv", title.id, season, 0).slice(0, -1);
+  const all = useLibrary((state) => state.sources);
+  const groups = useMemo(() => {
+    const byHash = new Map<string, { source: Source; units: { key: string; source: Source }[] }>();
+    for (const [key, list] of Object.entries(all)) {
+      if (!key.startsWith(prefix)) continue;
+      for (const source of list) {
+        const group = byHash.get(source.infoHash) ?? { source, units: [] };
+        group.units.push({ key, source });
+        byHash.set(source.infoHash, group);
+      }
+    }
+    return [...byHash.values()].sort((a, b) => b.units.length - a.units.length || b.source.addedAt - a.source.addedAt);
+  }, [all, prefix]);
+  const { t, tn } = useT();
+  if (groups.length === 0) return null;
+
+  const removeRelease = (units: { key: string; source: Source }[], quality: string) => {
+    const { removeSource, addSources } = useLibrary.getState();
+    for (const unit of units) removeSource(unit.key, unit.source.id);
+    forgetPicks(units.map((unit) => unit.key));
+    useUi.getState().toast(t("title.source.removed", { quality: quality || t("common.video") }), "info", {
+      label: t("feed.dismissed.undo"),
+      run: () => addSources(units.map((unit) => ({ unitKey: unit.key, source: unit.source }))),
+    });
+  };
+
+  return (
+    <section className="section">
+      <div className="section__head">
+        <h2>{t("title.sources")}</h2>
+      </div>
+      <div className="source-list">
+        {groups.map(({ source, units }) => (
+          <div key={source.infoHash} className="source-row">
+            <div className="source-row__main">
+              <div className="source-row__title">
+                <span className="quality-tag">{source.quality || t("common.video")}</span>
+                {source.tags.map((tag) => (
+                  <span key={tag} className="tag">
+                    {tag}
+                  </span>
+                ))}
+                <span className="source-row__size">{tn("common.episodes", units.length)}</span>
+              </div>
+              <div className="source-row__file">{source.torrentName || source.fileName}</div>
+            </div>
+            <button className="icon-button" aria-label={t("title.source.reveal")} title={t("title.source.reveal")} onClick={() => void revealFile(source)}>
+              <FolderOpen size={16} />
+            </button>
+            <button
+              className="icon-button"
+              aria-label={t("title.source.removeSeason")}
+              title={t("title.source.removeSeason")}
+              onClick={() => removeRelease(units, source.quality)}
+            >
+              <Trash2 size={16} />
+            </button>
+          </div>
+        ))}
+      </div>
     </section>
   );
 }
@@ -653,14 +723,26 @@ function useResumeEpisode(details: Details | null): { season: number; episode: n
   }, [details, progress, sources]);
 }
 
-function TrackerHint({ details, onFind }: { details: Details; onFind: () => void }) {
+function TrackerHint({ details, picked, onFind }: { details: Details; picked: PickEntry | undefined; onFind: () => void }) {
   const { t, tn } = useT();
-  const checked = useAvailability((state) => checkedOf(state.known, details));
+  const background = useAvailability((state) => checkedOf(state.known, details));
 
   useEffect(() => {
     checkAvailability([details], true);
   }, [details]);
 
+  const found = picked?.status === "ready" ? picked.candidates : [];
+  const checked =
+    found.length > 0
+      ? {
+          found: true,
+          quality: [background?.found ? background.quality : "", ...found.map((candidate) => candidate.resolution || candidate.quality)].reduce(
+            (best, quality) => (qualityRank(quality) > qualityRank(best) ? quality : best),
+            "",
+          ),
+          seeds: Math.max(background?.found ? background.seeds : 0, ...found.map((candidate) => candidate.seeds)),
+        }
+      : background;
   if (!checked) return null;
   if (!checked.found) return <div className="title-hero__tracker is-missing">{t("title.tracker.none")}</div>;
   return (
@@ -673,8 +755,13 @@ function TrackerHint({ details, onFind }: { details: Details; onFind: () => void
   );
 }
 
-function TitleRating({ imdbId, catalogRating }: { imdbId: string | null; catalogRating: number }) {
+function TitleRating({ type, id, imdbId, catalogRating }: { type: MediaType; id: number; imdbId: string | null; catalogRating: number }) {
+  useEffect(() => noteTitleRating(type, id, catalogRating, imdbId), [type, id, catalogRating, imdbId]);
   const imdb = useAsync(() => (imdbId ? backend.imdbRating(imdbId) : Promise.resolve(null)), [imdbId]);
+  const fallback = useAsync(
+    () => (imdb.loading || imdb.data ? Promise.resolve(null) : fallbackRating(type, id, catalogRating)),
+    [type, id, catalogRating, imdb.loading, imdb.data],
+  );
   const { t, tn, locale } = useT();
   if (imdb.loading) return null;
   if (imdb.data) {
@@ -685,11 +772,11 @@ function TitleRating({ imdbId, catalogRating }: { imdbId: string | null; catalog
       </span>
     );
   }
-  if (catalogRating <= 0) return null;
+  if (!fallback.data) return null;
   return (
     <span className="rating" title={t("title.rating.tmdb")}>
       <Star size={13} fill="currentColor" />
-      {catalogRating.toFixed(1)}
+      {fallback.data.toFixed(1)}
     </span>
   );
 }
@@ -906,7 +993,7 @@ export default function TitlePage() {
             <h1>{shownTitle}</h1>
             {data.originalTitle && data.originalTitle !== shownTitle && <div className="title-hero__original">{data.originalTitle}</div>}
             <div className="title-hero__meta">
-              <TitleRating imdbId={data.imdbId} catalogRating={data.rating} />
+              <TitleRating type={data.type} id={data.id} imdbId={data.imdbId} catalogRating={data.rating} />
               {meta.map((item) => (
                 <span key={item}>{item}</span>
               ))}
@@ -973,7 +1060,7 @@ export default function TitlePage() {
                 </button>
               )}
             </div>
-            {(type === "tv" || !bestMovieSource) && <TrackerHint details={data} onFind={() => openAddSource({ target })} />}
+            {(type === "tv" || !bestMovieSource) && <TrackerHint details={data} picked={pick.entry} onFind={() => openAddSource({ target })} />}
             <RatingStars title={shownRef} />
             <TitleTime title={shownRef} />
           </div>
@@ -1010,6 +1097,7 @@ export default function TitlePage() {
             }
           />
         )}
+        {type === "tv" && <SeasonSources title={shownRef} season={season} />}
         {type === "movie" ? (
           <MovieSources title={shownRef} target={target} hideEmpty={Boolean(pickTarget) && stageOnPage} />
         ) : (

@@ -262,6 +262,7 @@ export function parseSize(text: string): number {
 export interface EpisodeGuess {
   season: number | null;
   episode: number | null;
+  last?: number;
 }
 
 const noisePattern =
@@ -277,7 +278,12 @@ export function parseEpisode(path: string): EpisodeGuess {
   const seasonFromFolder = folderSeason ? Number(folderSeason[1]) : null;
 
   const full = /s(\d{1,2})[ ._-]*e(\d{1,3})/i.exec(file) ?? /\b(\d{1,2})x(\d{2,3})\b/i.exec(file);
-  if (full) return { season: Number(full[1]), episode: Number(full[2]) };
+  if (full) {
+    const episode = Number(full[2]);
+    const joined = /^(?:e(\d{1,3})|[ ._]*[-&+][ ._]*e?(\d{1,3}))(?!\d)/i.exec(file.slice(full.index + full[0].length));
+    const last = joined ? Number(joined[1] ?? joined[2]) : 0;
+    return last > episode && last - episode <= 3 ? { season: Number(full[1]), episode, last } : { season: Number(full[1]), episode };
+  }
 
   const worded =
     /(?:сезон|season)[ ._-]*(\d{1,2}).*?(?:серия|эпизод|episode|ep)[ ._-]*(\d{1,3})/i.exec(file);
@@ -298,11 +304,14 @@ export function parseEpisode(path: string): EpisodeGuess {
   const dashed = / - (\d{1,3})(?:v\d)?(?=[ ._\[(]|$)/.exec(file);
   if (dashed) return { season, episode: Number(dashed[1]) };
 
+  const bracketed = /\[(\d{1,3})(?:v\d)?\]/.exec(file);
+  if (bracketed) return { season, episode: Number(bracketed[1]) };
+
   const cleaned = file
     .replace(/\[[^\]]*\]|\([^)]*\)/g, " ")
     .replace(/(?:season|сезон)[ ._-]*\d{1,2}|\b\d{1,2}(?:st|nd|rd|th)?[ ._-]*(?:season|сезон)|(?:^|[ ._-])s\d{1,2}(?=[ ._-]|$)/gi, " ")
     .replace(noisePattern, " ");
-  const standalone = /(?:^|[ ._-])(\d{1,3})(?=[ ._-]|$)/.exec(cleaned);
+  const standalone = /(?:^|[ ._-])(\d{1,3})(?:v\d)?(?=[ ._-]|$)/.exec(cleaned);
   return { season, episode: standalone ? Number(standalone[1]) : null };
 }
 

@@ -89,6 +89,8 @@ export interface Source {
   tags: string[];
   torrentName: string;
   addedAt: number;
+  pickId?: string;
+  donorId?: string;
 }
 
 export interface Progress {
@@ -639,8 +641,9 @@ export const useLibrary = create<LibraryState>((set, get) => {
         const sources = { ...state.sources };
         for (const { unitKey: key, source } of entries) {
           const existing = sources[key] ?? [];
-          const duplicate = existing.some((item) => item.infoHash === source.infoHash && item.fileIndex === source.fileIndex);
-          if (!duplicate) sources[key] = [...existing, source];
+          const same = (item: Source) => item.infoHash === source.infoHash && item.fileIndex === source.fileIndex;
+          if (!existing.some(same)) sources[key] = [...existing, source];
+          else if (source.donorId) sources[key] = existing.map((item) => (same(item) ? { ...item, pickId: source.pickId, donorId: source.donorId } : item));
         }
         return { sources };
       });

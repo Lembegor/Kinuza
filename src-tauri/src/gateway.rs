@@ -12,13 +12,13 @@ use serde::{Deserialize, Serialize};
 use crate::rutracker::{RutrackerItem, VideoSize};
 
 const MIRRORS: &[&str] = &["https://channeluza.com/kinuza/rt/", "https://kinuza.channeluza.com/kinuza/rt/"];
-const APP_KEY: &str = "tB1Ref_s4XVHOuc-yEep4je7F7gcIlaUv7WU9krMIi0";
+pub(crate) const APP_KEY: &str = "tB1Ref_s4XVHOuc-yEep4je7F7gcIlaUv7WU9krMIi0";
 const TOPIC_URL: &str = "https://rutracker.org/forum/viewtopic.php?t=";
 const ERROR_PREFIX: &str = "gateway_";
 const DOWN: &str = "gateway_down";
-const STALL_SECONDS: u64 = 20;
+pub(crate) const STALL_SECONDS: u64 = 20;
 
-fn client() -> &'static reqwest::Client {
+pub(crate) fn client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
         reqwest::Client::builder()
@@ -75,11 +75,20 @@ fn error_code(raw: &str) -> String {
 static WORKING_MIRROR: AtomicUsize = AtomicUsize::new(0);
 
 async fn send(path: &str, query: &[(&str, String)]) -> Result<(reqwest::StatusCode, bytes::Bytes), String> {
-    let first = WORKING_MIRROR.load(Ordering::Relaxed) % MIRRORS.len();
+    send_to(MIRRORS, &WORKING_MIRROR, path, query).await
+}
+
+pub(crate) async fn send_to(
+    mirrors: &[&str],
+    working: &AtomicUsize,
+    path: &str,
+    query: &[(&str, String)],
+) -> Result<(reqwest::StatusCode, bytes::Bytes), String> {
+    let first = working.load(Ordering::Relaxed) % mirrors.len();
     let mut answer = None;
-    for step in 0..MIRRORS.len() {
-        let index = (first + step) % MIRRORS.len();
-        let mirror = MIRRORS[index];
+    for step in 0..mirrors.len() {
+        let index = (first + step) % mirrors.len();
+        let mirror = mirrors[index];
         let attempt = async {
             let response = client().get(format!("{mirror}{path}")).header("X-Kinuza-Key", APP_KEY).query(query).send().await?;
             let status = response.status();
@@ -88,7 +97,7 @@ async fn send(path: &str, query: &[(&str, String)]) -> Result<(reqwest::StatusCo
         .await;
         match attempt {
             Ok((status, body)) if status.is_success() || serde_json::from_slice::<ErrorBody>(&body).is_ok() => {
-                WORKING_MIRROR.store(index, Ordering::Relaxed);
+                working.store(index, Ordering::Relaxed);
                 return Ok((status, body));
             }
             Ok((status, body)) => {

@@ -1,307 +1,31 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { Check, ChevronLeft, ChevronRight, Info, Play, X } from "lucide-react";
-import { CatalogError, PosterRow, Row, typeLabel, type DismissDetail } from "../components/Cards";
-import { t, useT } from "../lib/i18n";
-import { imageUrl, tmdb, type MediaItem } from "../lib/tmdb";
-import { useAsync } from "../lib/useAsync";
-import { isNewEpisode, useEpisodeCalendar, type CalendarEpisode } from "../state/calendar";
-import { usePersonalFeed } from "../state/feed";
-import { entryToRef, isWatched, titleKey, useLibrary, type Progress, type TitleRef } from "../state/library";
-import { useSettings } from "../state/settings";
-import { homeRefreshEvent, useUi } from "../state/ui";
-import { useUpNext, type UpNextEpisode } from "../state/upNext";
-import { useHoverWarm, warmRecentResume } from "../state/warmup";
-import { CatalogRating } from "../components/CatalogRating";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { PosterRow, type CardItem, type DismissDetail } from "../components/Cards";
+import { ContinueRow } from "../components/home/ContinueRow";
+import { CustomizeHome } from "../components/home/CustomizeHome";
+import { DownloadedRow, HomeEnd, HomeStarter, OfflineBanner } from "../components/home/HomeBits";
+import { HomePick, type PickSlide } from "../components/home/HomePick";
+import { MoodRecs } from "../components/home/MoodRecs";
+import { DailyPick, PlannedRow } from "../components/home/PersonalRows";
+import { RowMenu } from "../components/home/RowMenu";
+import { BestRow, FreshRow, PopularRow } from "../components/home/TabbedRows";
+import { WeekStrip } from "../components/home/WeekStrip";
 import { MonthCard } from "../components/profile/MonthCard";
+import { t, useT } from "../lib/i18n";
+import { key } from "../lib/taste";
+import { useEpisodeCalendar } from "../state/calendar";
+import { useContinueItems } from "../state/continueItems";
+import { useFeed, usePersonalFeed, type FeedItem, type FeedRow } from "../state/feed";
+import { forgetMoodPicks, moods, plannedItems, surprisePick, useFreshList, usePopularList, type Mood } from "../state/homeFeed";
+import { useHomeLayout, type HomeBlockId } from "../state/homeLayout";
+import { titleKey, useLibrary, type TitleRef } from "../state/library";
+import { homeRefreshEvent, useUi } from "../state/ui";
+import { warmRecentResume } from "../state/warmup";
 
-const heroRotationMs = 10000;
-const heroItemCount = 6;
-const minResumeSeconds = 30;
-const continueRowLimit = 12;
-const secondsPerMinute = 60;
-const minutesPerHour = 60;
-
-function slideKey(slide: MediaItem): string {
-  return titleKey(slide.type, slide.id);
-}
-
-function Hero({ items }: { items: MediaItem[] }) {
-  const { t } = useT();
-  const navigate = useNavigate();
-  const [index, setIndex] = useState(0);
-  const [paused, setPaused] = useState(false);
-  const slides = useMemo(() => items.filter((item) => item.backdrop && item.overview).slice(0, heroItemCount), [items]);
-
-  useEffect(() => {
-    if (slides.length < 2 || paused) return;
-    const timer = setTimeout(() => setIndex((value) => (value + 1) % slides.length), heroRotationMs);
-    return () => clearTimeout(timer);
-  }, [slides.length, index, paused]);
-
-  const current = slides[index];
-  if (!current) return <div className="hero hero--skeleton" />;
-
-  const step = (direction: 1 | -1) => setIndex((value) => (value + direction + slides.length) % slides.length);
-  const open = () => navigate(`/title/${current.type}/${current.id}`);
-
-  return (
-    <section className="hero" onMouseEnter={() => setPaused(true)} onMouseLeave={() => setPaused(false)}>
-      <img key={`ambient:${slideKey(current)}`} className="hero__ambient" src={imageUrl(current.backdrop, "w780") ?? undefined} alt="" draggable={false} />
-      {slides.map((slide, slideIndex) => (
-        <img
-          key={slideKey(slide)}
-          className={`hero__backdrop ${slideIndex === index ? "is-active" : ""}`}
-          src={imageUrl(slide.backdrop, "w1280") ?? undefined}
-          alt=""
-          draggable={false}
-        />
-      ))}
-      <div className="hero__shade" />
-      <button className="hero__open" aria-label={t("home.hero.open", { title: current.title })} onClick={open} />
-      <div className="hero__body" key={`body:${slideKey(current)}`}>
-        <div className="hero__kicker">
-          <span>{t("home.hero.trending")}</span>
-          <span>{typeLabel(current)}</span>
-          {current.year && <span>{current.year}</span>}
-          <CatalogRating type={current.type} id={current.id} rating={current.rating} className="rating" size={12} />
-        </div>
-        <h1>
-          <button onClick={open}>{current.title}</button>
-        </h1>
-        <p>{current.overview}</p>
-        <div className="hero__actions">
-          <button className="button button--primary button--large" onClick={open}>
-            <Info size={18} />
-            {t("home.hero.details")}
-          </button>
-        </div>
-      </div>
-      {slides.length > 1 && (
-        <div className="hero__nav">
-          <button className="hero__arrow" aria-label={t("home.hero.previous")} onClick={() => step(-1)}>
-            <ChevronLeft size={20} />
-          </button>
-          <div className="hero__dots">
-            {slides.map((slide, slideIndex) => (
-              <button
-                key={slideKey(slide)}
-                aria-label={slide.title}
-                className={slideIndex === index ? "is-active" : ""}
-                onClick={() => setIndex(slideIndex)}
-              />
-            ))}
-          </div>
-          <button className="hero__arrow" aria-label={t("home.hero.next")} onClick={() => step(1)}>
-            <ChevronRight size={20} />
-          </button>
-        </div>
-      )}
-    </section>
-  );
-}
-
-function remainingLabel(progress: Progress): string {
-  const minutes = Math.max(1, Math.round((progress.duration - progress.position) / secondsPerMinute));
-  const hours = Math.floor(minutes / minutesPerHour);
-  const time =
-    hours > 0
-      ? t("common.duration.hoursMinutes", { hours, minutes: minutes % minutesPerHour })
-      : t("common.duration.minutes", { minutes });
-  return t("home.continue.remaining", { time });
-}
-
-function ContinueCard({ unitKey, progress }: { unitKey: string; progress: Progress }) {
-  const { t } = useT();
-  const play = useUi((state) => state.play);
-  const navigate = useNavigate();
-  const hasSource = useLibrary((state) => (state.sources[unitKey]?.length ?? 0) > 0);
-  const { title } = progress;
-  const hoverWarm = useHoverWarm(hasSource ? unitKey : null);
-  const hideStill = useSettings((state) => state.spoilerStills);
-  const seasonNumber = title.type === "tv" ? progress.season : undefined;
-  const season = useAsync(
-    () => (seasonNumber !== undefined ? tmdb.season(title.id, seasonNumber) : Promise.resolve([])),
-    [title.id, seasonNumber],
-    `continue-season:${title.id}:${seasonNumber ?? "-"}`,
-  );
-  const episodes = (season.data ?? []).filter((episode) => episode.still);
-  const shown = (hideStill ? undefined : episodes.find((episode) => episode.episode === progress.episode)) ?? episodes[0];
-  const art = imageUrl(shown?.still ?? null, "w500") ?? imageUrl(title.backdrop, "w780") ?? imageUrl(title.poster, "w342");
-  const episodeLabel =
-    progress.season !== undefined
-      ? t("common.seasonEpisode", { season: progress.season, episode: progress.episode ?? "" })
-      : t("common.type.movie");
-
-  const openTitle = () => navigate(`/title/${title.type}/${title.id}`);
-  const context = { title, season: progress.season, episode: progress.episode, episodeName: progress.episodeName };
-  const hide = () => {
-    const { forgetProgress, restoreProgress } = useLibrary.getState();
-    forgetProgress(unitKey);
-    useUi.getState().toast(t("home.continue.hidden", { title: title.title }), "info", {
-      label: t("feed.dismissed.undo"),
-      run: () => restoreProgress(unitKey, progress),
-    });
-  };
-  const markWatched = () => {
-    const { setWatched, restoreProgress } = useLibrary.getState();
-    setWatched(unitKey, true, context);
-    useUi.getState().toast(t("home.continue.markedWatched", { title: title.title }), "success", {
-      label: t("feed.dismissed.undo"),
-      run: () => restoreProgress(unitKey, progress),
-    });
-  };
-  const resume = () => {
-    if (!hasSource) {
-      openTitle();
-      return;
-    }
-    play({
-      title,
-      unitKey,
-      season: progress.season,
-      episode: progress.episode,
-      episodeName: progress.episodeName,
-    });
-  };
-
-  return (
-    <div className="continue-card">
-      <button className="continue-card__art" {...hoverWarm} aria-label={t("home.continue.resume", { title: title.title })} onClick={resume}>
-        {art && <img src={art} alt="" loading="lazy" draggable={false} />}
-        <span className="continue-card__play">
-          <Play size={22} fill="currentColor" />
-        </span>
-        <div className="bar bar--thin">
-          <i style={{ width: `${(progress.position / progress.duration) * 100}%` }} />
-        </div>
-      </button>
-      <div className="continue-card__tools">
-        <button className="continue-card__info" aria-label={t("home.continue.markWatched")} title={t("home.continue.markWatched")} onClick={markWatched}>
-          <Check size={16} />
-        </button>
-        <button className="continue-card__info" aria-label={t("home.continue.page", { title: title.title })} title={t("common.openPage")} onClick={openTitle}>
-          <Info size={16} />
-        </button>
-        <button className="continue-card__info" aria-label={t("home.continue.hide")} title={t("home.continue.hide")} onClick={hide}>
-          <X size={16} />
-        </button>
-      </div>
-      <button className="continue-card__text" onClick={openTitle}>
-        <div className="poster-card__title">{title.title}</div>
-        <div className="poster-card__meta">
-          <span>{episodeLabel}</span>
-          {progress.duration > secondsPerMinute && <span>{remainingLabel(progress)}</span>}
-        </div>
-      </button>
-    </div>
-  );
-}
-
-function ContinueRow() {
-  const { t } = useT();
-  const progress = useLibrary((state) => state.progress);
-  const playing = useUi((state) => state.player?.unitKey);
-  const entries = useMemo(() => {
-    const latest = new Map<string, [string, Progress]>();
-    for (const entry of Object.entries(progress).sort(([, a], [, b]) => b.updatedAt - a.updatedAt)) {
-      const show = titleKey(entry[1].title.type, entry[1].title.id);
-      if (!latest.has(show)) latest.set(show, entry);
-    }
-    return [...latest.values()]
-      .filter(([key, item]) => !isWatched(item) && (item.title.type === "tv" ? item.position >= 1 : item.position >= minResumeSeconds || key === playing))
-      .slice(0, continueRowLimit);
-  }, [progress, playing]);
-  if (entries.length === 0) return null;
-  return (
-    <Row title={t("home.row.continue")}>
-      {entries.map(([key, item]) => (
-        <ContinueCard key={key} unitKey={key} progress={item} />
-      ))}
-    </Row>
-  );
-}
-
-function UpNextCard({ item }: { item: UpNextEpisode }) {
-  const { t } = useT();
-  const play = useUi((state) => state.play);
-  const navigate = useNavigate();
-  const hasSource = useLibrary((state) => (state.sources[item.unitKey]?.length ?? 0) > 0);
-  const hideStill = useSettings((state) => state.spoilerStills);
-  const hoverWarm = useHoverWarm(hasSource ? item.unitKey : null);
-  const art = (hideStill ? null : imageUrl(item.still, "w500")) ?? imageUrl(item.title.backdrop, "w780") ?? imageUrl(item.title.poster, "w342");
-  const openTitle = () => navigate(`/title/tv/${item.title.id}?s=${item.season}`);
-  const start = () => {
-    if (!hasSource) {
-      openTitle();
-      return;
-    }
-    play({ title: item.title, unitKey: item.unitKey, season: item.season, episode: item.episode, episodeName: item.name });
-  };
-
-  return (
-    <div className="continue-card">
-      <button
-        className="continue-card__art"
-        {...hoverWarm}
-        aria-label={hasSource ? t("home.upNext.play", { title: item.title.title }) : t("home.upNext.find", { title: item.title.title })}
-        onClick={start}
-      >
-        {art && <img src={art} alt="" loading="lazy" draggable={false} />}
-        <span className="continue-card__play">
-          <Play size={22} fill="currentColor" />
-        </span>
-      </button>
-      <button className="continue-card__info" aria-label={t("home.continue.page", { title: item.title.title })} title={t("common.openPage")} onClick={openTitle}>
-        <Info size={16} />
-      </button>
-      <button className="continue-card__text" onClick={openTitle}>
-        <div className="poster-card__title">{item.title.title}</div>
-        <div className="poster-card__meta">
-          <span>{t("common.seasonEpisode", { season: item.season, episode: item.episode })}</span>
-          <span>{hasSource ? item.name : t("home.upNext.noSource")}</span>
-        </div>
-      </button>
-    </div>
-  );
-}
-
-function UpNextRow() {
-  const { t } = useT();
-  const items = useUpNext();
-  if (!items || items.length === 0) return null;
-  return (
-    <Row title={t("home.row.upNext")}>
-      {items.map((item) => (
-        <UpNextCard key={item.unitKey} item={item} />
-      ))}
-    </Row>
-  );
-}
-
-function NewEpisodesRow() {
-  const { t, tn } = useT();
-  const calendar = useEpisodeCalendar();
-  const progress = useLibrary((state) => state.progress);
-  const items = useMemo(() => {
-    const bySeries = new Map<number, CalendarEpisode[]>();
-    for (const episode of calendar.episodes ?? []) {
-      if (!isNewEpisode(episode, progress, calendar.today)) continue;
-      bySeries.set(episode.title.id, [...(bySeries.get(episode.title.id) ?? []), episode]);
-    }
-    const latest = (episodes: CalendarEpisode[]) => episodes[episodes.length - 1];
-    return [...bySeries.values()]
-      .sort((a, b) => latest(b).airDate.localeCompare(latest(a).airDate))
-      .map((episodes) => ({
-        ...episodes[0].title,
-        note:
-          episodes.length === 1
-            ? t("common.seasonEpisode", { season: episodes[0].season, episode: episodes[0].episode })
-            : tn("calendar.new.count", episodes.length),
-      }));
-  }, [calendar.episodes, calendar.today, progress, t, tn]);
-  return <PosterRow title={t("home.row.newEpisodes")} items={items} />;
-}
+const pickCount = 5;
+const similarRows = 2;
+const shortestRow = 5;
+const shortestDaily = 3;
+const msPerDay = 86_400_000;
 
 function dismissNote(detail: DismissDetail): string {
   switch (detail.reason) {
@@ -325,69 +49,257 @@ function dismissRecommendation(title: TitleRef, detail: DismissDetail): void {
   });
 }
 
+function choosePicks(items: FeedItem[]): PickSlide[] {
+  const withArt = items.filter((item) => item.backdrop);
+  const picked: PickSlide[] = [];
+  const arms = new Set<string>();
+  for (const item of withArt) {
+    if (picked.length >= pickCount) break;
+    if (item.arm && arms.has(item.arm)) continue;
+    if (item.arm) arms.add(item.arm);
+    picked.push(item);
+  }
+  for (const item of withArt) {
+    if (picked.length >= pickCount) break;
+    if (!picked.includes(item)) picked.push(item);
+  }
+  return picked;
+}
+
+function dailyRow(rows: FeedRow[], now: number): FeedRow | null {
+  const candidates = rows.filter((row) => row.id === "gems" || row.id === "collections" || row.id === "themes" || row.id.startsWith("person:"));
+  if (candidates.length === 0) return null;
+  const thisYear = new Date(now).getFullYear();
+  const continuation = candidates.find((row) => row.id === "collections" && row.items.some((item) => Number(item.year) >= thisYear - 1));
+  if (continuation) return continuation;
+  const localDay = Math.floor((now - new Date(now).getTimezoneOffset() * 60_000) / msPerDay);
+  return candidates[localDay % candidates.length];
+}
+
+function unclaimed<T extends CardItem>(items: T[], claims: Set<string>): T[] {
+  return items.filter((item) => !claims.has(key(item)));
+}
+
+function withoutNote<T extends CardItem>(items: T[], note: string): T[] {
+  return items.map((item) => (item.note === note ? { ...item, note: undefined } : item));
+}
+
+function claim(items: CardItem[], claims: Set<string>): void {
+  for (const item of items) claims.add(key(item));
+}
+
+interface Planned {
+  forYou: FeedItem[] | null;
+  fresh: FeedItem[] | null;
+  similar: FeedRow[];
+  daily: FeedRow | null;
+  claims: Set<string>;
+  beforeForYou: Set<string>;
+  moodSkip: Set<string>;
+}
+
 export default function Home() {
   const { t } = useT();
+  const pageRef = useRef<HTMLDivElement>(null);
   const libraryLoaded = useLibrary((state) => state.loaded);
+  const tracked = useLibrary((state) => state.tracked);
+  const progress = useLibrary((state) => state.progress);
+  const dismissed = useLibrary((state) => state.dismissed);
   useEffect(() => {
     if (libraryLoaded) warmRecentResume();
   }, [libraryLoaded]);
-  const trending = useAsync(tmdb.trending, []);
-  const movies = useAsync(tmdb.popularMovies, []);
-  const series = useAsync(tmdb.popularSeries, []);
-  const anime = useAsync(tmdb.anime, []);
-  const nowPlaying = useAsync(tmdb.nowPlaying, []);
-  const topMovies = useAsync(tmdb.topMovies, []);
-  const topSeries = useAsync(tmdb.topSeries, []);
-  const animeMovies = useAsync(tmdb.animeMovies, []);
-  const pageRef = useRef<HTMLDivElement>(null);
+
+  const feed = usePersonalFeed();
+  const continueItems = useContinueItems();
+  const calendar = useEpisodeCalendar();
+  const { order, hidden } = useHomeLayout();
+  const popular = usePopularList("all", true);
+  const plannedMovies = useMemo(() => Object.values(tracked).some((entry) => entry.status === "planned" && entry.type === "movie"), [tracked]);
+  const digital = useFreshList("movies", plannedMovies);
+  const [mood, setMood] = useState<Mood>(moods[0]);
+  const [surprise, setSurprise] = useState<PickSlide | null>(null);
+  const [rolling, setRolling] = useState(false);
+  const shownRef = useRef<PickSlide[] | null>(null);
+  const [customizing, setCustomizing] = useState(false);
+  const [frozenPicks, setFrozenPicks] = useState<PickSlide[] | null>(null);
+  const [moodGeneration, setMoodGeneration] = useState(0);
+  const feedBuiltAt = useFeed((state) => state.builtAt);
+  useEffect(() => {
+    forgetMoodPicks();
+    setMoodGeneration((value) => value + 1);
+  }, [feedBuiltAt]);
+
+  const rows = feed.rows;
+  const forYouRow = rows?.find((row) => row.id === "for-you") ?? null;
+  useEffect(() => {
+    if (frozenPicks === null && forYouRow && forYouRow.items.length > 0) setFrozenPicks(choosePicks(forYouRow.items));
+  }, [frozenPicks, forYouRow]);
+  const picks = useMemo(() => (frozenPicks ?? []).filter((item) => !(key(item) in dismissed)), [frozenPicks, dismissed]);
+
+  const isNew = libraryLoaded && !feed.available && Object.keys(tracked).length === 0 && Object.keys(progress).length === 0;
+  const offline = Boolean(popular.error) && !popular.data;
+
+  const visible = useMemo(() => order.filter((id) => !hidden.has(id)), [order, hidden]);
+
+  const planned = useMemo<Planned>(() => {
+    const claims = new Set<string>();
+    if (visible.includes("pick")) claim(picks, claims);
+    for (const item of continueItems) claims.add(titleKey(item.title.type, item.title.id));
+    const result: Planned = { forYou: null, fresh: null, similar: [], daily: null, claims, beforeForYou: new Set(claims), moodSkip: claims };
+    if (!rows) return result;
+    const forYouKeys = new Set<string>();
+    const now = Date.now();
+    for (const id of visible) {
+      if (id === "forYou") {
+        result.beforeForYou = new Set(claims);
+        result.forYou = forYouRow ? unclaimed(forYouRow.items, claims) : [];
+        claim(result.forYou, forYouKeys);
+        claim(result.forYou, claims);
+      } else if (id === "fresh") {
+        const row = rows.find((item) => item.id === "fresh");
+        const items = row ? unclaimed(row.items, claims) : [];
+        result.fresh = items.length >= shortestRow ? withoutNote(items, t("feed.reason.fresh")) : [];
+        claim(result.fresh, claims);
+      } else if (id === "similar") {
+        for (const row of rows.filter((item) => item.id.startsWith("cluster:") || item.id.startsWith("because:"))) {
+          if (result.similar.length >= similarRows) break;
+          const items = unclaimed(row.items, claims);
+          if (items.length < shortestRow) continue;
+          result.similar.push({ ...row, items });
+          claim(items, claims);
+        }
+      } else if (id === "daily") {
+        const row = dailyRow(rows, now);
+        const items = row ? unclaimed(row.items, claims) : [];
+        if (row && items.length >= shortestDaily) {
+          result.daily = { ...row, items: row.id === "themes" ? withoutNote(items, t("feed.reason.theme")) : items };
+          claim(items, claims);
+        }
+      } else if (id === "planned") {
+        for (const entry of Object.values(tracked)) if (entry.status === "planned") claims.add(titleKey(entry.type, entry.id));
+      }
+    }
+    result.moodSkip = new Set([...claims].filter((item) => !forYouKeys.has(item)));
+    return result;
+  }, [visible, picks, continueItems, rows, forYouRow, tracked]);
+
+  const plannedList = useMemo(() => plannedItems(tracked, calendar.episodes, digital.data, calendar.today), [tracked, calendar.episodes, digital.data, calendar.today]);
+  const plannedTotal = useMemo(() => Object.values(tracked).filter((entry) => entry.status === "planned").length, [tracked]);
+  const continueKeys = useMemo(() => new Set(continueItems.map((item) => titleKey(item.title.type, item.title.id))), [continueItems]);
+
+  const scrollTop = () => pageRef.current?.closest(".page-scroller")?.scrollTo({ top: 0, behavior: "smooth" });
+
   useEffect(() => {
     const refresh = () => {
-      for (const row of [trending, movies, series, anime, nowPlaying, topMovies, topSeries, animeMovies]) row.reload();
-      pageRef.current?.closest(".page-scroller")?.scrollTo({ top: 0, behavior: "smooth" });
+      popular.reload();
+      forgetMoodPicks();
+      setMoodGeneration((value) => value + 1);
+      setSurprise(null);
+      scrollTop();
     };
     window.addEventListener(homeRefreshEvent, refresh);
     return () => window.removeEventListener(homeRefreshEvent, refresh);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  const tracked = useLibrary((state) => state.tracked);
-  const feed = usePersonalFeed();
-  const planned = useMemo(
-    () =>
-      Object.values(tracked)
-        .filter((entry) => entry.status === "planned")
-        .sort((a, b) => b.updatedAt - a.updatedAt)
-        .map(entryToRef),
-    [tracked],
-  );
 
-  if (trending.error) {
-    return (
-      <div className="page" ref={pageRef}>
-        <ContinueRow />
-        <CatalogError onRetry={trending.reload} />
-      </div>
-    );
-  }
+  const rollSurprise = useCallback(async (shown?: PickSlide[] | null) => {
+    if (shown !== undefined) shownRef.current = shown;
+    const avoid = new Set(planned.claims);
+    for (const item of shownRef.current ?? []) avoid.delete(key(item));
+    if (surprise) avoid.add(key(surprise));
+    setRolling(true);
+    const found = await surprisePick(mood, avoid, shownRef.current).finally(() => setRolling(false));
+    if (!found) {
+      useUi.getState().toast(t("home.mood.noSurprise"), "info");
+      return;
+    }
+    setSurprise(found);
+    scrollTop();
+  }, [planned.claims, surprise, mood, t]);
+
+  const openCustomize = useCallback(() => setCustomizing(true), []);
+  const menu = (id: HomeBlockId) => <RowMenu block={id} onCustomize={openCustomize} />;
+  const popularSlides = useMemo(() => (popular.data ?? []).filter((item) => item.backdrop && item.overview).slice(0, pickCount), [popular.data]);
+
+  const renderBlock = (id: HomeBlockId): ReactNode => {
+    switch (id) {
+      case "pick":
+        if (surprise) return <HomePick key={`${surprise.type}:${surprise.id}`} slides={[surprise]} mode="surprise" onReroll={() => void rollSurprise()} onLeave={() => setSurprise(null)} />;
+        if (isNew) return <HomeStarter posters={popular.data ?? []} />;
+        if (picks.length > 0) return <HomePick slides={picks} mode="pick" onDismiss={dismissRecommendation} />;
+        if (feed.available && rows === null) return <HomePick slides={[]} mode="pick" />;
+        if (offline) return null;
+        return <HomePick slides={popularSlides} mode="popular" />;
+      case "continue":
+        if (offline)
+          return (
+            <>
+              <ContinueRow items={continueItems} offline menu={menu(id)} />
+              <DownloadedRow skip={continueKeys} />
+            </>
+          );
+        return continueItems.length > 0 ? <ContinueRow items={continueItems} offline={false} menu={menu(id)} /> : null;
+      case "month":
+        return <MonthCard />;
+      case "forYou":
+        return (
+          <MoodRecs
+            title={isNew ? t("home.row.moods") : undefined}
+            mood={mood}
+            onMood={setMood}
+            baseItems={feed.available ? (rows === null ? null : planned.forYou) : undefined}
+            skip={planned.beforeForYou}
+            moodSkip={planned.moodSkip}
+            generation={moodGeneration}
+            onDismiss={dismissRecommendation}
+            onSurprise={(shown) => void rollSurprise(shown as PickSlide[] | null)}
+            rolling={rolling}
+            menu={menu(id)}
+          />
+        );
+      case "week":
+        return <WeekStrip episodes={calendar.episodes} today={calendar.today} menu={menu(id)} />;
+      case "fresh":
+        return <FreshRow forYou={planned.fresh} skip={planned.claims} offline={offline} onDismiss={dismissRecommendation} menu={menu(id)} />;
+      case "similar":
+        return planned.similar.length > 0
+          ? planned.similar.map((row) => <PosterRow key={row.id} title={row.title} items={row.items} onDismiss={dismissRecommendation} rowId={row.id} menu={menu(id)} />)
+          : null;
+      case "planned":
+        return plannedList.length > 0 ? <PlannedRow items={plannedList} total={plannedTotal} menu={menu(id)} /> : null;
+      case "daily":
+        return planned.daily ? <DailyPick row={planned.daily} onDismiss={dismissRecommendation} menu={menu(id)} /> : null;
+      case "popular":
+        if (offline) return null;
+        return isNew ? (
+          <>
+            <PopularRow menu={menu(id)} />
+            <BestRow />
+          </>
+        ) : (
+          <PopularRow menu={menu(id)} />
+        );
+    }
+  };
+
+  const blocks = visible.map((id) => ({ id, node: renderBlock(id) })).filter((block) => block.node !== null);
 
   return (
-    <div className="page page--flush" ref={pageRef}>
-      <Hero items={trending.data ?? []} />
-      <div className="page__rows">
-        <ContinueRow />
-        <UpNextRow />
-        <NewEpisodesRow />
-        <MonthCard />
-        {feed.available && feed.rows === null && <PosterRow title={t("feed.forYou")} items={null} />}
-        {feed.rows?.map((row) => <PosterRow key={row.id} title={row.title} items={row.items} onDismiss={dismissRecommendation} rowId={row.id} />)}
-        {planned.length > 0 && <PosterRow title={t("home.row.planned")} items={planned} />}
-        <PosterRow title={t("home.row.trending")} items={trending.data} />
-        <PosterRow title={t("home.row.nowPlaying")} items={nowPlaying.data} />
-        <PosterRow title={t("home.row.popularSeries")} items={series.data} />
-        <PosterRow title={t("home.row.anime")} items={anime.data} />
-        <PosterRow title={t("home.row.popularMovies")} items={movies.data} />
-        <PosterRow title={t("home.row.animeMovies")} items={animeMovies.data} />
-        <PosterRow title={t("home.row.topMovies")} items={topMovies.data} />
-        <PosterRow title={t("home.row.topSeries")} items={topSeries.data} />
+    <div className="page page--flush home" ref={pageRef}>
+      {offline && <OfflineBanner onRetry={popular.reload} />}
+      {blocks.map((block) => (
+        <div key={block.id} className={block.id === "pick" ? "home__bleed" : "home__block"}>
+          {block.node}
+        </div>
+      ))}
+      {offline && !visible.includes("continue") && (
+        <div className="home__block">
+          <DownloadedRow skip={continueKeys} />
+        </div>
+      )}
+      <div className="home__block">
+        <HomeEnd onCustomize={openCustomize} />
       </div>
+      {customizing && <CustomizeHome onClose={() => setCustomizing(false)} />}
     </div>
   );
 }
