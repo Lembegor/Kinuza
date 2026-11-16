@@ -9,6 +9,10 @@ LANGUAGES = ("ru", "uk", "en")
 
 TEXTS = {
     "ru": {
+        "invite.title": "Приглашение в друзья",
+        "invite.text": "Вас зовут в друзья в Kinuza. Откройте приглашение в приложении - заявка отправится в один клик, и вы будете видеть, кто что смотрит.",
+        "invite.code": "Код друга:",
+        "invite.badge": "Приглашение из Kinuza",
         "open": "Открыть в Kinuza",
         "download": "Скачать Kinuza",
         "movie": "Фильм",
@@ -22,6 +26,10 @@ TEXTS = {
         "tagline": "Kinuza - фильмы, сериалы и аниме в одном приложении",
     },
     "uk": {
+        "invite.title": "Запрошення в друзі",
+        "invite.text": "Вас кличуть у друзі в Kinuza. Відкрийте запрошення в застосунку - заявка надішлеться в один клік, і ви бачитимете, хто що дивиться.",
+        "invite.code": "Код друга:",
+        "invite.badge": "Запрошення з Kinuza",
         "open": "Відкрити в Kinuza",
         "download": "Завантажити Kinuza",
         "movie": "Фільм",
@@ -35,6 +43,10 @@ TEXTS = {
         "tagline": "Kinuza - фільми, серіали та аніме в одному застосунку",
     },
     "en": {
+        "invite.title": "Friend invite",
+        "invite.text": "You are invited to be friends in Kinuza. Open the invite in the app - the request goes out in one click, and you will see what each other watches.",
+        "invite.code": "Friend code:",
+        "invite.badge": "An invite from Kinuza",
         "open": "Open in Kinuza",
         "download": "Download Kinuza",
         "movie": "Film",
@@ -107,17 +119,27 @@ def render(info: dict | None, kind: str, ident: int, language: str, season: int 
         poster = ""
         backdrop = ""
         meta_line = ""
+    return document(language, words, link, page_url, heading, name, description, poster, backdrop, meta_line, words["shared"], "video.movie" if kind == "movie" else "video.tv_show", nonce, bool(info))
+
+
+def render_invite(code: str, language: str, nonce: str) -> str:
+    words = TEXTS[language]
+    link = f"kinuza://friend/{code}"
+    pretty = f"{code[:4]}-{code[4:]}" if len(code) > 4 else code
+    return document(language, words, link, f"{SITE}/f/{code}", words["invite.title"], words["invite.title"], words["invite.text"], "", "", f'{words["invite.code"]} {pretty}', words["invite.badge"], "website", nonce, True)
+
+
+def document(language: str, words: dict, link: str, page_url: str, heading: str, name: str, description: str, poster: str, backdrop: str, meta_line: str, badge: str, og_type: str, nonce: str, known: bool) -> str:
     escape = html.escape
-    og_type = "video.movie" if kind == "movie" else "video.tv_show"
     poster_block = f'<img class="poster" src="{escape(poster)}" alt="">' if poster else '<div class="poster poster--empty">K</div>'
-    backdrop_style = f' style="background-image:url(\'{escape(backdrop)}\')"' if backdrop else ""
+    backdrop_style = f" style=\"background-image:url('{escape(backdrop)}')\"" if backdrop else ""
     script_texts = json.dumps({"link": link, "asked": words["asked"], "safari": words["safari"], "missing": words["missing"], "opening": words["opening"]}, ensure_ascii=False)
     return f"""<!doctype html>
 <html lang="{language}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{escape(heading + ' - Kinuza' if info else 'Kinuza')}</title>
+<title>{escape(heading + ' - Kinuza' if known else 'Kinuza')}</title>
 <meta name="description" content="{escape(description)}">
 <meta property="og:site_name" content="Kinuza">
 <meta property="og:type" content="{og_type}">
@@ -157,7 +179,7 @@ footer {{ position: relative; text-align: center; color: #6f6f7d; font-size: 13p
 <main>
 {poster_block}
 <div>
-<div class="shared"><span class="dot"></span>{escape(words["shared"])}</div>
+<div class="shared"><span class="dot"></span>{escape(badge)}</div>
 <h1>{escape(name)}</h1>
 {f'<div class="meta">{escape(meta_line)}</div>' if meta_line else ''}
 <p class="overview">{escape(description)}</p>

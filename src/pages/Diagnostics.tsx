@@ -200,6 +200,7 @@ const areaNames: Record<JournalArea, MessageKey> = {
   settings: "journal.area.settings",
   updates: "journal.area.updates",
   system: "journal.area.system",
+  account: "journal.area.account",
 };
 
 function areaName(area: JournalArea): string {

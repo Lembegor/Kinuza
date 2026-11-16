@@ -73,6 +73,7 @@ pub mod spawn_utils;
 pub mod storage;
 mod stream_connect;
 mod torrent_state;
+mod torrent_repair;
 #[cfg(feature = "tracing-subscriber-utils")]
 pub mod tracing_subscriber_config_utils;
 mod type_aliases;
@@ -101,6 +102,7 @@ pub use torrent_state::{
     TorrentStatsState, slow_stream_reads,
 };
 pub use type_aliases::FileInfos;
+pub use torrent_repair::repair_torrent_bytes;
 
 pub use buffers::*;
 pub use clone_to_owned::CloneToOwned;

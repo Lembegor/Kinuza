@@ -147,6 +147,21 @@ function demoWords(text: string): string[] {
   return text.toLowerCase().replace(/ё/g, "е").split(/[^\p{L}\p{N}]+/u).filter(Boolean);
 }
 
+const mockAccount = {
+  signedIn: false,
+  cancelled: false,
+  revision: 0,
+  backup: null as string | null,
+  me: { id: 1, name: "Абеляр", email: "you@example.com", code: "ABCD2345", avatar: null, showActivity: true, invisible: false, created: 0 },
+  friends: [
+    { id: 2, name: "Артём", avatar: null, online: true, lastSeen: null, watching: { type: "tv", id: 45790, title: "Невероятные приключения ДжоДжо", poster: "/6kG506PdsyuHWnc5OWGl64Kd6XK.jpg", season: 2, episode: 7 } },
+    { id: 3, name: "Лиза", avatar: null, online: true, lastSeen: null, watching: null },
+    { id: 4, name: "Денис", avatar: null, online: false, lastSeen: Math.round(Date.now() / 1000) - 7200, watching: null },
+  ] as unknown[],
+  incoming: [{ id: 5, name: "Оля", avatar: null, at: Math.round(Date.now() / 1000) - 600 }] as { id: number; name: string; avatar: null; at: number }[],
+  outgoing: [] as { id: number; name: string; avatar: null; at: number }[],
+};
+
 export async function mockInvoke(command: string, args: Record<string, unknown> = {}): Promise<unknown> {
   switch (command) {
     case "online_subtitles_search":
@@ -233,6 +248,73 @@ export async function mockInvoke(command: string, args: Record<string, unknown> 
         ],
         sources: { yts: "ok", nnm: "ok" },
       };
+    }
+    case "account_status":
+      return { signedIn: mockAccount.signedIn, base: "https://kinuza.channeluza.com/kinuza/account/" };
+    case "account_sign_in":
+      await new Promise((resolve) => setTimeout(resolve, 1800));
+      if (mockAccount.cancelled) {
+        mockAccount.cancelled = false;
+        throw "account_cancelled";
+      }
+      mockAccount.signedIn = true;
+      return { account: mockAccount.me, created: true };
+    case "account_cancel_sign_in":
+      mockAccount.cancelled = true;
+      return null;
+    case "account_forget":
+      mockAccount.signedIn = false;
+      return null;
+    case "account_sync_pull":
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      return { revision: mockAccount.revision, text: Number(args.known) === mockAccount.revision ? null : mockAccount.backup };
+    case "account_sync_push":
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      if (Number(args.revision) !== mockAccount.revision) throw `sync_conflict:${mockAccount.revision}`;
+      mockAccount.revision += 1;
+      mockAccount.backup = String(args.text);
+      return mockAccount.revision;
+    case "account_call": {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      if (!mockAccount.signedIn) throw "account_signed_out";
+      const path = String(args.path);
+      const body = (args.body ?? {}) as Record<string, unknown>;
+      const social = () => ({ friends: mockAccount.friends, incoming: mockAccount.incoming, outgoing: mockAccount.outgoing, backupRevision: mockAccount.revision });
+      if (path === "me" && args.method === "GET") return mockAccount.me;
+      if (path === "me" && args.method === "PATCH") {
+        const { avatar: _avatar, ...rest } = body;
+        mockAccount.me = { ...mockAccount.me, ...rest };
+        return mockAccount.me;
+      }
+      if (path === "me" && args.method === "DELETE") {
+        mockAccount.signedIn = false;
+        return { ok: true };
+      }
+      if (path.startsWith("auth/signout")) {
+        mockAccount.signedIn = false;
+        return { ok: true };
+      }
+      if (path === "presence") return body.state === "offline" ? { ok: true } : social();
+      if (path === "friends/lookup") {
+        const code = String(((args.query as [string, string][] | null) ?? []).find(([key]) => key === "code")?.[1] ?? "");
+        if (code === mockAccount.me.code) return { id: 1, name: mockAccount.me.name, avatar: null, self: true };
+        if (code !== "QWER2345") throw "friend_not_found";
+        return { id: 9, name: "Маша", avatar: null, self: false };
+      }
+      if (path === "friends/request") {
+        mockAccount.outgoing = [...mockAccount.outgoing, { id: 9, name: "Маша", avatar: null, at: Date.now() / 1000 }];
+        return { result: "sent", id: 9, ...social() };
+      }
+      if (path === "friends/accept") {
+        const person = mockAccount.incoming.find((item) => item.id === body.id);
+        mockAccount.incoming = mockAccount.incoming.filter((item) => item.id !== body.id);
+        if (person) mockAccount.friends = [...mockAccount.friends, { id: person.id, name: person.name, avatar: null, online: true, lastSeen: null, watching: null }];
+        return social();
+      }
+      if (path === "friends/decline") mockAccount.incoming = mockAccount.incoming.filter((item) => item.id !== body.id);
+      if (path === "friends/cancel") mockAccount.outgoing = mockAccount.outgoing.filter((item) => item.id !== body.id);
+      if (path === "friends/remove") mockAccount.friends = mockAccount.friends.filter((item) => (item as { id: number }).id !== body.id);
+      return social();
     }
     case "trackers_inspect": {
       await new Promise((resolve) => setTimeout(resolve, 600));

@@ -11,6 +11,7 @@ import httpx
 from aiohttp import web
 
 import page
+import privacy
 
 CATALOG = os.environ.get("SHARE_CATALOG", "/catalog/catalog.db")
 PORT = int(os.environ.get("SHARE_PORT", "8092"))
@@ -143,6 +144,29 @@ async def title_page(request: web.Request) -> web.Response:
     )
 
 
+def html_response(body: str, nonce: str | None, status: int = 200) -> web.Response:
+    script = f"script-src 'nonce-{nonce}'; " if nonce else "script-src 'none'; "
+    csp = f"default-src 'none'; img-src {page.SITE}; style-src 'unsafe-inline'; {script}base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    return web.Response(
+        text=body,
+        status=status,
+        content_type="text/html",
+        headers={"Content-Security-Policy": csp, "Cache-Control": "public, max-age=600", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer"},
+    )
+
+
+async def invite_page(request: web.Request) -> web.Response:
+    code = request.match_info["code"].upper()
+    language = page.pick_language(request.headers.get("Accept-Language", ""))
+    nonce = secrets.token_urlsafe(16)
+    return html_response(page.render_invite(code, language, nonce), nonce)
+
+
+async def privacy_page(request: web.Request) -> web.Response:
+    language = request.query.get("lang") or page.pick_language(request.headers.get("Accept-Language", ""))
+    return html_response(privacy.render_privacy(language if language in page.LANGUAGES else "ru"), None)
+
+
 async def stop(app: web.Application) -> None:
     await app["titles"].client.aclose()
 
@@ -151,6 +175,8 @@ def main() -> None:
     app = web.Application()
     app["titles"] = Titles()
     app.router.add_get(r"/t/{kind:movie|tv}/{ident:\d{1,9}}", title_page)
+    app.router.add_get(r"/f/{code:[A-Za-z0-9]{8}}", invite_page)
+    app.router.add_get("/privacy", privacy_page)
     app.on_cleanup.append(stop)
     web.run_app(app, host=HOST, port=PORT, access_log=None)
 

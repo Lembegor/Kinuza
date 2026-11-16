@@ -2727,6 +2727,7 @@ dependencies = [
  "ed25519-dalek",
  "encoding_rs",
  "flate2",
+ "getrandom 0.3.4",
  "libc",
  "librqbit",
  "lzma-rust2",

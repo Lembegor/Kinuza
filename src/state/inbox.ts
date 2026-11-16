@@ -7,7 +7,7 @@ const keptItems = 100;
 const keptForMs = 60 * 24 * 60 * 60 * 1000;
 const saveDelayMs = 800;
 
-export type InboxKind = "episodes" | "download" | "update" | "info";
+export type InboxKind = "episodes" | "download" | "update" | "info" | "friend";
 
 export interface InboxItem {
   id: string;

@@ -3,6 +3,7 @@ mod associations;
 #[cfg(not(windows))]
 #[path = "associations_linux.rs"]
 mod associations;
+mod account;
 mod activity;
 mod catalog;
 mod commands;
@@ -206,6 +207,14 @@ pub fn run() {
             gateway::gateway_status,
             trackers::trackers_search,
             trackers::trackers_inspect,
+            account::account_status,
+            account::account_sign_in,
+            account::account_sign_in_dev,
+            account::account_cancel_sign_in,
+            account::account_call,
+            account::account_forget,
+            account::account_sync_pull,
+            account::account_sync_push,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Kinuza")

@@ -8,6 +8,7 @@ import { isTopDialog, useDialogFocus } from "../../lib/useDialogFocus";
 import { useLibrary } from "../../state/library";
 import { profileInitial, useProfile } from "../../state/profile";
 import { useUi } from "../../state/ui";
+import { useAccount } from "../../state/account";
 
 const avatarSize = 256;
 const nameLimit = 40;
@@ -43,6 +44,7 @@ export function ProfileEdit({ ledger, onClose }: { ledger: Ledger | null; onClos
   const { t } = useT();
   const profile = useProfile();
   const tracked = useLibrary((state) => state.tracked);
+  const signedIn = useAccount((state) => state.phase === "signedIn");
   const [name, setName] = useState(profile.name);
   const [avatar, setAvatar] = useState(profile.avatar);
   const [cover, setCover] = useState(profile.cover);
@@ -147,7 +149,7 @@ export function ProfileEdit({ ledger, onClose }: { ledger: Ledger | null; onClos
             </div>
           </>
         )}
-        <p className="dialog__note">{t("profile.edit.note")}</p>
+        <p className="dialog__note">{t(signedIn ? "profile.edit.noteCloud" : "profile.edit.note")}</p>
         <div className="dialog__actions">
           <button className="button" onClick={onClose}>
             {t("common.cancel")}

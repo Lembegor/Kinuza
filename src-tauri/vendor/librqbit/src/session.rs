@@ -86,6 +86,16 @@ fn torrent_from_bytes(bytes: Bytes) -> anyhow::Result<ParsedTorrentFile> {
         "all fields in torrent: {:#?}",
         bencode::dyn_from_bytes::<ByteBuf>(&bytes)
     );
+    let bytes = match librqbit_core::torrent_metainfo::torrent_from_bytes(&bytes) {
+        Ok(_) => bytes,
+        Err(error) => match crate::torrent_repair::repair_torrent_bytes(&bytes) {
+            Some(fixed) => {
+                tracing::info!("repaired a .torrent file with broken top-level fields");
+                Bytes::from(fixed)
+            }
+            None => return Err(error.into()),
+        },
+    };
     let parsed = librqbit_core::torrent_metainfo::torrent_from_bytes(&bytes)?;
     Ok(ParsedTorrentFile {
         meta: parsed.clone_to_owned(Some(&bytes)),

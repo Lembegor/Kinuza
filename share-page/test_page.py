@@ -38,6 +38,21 @@ class Page(unittest.TestCase):
         self.assertEqual(page.shorten("one two three four", 9), "one two…")
 
 
+class Invite(unittest.TestCase):
+    def test_invite_opens_the_friend_link(self):
+        body = page.render_invite("ABCD2345", "ru", "n")
+        self.assertIn('href="kinuza://friend/ABCD2345"', body)
+        self.assertIn("ABCD-2345", body)
+        self.assertIn("Приглашение в друзья", body)
+
+    def test_privacy_in_every_language(self):
+        import privacy
+        for language in ("ru", "uk", "en"):
+            body = privacy.render_privacy(language)
+            self.assertIn("https://github.com/Lembegor/Kinuza/issues", body)
+            self.assertNotIn("<script", body)
+
+
 class Record(unittest.TestCase):
     def test_catalog_record_is_read(self):
         record = {"t": {"ru": "Невероятные приключения ДжоДжо", "en": "JoJo"}, "o": "ジョジョ", "y": "2012", "i": {"": "/x.jpg", "ru": "/r.jpg"}, "b": "/b.jpg"}

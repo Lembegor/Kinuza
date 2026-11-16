@@ -4,6 +4,9 @@ import { FileDown } from "lucide-react";
 import { AddSourceDialog } from "./components/AddSourceDialog";
 import { Onboarding } from "./components/Onboarding";
 import { AppHotkeys, ConfirmDialog, Toasts, UpdateNotice } from "./components/Overlays";
+import { AddFriendDialog, useAddFriend } from "./components/social/AddFriendDialog";
+import { SignInWaiting } from "./components/social/SocialBits";
+import { useAccount } from "./state/account";
 import { PageStack } from "./components/PageStack";
 import { WhatsNew } from "./components/WhatsNew";
 import { Player } from "./components/Player";
@@ -107,6 +110,10 @@ function openLaunchRequest(request: LaunchRequest): void {
   const key = `${request.kind}:${request.value}`;
   if (key === lastLaunch.key && Date.now() - lastLaunch.at < repeatedLaunchMs) return;
   lastLaunch = { key, at: Date.now() };
+  if (request.kind === "friend") {
+    useAddFriend.getState().show(request.value);
+    return;
+  }
   if (request.kind === "title") {
     if (/^(movie|tv)\/\d+(\?s=\d+(&e=\d+)?)?$/.test(request.value)) window.location.hash = `#/title/${request.value}`;
     return;
@@ -266,6 +273,9 @@ export default function App() {
   const dragging = useTorrentDrop();
   const ready = settingsLoaded && libraryLoaded;
   useLaunchRequests(ready);
+  useEffect(() => {
+    if (ready) void useAccount.getState().init();
+  }, [ready]);
   useLinkHandling(ready && !introducing);
 
   useEffect(() => {
@@ -296,6 +306,8 @@ export default function App() {
         <Player />
         <AddSourceDialog />
         <ConfirmDialog />
+        <SignInWaiting />
+        <AddFriendDialog />
         <AppHotkeys />
         <WhatsNew ready={!introducing} />
         <UpdateNotice />

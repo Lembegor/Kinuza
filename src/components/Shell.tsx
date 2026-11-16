@@ -6,6 +6,7 @@ import { useT } from "../lib/i18n";
 import { useBrowse } from "../state/browse";
 import { homeRefreshEvent, useUi } from "../state/ui";
 import { InboxButton } from "./InboxButton";
+import { FriendsButton } from "./social/FriendsButton";
 import { ProfileButton } from "./ProfileButton";
 import { isActiveDownload, useTorrents } from "../state/torrents";
 
@@ -145,6 +146,7 @@ export function Titlebar() {
       </div>
       <SearchBox />
       <div className="titlebar__spacer" data-tauri-drag-region />
+      <FriendsButton />
       <InboxButton />
       <ProfileButton />
       <WindowButtons />

@@ -10,6 +10,7 @@ import "./styles/dialog.css";
 import "./styles/player.css";
 import "./styles/profile.css";
 import "./styles/home.css";
+import "./styles/social.css";
 import App from "./App";
 import { retryFailedImages } from "./lib/imageRetry";
 import { backend } from "./lib/backend";

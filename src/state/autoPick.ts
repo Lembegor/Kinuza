@@ -8,6 +8,7 @@ import { releaseVoices, voicesSummary, type ReleaseVoice } from "../lib/trackNam
 import { isVideoRelease, originalLanguageMark, parseEpisode, parseSize, parseTags, parseTrackerRelease, qualityRank, type TrackerRelease } from "../lib/parse";
 import { pictureMarks, sourceKind } from "../lib/releaseNames";
 import { namedAs } from "../lib/titleMatch";
+import { markAdult } from "../lib/adultTitles";
 import { audioWish, wantedAudioLanguage } from "../lib/voicePreference";
 import { toSource } from "../lib/releaseUpdate";
 import { rutracker, rutrackerErrors, serverProblemOf, isServerError, type ReleaseSource, type RutrackerItem, type ServerProblem } from "../lib/rutracker";
@@ -178,6 +179,7 @@ function namesFor(target: PickTarget): Promise<OtherNames> {
     if (anime === "late") otherNames.delete(key);
     if (!anime || anime === "late") return names;
     const extra = animeExtraNames(anime);
+    if (anime.current.adult) markAdult(target.title.type, target.title.id);
     return { ...names, shows: [...new Set([...names.shows, ...extra])], parts: target.title.type === "tv" ? anime.parts : null, adult: anime.current.adult };
   });
   const safe = task.catch(() => noNames);

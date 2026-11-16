@@ -1,0 +1,15 @@
+services:
+  account:
+    build: .
+    container_name: kinuza-account
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      ACCOUNT_DATA: /data
+      ACCOUNT_PORT: "8093"
+    volumes:
+      - ./data:/data
+    ports:
+      - "127.0.0.1:8093:8093"
+    mem_limit: 160m
+    cpus: 0.5

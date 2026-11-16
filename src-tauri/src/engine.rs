@@ -1170,7 +1170,8 @@ impl Engine {
             self.session.add_torrent(source, Some(options)),
         )
         .await
-        .map_err(|_| anyhow!("metadata_timeout"))??;
+        .map_err(|_| anyhow!("metadata_timeout"))?
+        .inspect_err(|error| tracing::warn!("engine: could not read a torrent: {error:#}"))?;
 
         match response {
             AddTorrentResponse::ListOnly(listed) => {
@@ -1223,6 +1224,10 @@ impl Engine {
     }
 
     pub async fn inspect_torrent_file(&self, bytes: Bytes) -> Result<TorrentPreview> {
+        let bytes = match librqbit::torrent_from_bytes(&bytes) {
+            Ok(_) => bytes,
+            Err(_) => librqbit::repair_torrent_bytes(&bytes).map(Bytes::from).unwrap_or(bytes),
+        };
         let trackers: Vec<String> = librqbit::torrent_from_bytes(&bytes)
             .map(|torrent| {
                 torrent
@@ -2312,6 +2317,37 @@ fn sanitize_folder_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const REPAIR_INFO: &[u8] = b"d6:lengthi5e4:name1:a12:piece lengthi16384e6:pieces20:aaaaaaaaaaaaaaaaaaaae";
+
+    fn torrent_with(extra: &[u8]) -> Vec<u8> {
+        let mut bytes = b"d8:announce10:http://a/b".to_vec();
+        bytes.extend_from_slice(extra);
+        bytes.extend_from_slice(b"4:info");
+        bytes.extend_from_slice(REPAIR_INFO);
+        bytes.push(b'e');
+        bytes
+    }
+
+    #[test]
+    fn text_creation_date_is_repaired_and_hash_kept() {
+        let broken = torrent_with(b"13:creation date23:18.05.2018 18:50:44 UTC");
+        assert!(librqbit::torrent_from_bytes(&broken).is_err());
+        let fixed = librqbit::repair_torrent_bytes(&broken).unwrap();
+        assert_eq!(fixed, torrent_with(b""));
+        let parsed = librqbit::torrent_from_bytes(&fixed).unwrap();
+        let plain = torrent_with(b"");
+        let clean = librqbit::torrent_from_bytes(&plain).unwrap();
+        assert_eq!(parsed.info_hash, clean.info_hash);
+    }
+
+    #[test]
+    fn good_torrents_are_not_repaired() {
+        assert!(librqbit::repair_torrent_bytes(&torrent_with(b"13:creation datei1526669444e")).is_none());
+        assert!(librqbit::repair_torrent_bytes(b"not a torrent").is_none());
+        assert!(librqbit::repair_torrent_bytes(b"d4:infoi5ee").is_none());
+        assert!(librqbit::repair_torrent_bytes(b"d8:announce99:short").is_none());
+    }
 
     fn pieces(offset: u64, length: u64, have: &[bool]) -> FilePieces {
         let piece_length = 100;

@@ -811,7 +811,10 @@ export const useLibrary = create<LibraryState>((set, get) => {
     mergeAccountData(other) {
       if (savingBlocked) throw new Error("library_unreadable");
       update(() => {
-        const merged = mergeAccountData(get().exportAccountData(), other);
+        const ours = get().exportAccountData();
+        const merged = mergeAccountData(ours, other);
+        if (Object.keys(merged.tracked).length < Object.keys(ours.tracked).length) libraryShrinkAllowed = true;
+        if (Object.keys(merged.progress).length < Object.keys(ours.progress).length) progressShrinkAllowed = true;
         return {
           tracked: merged.tracked,
           progress: merged.progress,

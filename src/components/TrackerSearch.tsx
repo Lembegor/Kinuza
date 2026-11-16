@@ -29,6 +29,7 @@ import { releaseVoices, voicesSummary } from "../lib/trackNames";
 import { recordActivity, titleOf } from "../state/activity";
 import { inspectTracker, isRutrackerId, searchTrackers, sourceNames } from "../lib/trackers";
 import { cutLabel } from "../lib/releaseNames";
+import { markAdult } from "../lib/adultTitles";
 
 const pageLookupLimit = 20;
 const anySeason = 0;
@@ -425,6 +426,7 @@ export function TrackerSearch({
       const animeEntry = isAnime
         ? await animeInfo({ names: [target.originalTitle ?? "", target.title.title], type: target.title.type, year: Number(target.title.year) || null }).catch(() => null)
         : null;
+      if (animeEntry?.current.adult) markAdult(target.title.type, target.title.id);
       const latin = /^[\p{Script=Latin}\p{N}\p{P}\p{S}\p{Zs}]+$/u;
       const animeLatin = [animeEntry?.current.english ?? "", animeEntry?.current.romaji ?? "", ...(animeEntry?.current.synonyms ?? [])].find(
         (name) => name && latin.test(name) && !/[○◯●＊*]/.test(name),

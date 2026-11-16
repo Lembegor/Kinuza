@@ -50,7 +50,7 @@ export interface AppInfo {
 }
 
 export interface LaunchRequest {
-  kind: "magnet" | "file" | "title";
+  kind: "magnet" | "file" | "title" | "friend";
   value: string;
 }
 
@@ -506,6 +506,25 @@ const errorMessages: Record<string, MessageKey> = {
   report_empty: "report.empty",
   storage_in_use: "storage.inUse",
   storage_clear_failed: "storage.failed",
+  account_not_ready: "errors.accountNotReady",
+  account_down: "errors.accountDown",
+  account_timeout: "errors.accountTimeout",
+  account_browser_failed: "errors.accountBrowser",
+  account_listen_failed: "errors.accountBrowser",
+  account_signed_out: "errors.accountSignedOut",
+  account_store_failed: "errors.accountStore",
+  google_refused: "errors.accountGoogle",
+  google_unreachable: "errors.accountDown",
+  google_email_unverified: "errors.accountEmail",
+  friend_not_found: "errors.friendNotFound",
+  friend_self: "errors.friendSelf",
+  friend_limit: "errors.friendLimit",
+  friend_pending_limit: "errors.friendLimit",
+  friend_too_often: "errors.friendTooOften",
+  sync_too_large: "errors.syncTooLarge",
+  sync_newer: "errors.syncNewer",
+  sync_damaged: "errors.syncDamaged",
+  avatar_too_large: "errors.avatarTooLarge",
 };
 
 export function describeError(error: unknown): string {

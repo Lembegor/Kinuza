@@ -3,6 +3,8 @@ import { Link, NavLink, useNavigate, useParams, useSearchParams } from "react-ro
 import { ChevronDown, Clock, FileUp, Info, Pause, Pencil, X } from "lucide-react";
 import { Avatar } from "../components/ProfileButton";
 import { ProfileEdit } from "../components/profile/ProfileEdit";
+import { FriendsTab } from "../components/social/FriendsTab";
+import { useAccount } from "../state/account";
 import { ProfileHistory, noteOf } from "../components/profile/ProfileHistory";
 import { YearRecap, recapYears } from "../components/profile/YearRecap";
 import { useT } from "../lib/i18n";
@@ -51,6 +53,7 @@ function ProfileHeader({ ledger, onEdit }: { ledger: Ledger | null; onEdit: () =
   const onboardedAt = useLibrary((state) => state.onboardedAt);
   const since = ledger ? sinceDate(ledger.input, onboardedAt) : null;
   const backdrop = cover ? tracked[cover]?.backdrop : null;
+  const signedIn = useAccount((state) => state.phase === "signedIn");
   const sinceText = since ? new Intl.DateTimeFormat(locale, { day: "numeric", month: "long", year: "numeric" }).format(new Date(since)) : null;
   return (
     <header className="profile-head">
@@ -64,7 +67,7 @@ function ProfileHeader({ ledger, onEdit }: { ledger: Ledger | null; onEdit: () =
         <p>
           {sinceText && <span>{t("profile.since", { date: sinceText })}</span>}
           {Object.keys(tracked).length > 0 && <span>{tn("profile.titles", Object.keys(tracked).length)}</span>}
-          <span>{t("profile.localOnly")}</span>
+          <span>{signedIn ? t("profile.cloudSynced") : t("profile.localOnly")}</span>
           {paused && (
             <span className="profile-head__paused">
               <Pause size={11} fill="currentColor" />
@@ -693,8 +696,11 @@ export default function Profile() {
         </NavLink>
         <NavLink to="/profile/history">{t("profile.tab.history")}</NavLink>
         {years.length > 0 && <NavLink to={`/profile/year?y=${year}`}>{t("profile.tab.year", { year })}</NavLink>}
+        <NavLink to="/profile/friends">{t("profile.tab.friends")}</NavLink>
       </nav>
-      {!ledger ? (
+      {tab === "friends" ? (
+        <FriendsTab />
+      ) : !ledger ? (
         <div className="profile-skeleton">
           <div className="profile-card" />
           <div className="profile-card" />

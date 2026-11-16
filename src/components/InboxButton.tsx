@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Bell, CheckCheck, CircleArrowUp, Download, Trash2, Tv } from "lucide-react";
+import { Bell, CheckCheck, CircleArrowUp, Download, Trash2, Tv, Users } from "lucide-react";
 import { useT } from "../lib/i18n";
 import { useInbox, type InboxKind } from "../state/inbox";
 
@@ -9,6 +9,7 @@ const kindIcons: Record<InboxKind, typeof Bell> = {
   download: Download,
   update: CircleArrowUp,
   info: Bell,
+  friend: Users,
 };
 
 function ago(at: number, locale: string): string {
