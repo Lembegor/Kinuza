@@ -2069,4 +2069,6 @@ export const uk: Messages = {
   "errors.castServer": "Не вдалося відкрити доступ до відео для телевізора",
   "errors.castNotActive": "Показ на телевізорі вже зупинено",
   "journal.cast.start": "Не вдалося почати показ на телевізорі",
+  "player.deadSource.switched": "Роздача не відповідала - перемкнулися на іншу роздачу цієї серії",
+  "player.deadSource.none": "Роздача не відповідає. Виберіть іншу в меню якості.",
 };

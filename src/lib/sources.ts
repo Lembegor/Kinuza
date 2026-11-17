@@ -6,9 +6,11 @@ export function sortSources(sources: Source[]): Source[] {
   return [...sources].sort((a, b) => qualityRank(b.quality) - qualityRank(a.quality) || b.size - a.size);
 }
 
-export function pickInitialSource(sources: Source[], preferredId: string | undefined, maxQuality: number): Source | undefined {
+export function pickInitialSource(sources: Source[], preferredId: string | undefined, maxQuality: number, lastTorrent?: string): Source | undefined {
   const preferred = sources.find((source) => source.id === preferredId);
   if (preferred || sources.length === 0) return preferred;
+  const familiar = lastTorrent ? sources.find((source) => source.infoHash === lastTorrent) : undefined;
+  if (familiar) return familiar;
   const { byHash } = useTorrents.getState();
   const isReady = (source: Source) => fileProgress(byHash[source.infoHash], source.fileIndex) >= 1;
 

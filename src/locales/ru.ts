@@ -2067,4 +2067,6 @@ export const ru = {
   "errors.castServer": "Не удалось открыть доступ к видео для телевизора",
   "errors.castNotActive": "Показ на телевизоре уже остановлен",
   "journal.cast.start": "Не удалось начать показ на телевизоре",
+  "player.deadSource.switched": "Раздача не отвечала - переключились на другую раздачу этой серии",
+  "player.deadSource.none": "Раздача не отвечает. Выберите другую в меню качества.",
 } as const satisfies Record<string, string>;

@@ -674,7 +674,7 @@ export function InviteDialog() {
             friends.map((friend) => (
               <div key={friend.id} className="room-invite__friend">
                 <PersonAvatar name={friend.name} avatar={friend.avatar} online={friend.online} size={32} />
-                <span>
+                <span className="room-invite__who">
                   <b>{friend.name || t("friends.someone")}</b>
                   <small>{friend.online ? t("friends.status.online") : t("friends.status.offline")}</small>
                 </span>

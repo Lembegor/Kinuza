@@ -2068,4 +2068,6 @@ export const en: Messages = {
   "errors.castServer": "Couldn't open the video for the TV",
   "errors.castNotActive": "TV playback has already stopped",
   "journal.cast.start": "Could not start playing on the TV",
+  "player.deadSource.switched": "The release wasn't responding - switched to another release of this episode",
+  "player.deadSource.none": "The release isn't responding. Pick another one in the quality menu.",
 };

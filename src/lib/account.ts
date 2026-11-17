@@ -12,6 +12,7 @@ export interface TitlePreferences {
   rate?: number;
   subtitleDelay?: number;
   audioDelay?: number;
+  lastTorrent?: string;
   updatedAt: number;
 }
 

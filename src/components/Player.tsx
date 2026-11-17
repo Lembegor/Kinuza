@@ -338,6 +338,10 @@ function bestOf(list: AudioTrackInfo[], infoOf: (track: AudioTrackInfo) => Sound
   return [...list].sort((a, b) => rank(a) - rank(b))[0];
 }
 const nextEpisodeCountdownSeconds = 8;
+const deadSourceMs = 25_000;
+const deadSourcePlayedSeconds = 5;
+const familiarAfterSeconds = 20;
+const familiarCheckMs = 30_000;
 const stuckEndSeconds = 1.5;
 const stuckEndWaitMs = 2500;
 const interpolationLimitSeconds = 1.5;
@@ -807,7 +811,10 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
   const stored = useLibrary((state) => state.sources[session.unitKey]);
   const allSources = useLibrary((state) => state.sources);
   const sources = useMemo(() => sortSources(stored ?? []), [stored]);
-  const [sourceId, setSourceId] = useState(() => pickInitialSource(sources, session.preferredSourceId, settings.preferredQuality)?.id);
+  const [sourceId, setSourceId] = useState(
+    () =>
+      pickInitialSource(sources, session.preferredSourceId, settings.preferredQuality, useLibrary.getState().preferences[titleKey(session.title.type, session.title.id)]?.lastTorrent)?.id,
+  );
   const source = sources.find((item) => item.id === sourceId) ?? sources[0];
   const torrent = useTorrents((state) => (source ? state.byHash[source.infoHash] : undefined));
 
@@ -1421,8 +1428,9 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
       season: nextEpisode.season,
       episode: nextEpisode.episode,
       episodeName: nextEpisode.name,
+      preferredSourceId: (useLibrary.getState().sources[unitKey("tv", session.title.id, nextEpisode.season, nextEpisode.episode)] ?? []).find((item) => item.infoHash === source?.infoHash)?.id,
     });
-  }, [nextEpisode, play, saveProgress, session, upNextFrom, filmTime, filmLength]);
+  }, [nextEpisode, play, saveProgress, session, upNextFrom, filmTime, filmLength, source?.infoHash]);
 
   const [upNextDismissed, setUpNextDismissed] = useState(false);
   const [upNextLeft, setUpNextLeft] = useState<number | null>(null);
@@ -1450,9 +1458,9 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
 
   const nextSource = useMemo(() => {
     if (!nextEpisode) return undefined;
-    const list = allSources[unitKey("tv", session.title.id, nextEpisode.season, nextEpisode.episode)] ?? [];
-    return pickInitialSource(sortSources(list), undefined, settings.preferredQuality);
-  }, [nextEpisode, allSources, session.title.id, settings.preferredQuality]);
+    const list = sortSources(allSources[unitKey("tv", session.title.id, nextEpisode.season, nextEpisode.episode)] ?? []);
+    return list.find((item) => item.infoHash === source?.infoHash) ?? pickInitialSource(list, undefined, settings.preferredQuality);
+  }, [nextEpisode, allSources, session.title.id, settings.preferredQuality, source?.infoHash]);
 
   useEffect(() => {
     if (!nextSource || nextSource.infoHash === source?.infoHash) return;
@@ -2703,6 +2711,46 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
   };
 
   useConvertedAudio(videoRef, source ?? null, heardConverted, volume, muted, audioDelay);
+
+  const deadChecked = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!source || deadChecked.current.has(source.id) || (metadataReady && !buffering)) return;
+    const watched = source;
+    const timer = setTimeout(() => {
+      if (liveSourceId.current !== watched.id || deadChecked.current.has(watched.id) || partyRef.current?.active || playedSeconds.current > deadSourcePlayedSeconds) return;
+      const byHash = useTorrents.getState().byHash;
+      const live = byHash[watched.infoHash];
+      if (!live || live.peers > 0 || live.downloadSpeed > 0 || fileProgress(live, watched.fileIndex) >= 1) return;
+      deadChecked.current.add(watched.id);
+      const rank = (item: Source) => {
+        const other = byHash[item.infoHash];
+        return fileProgress(other, item.fileIndex) >= 1 ? 3 : (other?.peers ?? 0) > 0 ? 2 : other ? 1 : 0;
+      };
+      const next = sources.filter((item) => item.infoHash !== watched.infoHash).sort((a, b) => rank(b) - rank(a))[0];
+      void backend.appLog(
+        `player: ${watched.infoHash.slice(0, 8)} gave no peers and no data for ${deadSourceMs / 1000}s, ${next ? `switching to ${next.infoHash.slice(0, 8)}` : "no other release to try"}`,
+      );
+      if (next) {
+        switchSource(next);
+        toast(t("player.deadSource.switched"), "info");
+      } else {
+        toast(t("player.deadSource.none"), "info");
+      }
+    }, deadSourceMs);
+    return () => clearTimeout(timer);
+  }, [source?.id, metadataReady, buffering]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const rememberedTorrent = useRef("");
+  useEffect(() => {
+    if (!source || !playing || rememberedTorrent.current === source.infoHash) return;
+    const watched = source;
+    const timer = setTimeout(() => {
+      if (liveSourceId.current !== watched.id || playedSeconds.current < familiarAfterSeconds) return;
+      rememberedTorrent.current = watched.infoHash;
+      if (useLibrary.getState().preferences[preferencesKey]?.lastTorrent !== watched.infoHash) rememberForTitle(session.title, { lastTorrent: watched.infoHash });
+    }, familiarCheckMs);
+    return () => clearTimeout(timer);
+  }, [source?.id, playing]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const heardAudio = audioTrack !== null ? media.tracks?.audio[audioTrack] : undefined;
   const partyTracks: { audio?: PartyTrack; sub?: PartyTrack } = {

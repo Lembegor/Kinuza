@@ -26,8 +26,10 @@ function warmSource(source: Source, full: boolean): void {
 }
 
 export function sourceToPlay(unitKey: string, preferredSourceId?: string): Source | undefined {
-  const sources = sortSources(useLibrary.getState().sources[unitKey] ?? []);
-  return pickInitialSource(sources, preferredSourceId, useSettings.getState().preferredQuality);
+  const library = useLibrary.getState();
+  const sources = sortSources(library.sources[unitKey] ?? []);
+  const [type, id] = unitKey.split(":");
+  return pickInitialSource(sources, preferredSourceId, useSettings.getState().preferredQuality, library.preferences[`${type}:${id}`]?.lastTorrent);
 }
 
 export function warmUnit(unitKey: string, full: boolean, preferredSourceId?: string): void {
