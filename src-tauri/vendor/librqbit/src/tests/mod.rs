@@ -4,3 +4,4 @@ mod e2e_padded_files;
 mod e2e_stream;
 mod e2e_upload_switch;
 pub mod test_util;
+mod lab_stream;

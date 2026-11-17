@@ -481,6 +481,7 @@ impl TorrentStateLive {
         permit: OwnedSemaphorePermit,
     ) -> crate::Result<()> {
         let handler = PeerHandler {
+            pace: Mutex::new(PeerPace { at: Instant::now(), fetched: 0, rate: 0.0 }),
             addr: checked_peer.addr,
             incoming: true,
             holepunched: false,
@@ -547,6 +548,7 @@ impl TorrentStateLive {
             .ok_or(Error::BugPeerNotFound)?;
 
         let handler = PeerHandler {
+            pace: Mutex::new(PeerPace { at: Instant::now(), fetched: 0, rate: 0.0 }),
             addr,
             incoming: false,
             holepunched,
@@ -996,6 +998,30 @@ impl TorrentStateLive {
         self.new_pieces_notify.notify_waiters();
     }
 
+    #[cfg(test)]
+    pub(crate) fn lab_partial_bytes(&self) -> u64 {
+        let g = self.lock_read("lab_partial_bytes");
+        g.get_pieces().map(|p| p.chunks().downloaded_chunks_of_missing_pieces() * 16384).unwrap_or(0)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn lab_piece_states(&self) -> Vec<u8> {
+        let g = self.lock_read("lab_piece_states");
+        let Ok(pieces) = g.get_pieces() else { return Vec::new() };
+        self.lengths
+            .iter_piece_infos()
+            .map(|info| {
+                if pieces.chunks().is_piece_have(info.piece_index) {
+                    2
+                } else if pieces.get_inflight(info.piece_index).is_some() {
+                    1
+                } else {
+                    0
+                }
+            })
+            .collect()
+    }
+
     pub(crate) fn update_only_files(&self, only_files: &HashSet<usize>) -> anyhow::Result<()> {
         let hns = self
             .lock_write("update_only_files")
@@ -1236,7 +1262,20 @@ struct PeerHandler {
     cancel_token: CancellationToken,
 
     client_name_and_version: String,
+
+    pace: Mutex<PeerPace>,
 }
+
+struct PeerPace {
+    at: Instant,
+    fetched: u64,
+    rate: f64,
+}
+
+const PACE_EVERY: Duration = Duration::from_millis(500);
+const WAITED_CLAIM_SECONDS: f64 = 0.6;
+const WAITED_CLAIM_FALLBACK: usize = 4;
+const WAITED_RECHECK: Duration = Duration::from_millis(200);
 
 impl PeerConnectionHandler for &'_ PeerHandler {
     fn on_connected(&self, connection_time: Duration) {
@@ -1664,6 +1703,7 @@ impl PeerHandler {
                     ..
                 } = &mut **g;
                 let pieces = pieces.as_mut().ok_or(Error::ChunkTrackerEmpty)?;
+                let waited = self.state.streams.waited_pieces(&self.state.lengths);
                 let result = pieces.acquire_piece(AcquireRequest {
                     peer: self.addr,
                     peer_avg_time: self.counters.average_piece_download_time(),
@@ -1676,11 +1716,21 @@ impl PeerHandler {
                             .try_write()
                             .is_some()
                     },
+                    queue_from: self.state.streams.queue_start(&self.state.lengths),
+                    waited: &waited,
                 });
 
                 match result {
                     AcquireResult::Reserved(piece) => {
                         trace!("reserved piece {}", piece);
+                        Ok(Some(piece))
+                    }
+                    AcquireResult::Helping(piece) => {
+                        debug!("helping with urgent piece {}", piece);
+                        Ok(Some(piece))
+                    }
+                    AcquireResult::Resumed(piece) => {
+                        trace!("resumed shared piece {}", piece);
                         Ok(Some(piece))
                     }
                     AcquireResult::Stolen { piece, from_peer } => {
@@ -1917,28 +1967,43 @@ impl PeerHandler {
                 }
             };
 
-            let chunks: Vec<ChunkInfo> = {
-                let all: Vec<ChunkInfo> = self.state.lengths.iter_chunk_infos(next).collect();
-                let g = self.state.lock_read("missing_chunks");
-                let missing: Vec<ChunkInfo> = match g.get_pieces() {
-                    Ok(pieces) => all
-                        .iter()
-                        .copied()
-                        .filter(|chunk| !pieces.chunks().is_chunk_downloaded(chunk))
-                        .collect(),
-                    Err(_) => Vec::new(),
+            let mut claimed_any = false;
+            loop {
+                aframe!(self.wait_for_request_slot()).await;
+                let waited = self.state.streams.waited_pieces(&self.state.lengths);
+                let rush = waited.contains(&next);
+                if claimed_any {
+                    if self.should_help_waited(next, &waited) {
+                        debug!("leaving piece {} to help a piece a reader waits for", next);
+                        tokio::task::yield_now().await;
+                        break;
+                    }
+                    if !rush && self.has_waited_claims(&waited) {
+                        self.wait_for_slot_change().await;
+                        continue;
+                    }
+                }
+                let limit = self.waited_claim_limit();
+                let claimed = match self.state.lock_write("claim_chunk").get_pieces_mut() {
+                    Ok(pieces) => {
+                        pieces.set_claim_limit(self.addr, limit);
+                        pieces.claim_next_chunk(next, self.addr, rush)
+                    }
+                    Err(_) => None,
                 };
-                if missing.is_empty() { all } else { missing }
-            };
-
-            for chunk in chunks {
+                let Some(chunk) = claimed else {
+                    if rush && self.has_waited_claims(&[next]) {
+                        self.wait_for_slot_change().await;
+                        continue;
+                    }
+                    break;
+                };
+                claimed_any = true;
                 let request = Request {
                     index: next.get(),
                     begin: chunk.offset,
                     length: chunk.size,
                 };
-
-                aframe!(self.wait_for_request_slot()).await;
 
                 self.state
                     .ratelimits
@@ -1990,6 +2055,57 @@ impl PeerHandler {
                 }
             }
         }
+    }
+
+    fn has_waited_claims(&self, waited: &[ValidPieceIndex]) -> bool {
+        if waited.is_empty() {
+            return false;
+        }
+        let g = self.state.lock_read("has_waited_claims");
+        g.get_pieces().map(|pieces| pieces.has_waited_claims(waited, self.addr)).unwrap_or(false)
+    }
+
+    async fn wait_for_slot_change(&self) {
+        let Some(notify) = self.request_slots_changed() else {
+            return;
+        };
+        let _ = tokio::time::timeout(WAITED_RECHECK, notify.notified()).await;
+    }
+
+    fn waited_claim_limit(&self) -> usize {
+        let fetched = self.counters.fetched_bytes.load(Ordering::Relaxed);
+        let mut pace = self.pace.lock();
+        let elapsed = pace.at.elapsed();
+        if elapsed >= PACE_EVERY {
+            let now_rate = fetched.saturating_sub(pace.fetched) as f64 / elapsed.as_secs_f64();
+            pace.rate = if pace.rate == 0.0 { now_rate } else { pace.rate * 0.5 + now_rate * 0.5 };
+            pace.at = Instant::now();
+            pace.fetched = fetched;
+        }
+        if pace.rate <= 0.0 {
+            return WAITED_CLAIM_FALLBACK;
+        }
+        ((pace.rate * WAITED_CLAIM_SECONDS / CHUNK_SIZE as f64) as usize).clamp(2, 32)
+    }
+
+    fn should_help_waited(&self, current: ValidPieceIndex, waited: &[ValidPieceIndex]) -> bool {
+        if waited.is_empty() || waited.contains(&current) {
+            return false;
+        }
+        self.state
+            .peers
+            .with_live(self.addr, |live| {
+                let g = self.state.lock_read("should_help_waited");
+                let bf = &live.bitfield;
+                g.get_pieces()
+                    .map(|pieces| {
+                        pieces.waited_needs_help(waited, current, self.addr, |p| {
+                            bf.get(p.get() as usize).map(|v| *v) == Some(true)
+                        })
+                    })
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false)
     }
 
     fn on_i_am_choked(&self) {
@@ -2088,7 +2204,7 @@ impl PeerHandler {
                     .map(|l| l.read());
 
                 match g.get_pieces()?.get_inflight(chunk_info.piece_index) {
-                    Some(inflight) if inflight.peer == addr => {}
+                    Some(inflight) if inflight.has_worker(addr) => {}
                     Some(inflight) => {
                         debug!(
                             "in-flight piece {} was stolen by {}, ignoring",

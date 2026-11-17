@@ -27,6 +27,8 @@ const restartLimit = 1;
 const pictureSettleMs = 60;
 const seekGiveUpMs = 5000;
 const pictureCheckMs = 2500;
+const cacheWaitSteps = [2, 4, 7, 10];
+const stallAfterSeekMs = 5000;
 
 function pictureShown(): boolean {
   return document.documentElement.classList.contains("is-mpv-picture");
@@ -72,6 +74,8 @@ export class MpvVideo {
   private restarts = 0;
   private outputReady = false;
   private frameShown = false;
+  private cacheStalls = 0;
+  private stallSince = 0;
   private pictureTimer: ReturnType<typeof setTimeout> | undefined;
   private pictureState = "";
   private stuckSince = 0;
@@ -185,6 +189,9 @@ export class MpvVideo {
     await mpv.set("speed", this.rateNow);
     await mpv.set("sid", "no");
     await mpv.set("secondary-sid", "no").catch(() => undefined);
+    this.cacheStalls = 0;
+    this.stallSince = 0;
+    await mpv.set("cache-pause-wait", String(cacheWaitSteps[0])).catch(() => undefined);
     await mpv.set("start", start > 0 ? String(start) : "none");
     await mpv.set("pause", startPaused);
     this.pausedNow = startPaused;
@@ -379,10 +386,22 @@ export class MpvVideo {
         else this.handlers.onPlay?.();
         this.updateWaiting();
         break;
-      case "paused-for-cache":
-        this.waitingForCache = data === true;
+      case "paused-for-cache": {
+        const stalled = data === true;
+        if (stalled && !this.waitingForCache && this.frameShown && !this.seekingNow && Date.now() - this.lastSeekAt > stallAfterSeekMs) {
+          this.cacheStalls += 1;
+          this.stallSince = Date.now();
+          const wait = cacheWaitSteps[Math.min(this.cacheStalls, cacheWaitSteps.length - 1)];
+          void mpv.set("cache-pause-wait", String(wait)).catch(() => undefined);
+          void backend.appLog(`player: waits for data at ${Math.round(this.time)}s, pause ${this.cacheStalls}, resumes with ${wait}s ahead`);
+        } else if (!stalled && this.waitingForCache && this.stallSince) {
+          void backend.appLog(`player: data is back after ${((Date.now() - this.stallSince) / 1000).toFixed(1)}s`);
+          this.stallSince = 0;
+        }
+        this.waitingForCache = stalled;
         this.updateWaiting();
         break;
+      }
       case "seeking": {
         const was = this.seekingNow;
         this.seekingNow = data === true;

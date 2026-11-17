@@ -29,6 +29,33 @@ use crate::{
 pub struct InflightPiece {
     pub peer: PeerHandle,
     pub started: Instant,
+    pub helpers: Vec<PeerHandle>,
+    claims: HashMap<u32, (PeerHandle, Instant)>,
+    cursors: Vec<(PeerHandle, u32)>,
+    touched: bool,
+}
+
+impl InflightPiece {
+    fn new(peer: PeerHandle) -> Self {
+        Self {
+            peer,
+            started: Instant::now(),
+            helpers: Vec::new(),
+            claims: HashMap::new(),
+            cursors: Vec::new(),
+            touched: false,
+        }
+    }
+
+    pub fn has_worker(&self, peer: PeerHandle) -> bool {
+        self.peer == peer || self.helpers.contains(&peer)
+    }
+
+    fn forget_worker(&mut self, peer: PeerHandle) {
+        self.helpers.retain(|p| *p != peer);
+        self.claims.retain(|_, (p, _)| *p != peer);
+        self.cursors.retain(|(p, _)| *p != peer);
+    }
 }
 
 /// Result of attempting to acquire a piece.
@@ -41,6 +68,8 @@ pub enum AcquireResult {
         piece: ValidPieceIndex,
         from_peer: PeerHandle,
     },
+    Helping(ValidPieceIndex),
+    Resumed(ValidPieceIndex),
     /// No pieces are available for this peer.
     NoneAvailable,
 }
@@ -66,6 +95,8 @@ where
     pub peer_has_piece: P,
     /// Returns true if the piece can be stolen (e.g., not locked for writing).
     pub can_steal: S,
+    pub queue_from: Option<ValidPieceIndex>,
+    pub waited: &'a [ValidPieceIndex],
 }
 
 /// Coordinates piece download state.
@@ -80,10 +111,15 @@ const URGENT_PIECES: usize = 2;
 const URGENT_STEAL_AFTER: Duration = Duration::from_secs(3);
 const URGENT_STEAL_UNKNOWN_AFTER: Duration = Duration::from_secs(8);
 const URGENT_REFERENCE_PIECE: u32 = 4 * 1024 * 1024;
+const WAITED_HELPERS: usize = 8;
+const CLAIM_STALE_AFTER: Duration = Duration::from_secs(4);
+const WAITED_CLAIM_STALE_AFTER: Duration = Duration::from_millis(1500);
+const WAITED_CLAIMS_PER_PEER: usize = 8;
 
 pub struct PieceTracker {
     chunks: ChunkTracker,
     inflight: HashMap<ValidPieceIndex, InflightPiece>,
+    claim_limits: HashMap<PeerHandle, usize>,
 }
 
 impl PieceTracker {
@@ -94,6 +130,7 @@ impl PieceTracker {
         Self {
             chunks,
             inflight: HashMap::new(),
+            claim_limits: HashMap::new(),
         }
     }
 
@@ -131,6 +168,14 @@ impl PieceTracker {
         P: Fn(ValidPieceIndex) -> bool,
         S: Fn(ValidPieceIndex) -> bool,
     {
+        if let Some(result) = self.help_waited(&req) {
+            return result;
+        }
+
+        if let Some(piece) = self.resumable_for(req.peer, &req.peer_has_piece, req.waited) {
+            return AcquireResult::Resumed(piece);
+        }
+
         // 1. Try steal with 10x threshold (very slow peer)
         if let Some(result) = self.try_steal(&req, 10.0) {
             return result;
@@ -144,22 +189,22 @@ impl PieceTracker {
             let Some(info) = self.inflight.get(&piece) else {
                 return self.reserve_piece(piece, req.peer);
             };
-            if info.peer == req.peer {
+            if info.has_worker(req.peer) {
                 continue;
             }
+            let (started, from_peer) = (info.started, info.peer);
             let scale = (self.chunks.get_lengths().piece_length(piece) as f64 / URGENT_REFERENCE_PIECE as f64).max(1.0);
             let patience = match req.peer_avg_time {
                 Some(avg) => URGENT_STEAL_AFTER.mul_f64(scale).max(avg.mul_f64(2.0)),
                 None => URGENT_STEAL_UNKNOWN_AFTER.mul_f64(scale),
             };
-            if info.started.elapsed() < patience || !(req.can_steal)(piece) {
-                continue;
-            }
-            let from_peer = info.peer;
-            if let Some(info) = self.inflight.get_mut(&piece) {
-                info.peer = req.peer;
-                info.started = Instant::now();
-                return AcquireResult::Stolen { piece, from_peer };
+            if started.elapsed() >= patience && (req.can_steal)(piece) {
+                if let Some(info) = self.inflight.get_mut(&piece) {
+                    info.forget_worker(from_peer);
+                    info.peer = req.peer;
+                    info.started = Instant::now();
+                    return AcquireResult::Stolen { piece, from_peer };
+                }
             }
         }
 
@@ -176,10 +221,14 @@ impl PieceTracker {
 
         // Then check naturally ordered queued pieces
         // Note: iter_queued_pieces only returns pieces in queue_pieces (not in-flight)
-        let queued: Vec<_> = self
+        let mut queued: Vec<_> = self
             .chunks
             .iter_queued_pieces(req.file_priorities, req.file_infos)
             .collect();
+        if let Some(from) = req.queue_from {
+            let (ahead, behind): (Vec<_>, Vec<_>) = queued.into_iter().partition(|p| p.get() >= from.get());
+            queued = ahead.into_iter().chain(behind).collect();
+        }
 
         for piece in queued {
             if (req.peer_has_piece)(piece) {
@@ -198,14 +247,156 @@ impl PieceTracker {
     /// Reserve a piece: remove from queue, add to inflight.
     fn reserve_piece(&mut self, piece: ValidPieceIndex, peer: PeerHandle) -> AcquireResult {
         self.chunks.reserve_needed_piece(piece);
-        self.inflight.insert(
-            piece,
-            InflightPiece {
-                peer,
-                started: Instant::now(),
-            },
-        );
+        self.inflight.insert(piece, InflightPiece::new(peer));
         AcquireResult::Reserved(piece)
+    }
+
+    fn help_waited<I, P, S>(&mut self, req: &AcquireRequest<I, P, S>) -> Option<AcquireResult>
+    where
+        I: Iterator<Item = ValidPieceIndex>,
+        P: Fn(ValidPieceIndex) -> bool,
+        S: Fn(ValidPieceIndex) -> bool,
+    {
+        for piece in req.waited.iter().copied() {
+            if self.chunks.is_piece_have(piece) || !(req.peer_has_piece)(piece) {
+                continue;
+            }
+            let Some(info) = self.inflight.get(&piece) else {
+                if self.chunks.is_piece_queued(piece) {
+                    return Some(self.reserve_piece(piece, req.peer));
+                }
+                continue;
+            };
+            if self.claimable_chunk(piece, req.peer, true).is_none() {
+                continue;
+            }
+            if info.has_worker(req.peer) {
+                return Some(AcquireResult::Resumed(piece));
+            }
+            if info.helpers.len() >= WAITED_HELPERS {
+                continue;
+            }
+            if let Some(info) = self.inflight.get_mut(&piece) {
+                info.helpers.push(req.peer);
+                return Some(AcquireResult::Helping(piece));
+            }
+        }
+        None
+    }
+
+    pub fn waited_needs_help<P: Fn(ValidPieceIndex) -> bool>(
+        &self,
+        waited: &[ValidPieceIndex],
+        current: ValidPieceIndex,
+        peer: PeerHandle,
+        peer_has_piece: P,
+    ) -> bool {
+        waited.iter().copied().any(|piece| {
+            if piece == current || self.chunks.is_piece_have(piece) || !peer_has_piece(piece) {
+                return false;
+            }
+            match self.inflight.get(&piece) {
+                None => self.chunks.is_piece_queued(piece),
+                Some(info) => {
+                    let joinable = info.has_worker(peer) || info.helpers.len() < WAITED_HELPERS;
+                    joinable && self.claimable_chunk(piece, peer, true).is_some()
+                }
+            }
+        })
+    }
+
+    fn resumable_for<P: Fn(ValidPieceIndex) -> bool>(
+        &self,
+        peer: PeerHandle,
+        peer_has_piece: &P,
+        waited: &[ValidPieceIndex],
+    ) -> Option<ValidPieceIndex> {
+        self.inflight
+            .iter()
+            .filter(|(_, info)| info.has_worker(peer) && (!info.helpers.is_empty() || (info.peer == peer && info.touched)))
+            .map(|(piece, _)| *piece)
+            .find(|piece| peer_has_piece(*piece) && self.claimable_chunk(*piece, peer, waited.contains(piece)).is_some())
+    }
+
+    fn claimable_chunk(&self, piece: ValidPieceIndex, peer: PeerHandle, rush: bool) -> Option<u32> {
+        let info = self.inflight.get(&piece)?;
+        let limit = self.claim_limits.get(&peer).copied().unwrap_or(WAITED_CLAIMS_PER_PEER);
+        if rush && info.claims.values().filter(|(p, _)| *p == peer).count() >= limit {
+            return None;
+        }
+        let count = self.chunks.get_lengths().chunks_per_piece(piece);
+        let missing = |chunk: u32| !self.chunks.is_chunk_index_downloaded(piece, chunk);
+        let free = |chunk: u32| missing(chunk) && !info.claims.contains_key(&chunk);
+
+        let cursor = info.cursors.iter().find(|(p, _)| *p == peer).map(|(_, c)| *c);
+        if let Some(next) = cursor.map(|c| c + 1).filter(|c| *c < count && free(*c)) {
+            return Some(next);
+        }
+        if info.peer == peer {
+            if let Some(chunk) = (0..count).find(|c| free(*c)) {
+                return Some(chunk);
+            }
+        } else {
+            let mut best: Option<(u32, u32)> = None;
+            let mut run_start = None;
+            for chunk in 0..=count {
+                if chunk < count && free(chunk) {
+                    run_start.get_or_insert(chunk);
+                    continue;
+                }
+                if let Some(start) = run_start.take() {
+                    let len = chunk - start;
+                    if best.is_none_or(|(_, l)| len > l) {
+                        best = Some((start, len));
+                    }
+                }
+            }
+            if let Some((start, len)) = best {
+                let someone_heads_here = start == 0 || info.claims.contains_key(&(start - 1));
+                return Some(if someone_heads_here { start + len / 2 } else { start });
+            }
+        }
+
+        let stale = if rush { WAITED_CLAIM_STALE_AFTER } else { CLAIM_STALE_AFTER };
+        info.claims
+            .iter()
+            .filter(|(chunk, (p, at))| *p != peer && at.elapsed() >= stale && missing(**chunk))
+            .min_by_key(|(_, (_, at))| *at)
+            .map(|(chunk, _)| *chunk)
+    }
+
+    pub fn has_waited_claims(&self, waited: &[ValidPieceIndex], peer: PeerHandle) -> bool {
+        waited.iter().any(|piece| {
+            self.inflight
+                .get(piece)
+                .is_some_and(|info| info.claims.values().any(|(p, _)| *p == peer))
+        })
+    }
+
+    pub fn set_claim_limit(&mut self, peer: PeerHandle, limit: usize) {
+        self.claim_limits.insert(peer, limit.max(1));
+    }
+
+    pub fn claim_next_chunk(
+        &mut self,
+        piece: ValidPieceIndex,
+        peer: PeerHandle,
+        rush: bool,
+    ) -> Option<librqbit_core::lengths::ChunkInfo> {
+        if !self.inflight.get(&piece)?.has_worker(peer) {
+            return None;
+        }
+        let chunk = self.claimable_chunk(piece, peer, rush)?;
+        let info = self.inflight.get_mut(&piece)?;
+        info.claims.insert(chunk, (peer, Instant::now()));
+        if info.peer == peer {
+            info.touched = true;
+        }
+        match info.cursors.iter_mut().find(|(p, _)| *p == peer) {
+            Some(entry) => entry.1 = chunk,
+            None => info.cursors.push((peer, chunk)),
+        }
+        self.chunks.get_lengths().iter_chunk_infos(piece).nth(chunk as usize)
     }
 
     /// Try to steal a piece from a slower peer.
@@ -227,7 +418,7 @@ impl PieceTracker {
         let (piece, old_peer, _) = self
             .inflight
             .iter()
-            .filter(|(_, info)| info.peer != req.peer)
+            .filter(|(_, info)| !info.has_worker(req.peer))
             .filter(|(p, _)| (req.peer_has_piece)(**p))
             .map(|(p, info)| (*p, info.peer, info.started.elapsed()))
             .filter(|(_, _, elapsed)| *elapsed >= min_elapsed)
@@ -240,6 +431,7 @@ impl PieceTracker {
 
         // Update ownership (piece stays in inflight, just changes owner)
         let info = self.inflight.get_mut(&piece)?;
+        info.forget_worker(old_peer);
         info.peer = req.peer;
         info.started = Instant::now();
 
@@ -276,18 +468,30 @@ impl PieceTracker {
     /// Moves all pieces owned by the peer from IN_FLIGHT back to QUEUED.
     /// Returns the number of pieces released.
     pub fn release_pieces_owned_by(&mut self, peer: PeerHandle) -> usize {
-        // Collect pieces to release (can't modify while iterating)
-        let pieces_to_release: Vec<_> = self
-            .inflight
-            .iter()
-            .filter(|(_, info)| info.peer == peer)
-            .map(|(p, _)| *p)
-            .collect();
+        self.claim_limits.remove(&peer);
+        let mut pieces_to_release = Vec::new();
+        let mut count = 0;
+        for (piece, info) in self.inflight.iter_mut() {
+            if info.peer == peer {
+                count += 1;
+                if info.helpers.is_empty() {
+                    pieces_to_release.push(*piece);
+                } else {
+                    let heir = info.helpers.remove(0);
+                    info.forget_worker(peer);
+                    info.cursors.retain(|(p, _)| *p != heir);
+                    info.peer = heir;
+                    info.started = Instant::now();
+                }
+            } else if info.helpers.contains(&peer) {
+                info.forget_worker(peer);
+                count += 1;
+            }
+        }
 
-        let count = pieces_to_release.len();
         for piece in pieces_to_release {
             self.inflight.remove(&piece);
-            self.chunks.mark_piece_broken_if_not_have(piece);
+            self.chunks.requeue_piece_keeping_chunks(piece);
         }
         count
     }
@@ -318,7 +522,15 @@ impl PieceTracker {
         &mut self,
         piece: &Piece<ByteBuf<'_>>,
     ) -> Option<ChunkMarkingResult> {
-        self.chunks.mark_chunk_downloaded(piece)
+        let result = self.chunks.mark_chunk_downloaded(piece);
+        let lengths = self.chunks.get_lengths();
+        if let Some(index) = lengths.validate_piece_index(piece.index)
+            && let Some(chunk) = lengths.chunk_info_from_received_data(index, piece.begin, piece.len() as u32)
+            && let Some(info) = self.inflight.get_mut(&index)
+        {
+            info.claims.remove(&chunk.chunk_index);
+        }
+        result
     }
 
     /// Update which files are selected for download.
@@ -436,6 +648,8 @@ mod tests {
             file_infos: &file_infos,
             peer_has_piece: |_| true, // Peer has all pieces
             can_steal: |_| true,
+            queue_from: None,
+            waited: &[],
         });
 
         // Should reserve piece 0 (first in queue)
@@ -469,6 +683,8 @@ mod tests {
             file_infos: &file_infos,
             peer_has_piece: |p| p.get() >= 2,
             can_steal: |_| true,
+            queue_from: None,
+            waited: &[],
         });
 
         match result {
@@ -497,6 +713,8 @@ mod tests {
             file_infos: &file_infos,
             peer_has_piece: |_| true,
             can_steal: |_| true,
+            queue_from: None,
+            waited: &[],
         });
 
         let piece = match result {
@@ -530,6 +748,8 @@ mod tests {
             file_infos: &file_infos,
             peer_has_piece: |_| true,
             can_steal: |_| true,
+            queue_from: None,
+            waited: &[],
         });
 
         let piece = match result {
@@ -558,6 +778,8 @@ mod tests {
             file_infos: &file_infos,
             peer_has_piece: |p| p == piece, // Only has the failed piece
             can_steal: |_| true,
+            queue_from: None,
+            waited: &[],
         });
 
         match result2 {
@@ -587,6 +809,8 @@ mod tests {
             file_infos: &file_infos,
             peer_has_piece: |_| true,
             can_steal: |_| true,
+            queue_from: None,
+            waited: &[],
         }) {
             AcquireResult::Reserved(p) => p,
             _ => panic!("Expected Reserved"),
@@ -599,6 +823,8 @@ mod tests {
             file_infos: &file_infos,
             peer_has_piece: |_| true,
             can_steal: |_| true,
+            queue_from: None,
+            waited: &[],
         }) {
             AcquireResult::Reserved(p) => p,
             _ => panic!("Expected Reserved"),
@@ -613,6 +839,8 @@ mod tests {
             file_infos: &file_infos,
             peer_has_piece: |_| true,
             can_steal: |_| true,
+            queue_from: None,
+            waited: &[],
         }) {
             AcquireResult::Reserved(p) => p,
             _ => panic!("Expected Reserved"),
@@ -652,6 +880,8 @@ mod tests {
             file_infos: &file_infos,
             peer_has_piece: |_| true,
             can_steal: |_| true,
+            queue_from: None,
+            waited: &[],
         });
         tracker.acquire_piece(AcquireRequest {
             peer: peer(1),
@@ -661,6 +891,8 @@ mod tests {
             file_infos: &file_infos,
             peer_has_piece: |_| true,
             can_steal: |_| true,
+            queue_from: None,
+            waited: &[],
         });
 
         assert_eq!(tracker.inflight_count(), 2);
@@ -678,6 +910,8 @@ mod tests {
             file_infos: &file_infos,
             peer_has_piece: |_| true,
             can_steal: |_| true,
+            queue_from: None,
+            waited: &[],
         });
 
         // Should get piece 0 again (was requeued)
@@ -716,6 +950,8 @@ mod tests {
             file_infos: &file_infos,
             peer_has_piece: |_| true,
             can_steal: |_| true,
+            queue_from: None,
+            waited: &[],
         });
 
         // Should get piece 3 (first priority piece)
@@ -742,6 +978,8 @@ mod tests {
             file_infos: &file_infos,
             peer_has_piece: |_| false, // Peer has nothing
             can_steal: |_| true,
+            queue_from: None,
+            waited: &[],
         });
 
         match result {
@@ -790,6 +1028,8 @@ mod tests {
             file_infos: &file_infos,
             peer_has_piece: |_| true,
             can_steal: |_| true,
+            queue_from: None,
+            waited: &[],
         }) {
             AcquireResult::Reserved(p) => {
                 assert_eq!(p.get(), 0);
@@ -806,6 +1046,8 @@ mod tests {
             file_infos: &file_infos,
             peer_has_piece: |_| true,
             can_steal: |_| true,
+            queue_from: None,
+            waited: &[],
         }) {
             AcquireResult::Reserved(p) => {
                 assert_eq!(p.get(), 4);
@@ -828,6 +1070,8 @@ mod tests {
             file_infos: &file_infos,
             peer_has_piece: |p| p.get() == 4, // Peer B only has piece 4
             can_steal: |_| true,
+            queue_from: None,
+            waited: &[],
         });
 
         // Should steal piece 4 (which peer B has), NOT piece 0 (which peer B doesn't have)
@@ -839,6 +1083,261 @@ mod tests {
                 assert_eq!(tracker.get_inflight(piece_0).unwrap().peer, peer_a);
             }
             _ => panic!("Expected Stolen, got {:?}", result),
+        }
+    }
+
+    fn make_multi_chunk_tracker(num_pieces: u32, chunks_per_piece: u32) -> (ChunkTracker, FileInfos) {
+        let piece_length = 16384u32 * chunks_per_piece;
+        let total_length = piece_length as u64 * num_pieces as u64;
+        let lengths = Lengths::new(total_length, piece_length).unwrap();
+        let bf_len = lengths.piece_bitfield_bytes();
+        let have = BF::from_boxed_slice(vec![0u8; bf_len].into_boxed_slice());
+        let mut selected = BF::from_boxed_slice(vec![0u8; bf_len].into_boxed_slice());
+        for i in 0..num_pieces as usize {
+            selected.set(i, true);
+        }
+        let file_infos = vec![crate::file_info::FileInfo {
+            relative_filename: "test.dat".into(),
+            offset_in_torrent: 0,
+            len: total_length,
+            piece_range: 0..num_pieces,
+            attrs: Default::default(),
+        }];
+        let tracker = ChunkTracker::new(have.into_dyn(), selected, lengths, &file_infos).unwrap();
+        (tracker, file_infos)
+    }
+
+    fn acquire_urgent(tracker: &mut PieceTracker, who: PeerHandle, file_infos: &FileInfos, urgent: &[u32]) -> AcquireResult {
+        let file_priorities = make_default_file_priorities(file_infos);
+        let lengths = *tracker.chunks().get_lengths();
+        let pieces: Vec<ValidPieceIndex> = urgent.iter().filter_map(|i| lengths.validate_piece_index(*i)).collect();
+        let waited: Vec<ValidPieceIndex> = pieces.iter().copied().take(1).collect();
+        tracker.acquire_piece(AcquireRequest {
+            peer: who,
+            peer_avg_time: None,
+            priority_pieces: pieces.into_iter(),
+            file_priorities: &file_priorities,
+            file_infos,
+            peer_has_piece: |_| true,
+            can_steal: |_| true,
+            queue_from: None,
+            waited: &waited,
+        })
+    }
+
+    fn deliver(tracker: &mut PieceTracker, piece: u32, chunk: u32) -> Option<ChunkMarkingResult> {
+        let block = vec![0u8; 16384];
+        tracker.mark_chunk_downloaded(&peer_binary_protocol::Piece::from_data(piece, chunk * 16384, &block))
+    }
+
+    #[test]
+    fn test_helpers_split_an_urgent_piece() {
+        let (chunks, file_infos) = make_multi_chunk_tracker(4, 8);
+        let mut tracker = PieceTracker::new(chunks);
+        let piece = match acquire_urgent(&mut tracker, peer(1), &file_infos, &[0, 1]) {
+            AcquireResult::Reserved(p) => p,
+            other => panic!("expected Reserved, got {other:?}"),
+        };
+        assert_eq!(tracker.claim_next_chunk(piece, peer(1), false).unwrap().chunk_index, 0);
+
+        match acquire_urgent(&mut tracker, peer(3), &file_infos, &[0, 1]) {
+            AcquireResult::Helping(p) => assert_eq!(p, piece),
+            other => panic!("expected Helping(0), got {other:?}"),
+        }
+        assert_eq!(tracker.claim_next_chunk(piece, peer(3), false).unwrap().chunk_index, 4);
+        assert_eq!(tracker.claim_next_chunk(piece, peer(1), false).unwrap().chunk_index, 1);
+        assert_eq!(tracker.claim_next_chunk(piece, peer(3), false).unwrap().chunk_index, 5);
+        assert!(tracker.claim_next_chunk(piece, peer(9), false).is_none());
+
+        let mut claimed = vec![0, 1, 4, 5];
+        while let Some(chunk) = tracker.claim_next_chunk(piece, peer(1), false) {
+            claimed.push(chunk.chunk_index);
+        }
+        while let Some(chunk) = tracker.claim_next_chunk(piece, peer(3), false) {
+            claimed.push(chunk.chunk_index);
+        }
+        claimed.sort();
+        assert_eq!(claimed, (0..8).collect::<Vec<u32>>());
+
+        for chunk in 0..7 {
+            assert!(matches!(deliver(&mut tracker, 0, chunk), Some(ChunkMarkingResult::NotCompleted)));
+        }
+        assert!(matches!(deliver(&mut tracker, 0, 7), Some(ChunkMarkingResult::Completed)));
+    }
+
+    #[test]
+    fn test_owner_death_hands_the_piece_to_a_helper() {
+        let (chunks, file_infos) = make_multi_chunk_tracker(4, 8);
+        let mut tracker = PieceTracker::new(chunks);
+        let piece = match acquire_urgent(&mut tracker, peer(1), &file_infos, &[0]) {
+            AcquireResult::Reserved(p) => p,
+            other => panic!("expected Reserved, got {other:?}"),
+        };
+        tracker.claim_next_chunk(piece, peer(1), false).unwrap();
+        assert!(matches!(acquire_urgent(&mut tracker, peer(2), &file_infos, &[0]), AcquireResult::Helping(_)));
+        tracker.claim_next_chunk(piece, peer(2), false).unwrap();
+
+        assert_eq!(tracker.release_pieces_owned_by(peer(1)), 1);
+        let info = tracker.get_inflight(piece).unwrap();
+        assert_eq!(info.peer, peer(2));
+        assert!(info.helpers.is_empty());
+        assert_eq!(tracker.claim_next_chunk(piece, peer(2), false).unwrap().chunk_index, 0);
+    }
+
+    #[test]
+    fn test_a_released_piece_keeps_its_chunks() {
+        let (chunks, file_infos) = make_multi_chunk_tracker(4, 8);
+        let mut tracker = PieceTracker::new(chunks);
+        let piece = match acquire_urgent(&mut tracker, peer(1), &file_infos, &[0]) {
+            AcquireResult::Reserved(p) => p,
+            other => panic!("expected Reserved, got {other:?}"),
+        };
+        for _ in 0..3 {
+            let chunk = tracker.claim_next_chunk(piece, peer(1), false).unwrap();
+            deliver(&mut tracker, 0, chunk.chunk_index);
+        }
+        assert_eq!(tracker.release_pieces_owned_by(peer(1)), 1);
+        assert!(!tracker.is_inflight(piece));
+
+        match acquire_urgent(&mut tracker, peer(2), &file_infos, &[0]) {
+            AcquireResult::Reserved(p) => assert_eq!(p, piece),
+            other => panic!("expected Reserved, got {other:?}"),
+        }
+        assert_eq!(tracker.claim_next_chunk(piece, peer(2), false).unwrap().chunk_index, 3);
+    }
+
+    #[test]
+    fn test_stale_claims_are_taken_over() {
+        let (chunks, file_infos) = make_multi_chunk_tracker(4, 2);
+        let mut tracker = PieceTracker::new(chunks);
+        let piece = match acquire_urgent(&mut tracker, peer(1), &file_infos, &[0]) {
+            AcquireResult::Reserved(p) => p,
+            other => panic!("expected Reserved, got {other:?}"),
+        };
+        assert!(matches!(acquire_urgent(&mut tracker, peer(2), &file_infos, &[0]), AcquireResult::Helping(_)));
+        tracker.claim_next_chunk(piece, peer(1), false).unwrap();
+        tracker.claim_next_chunk(piece, peer(2), false).unwrap();
+        assert!(tracker.claim_next_chunk(piece, peer(1), false).is_none());
+        if let Some(info) = tracker.inflight.get_mut(&piece) {
+            for (_, at) in info.claims.values_mut() {
+                *at -= CLAIM_STALE_AFTER;
+            }
+        }
+        assert_eq!(tracker.claim_next_chunk(piece, peer(1), false).unwrap().chunk_index, 1);
+    }
+
+    #[test]
+    fn test_a_waited_piece_rushes_slow_claims() {
+        let (chunks, file_infos) = make_multi_chunk_tracker(4, 2);
+        let mut tracker = PieceTracker::new(chunks);
+        let piece = match acquire_urgent(&mut tracker, peer(1), &file_infos, &[0]) {
+            AcquireResult::Reserved(p) => p,
+            other => panic!("expected Reserved, got {other:?}"),
+        };
+        assert!(matches!(acquire_urgent(&mut tracker, peer(2), &file_infos, &[0]), AcquireResult::Helping(_)));
+        tracker.claim_next_chunk(piece, peer(1), true).unwrap();
+        tracker.claim_next_chunk(piece, peer(1), true).unwrap();
+        assert!(tracker.claim_next_chunk(piece, peer(2), true).is_none());
+        assert!(!tracker.waited_needs_help(&[piece], tracker.chunks().get_lengths().validate_piece_index(3).unwrap(), peer(2), |_| true));
+        if let Some(info) = tracker.inflight.get_mut(&piece) {
+            for (_, at) in info.claims.values_mut() {
+                *at -= WAITED_CLAIM_STALE_AFTER;
+            }
+        }
+        assert!(tracker.claim_next_chunk(piece, peer(2), false).is_none());
+        assert!(tracker.waited_needs_help(&[piece], tracker.chunks().get_lengths().validate_piece_index(3).unwrap(), peer(2), |_| true));
+        assert!(tracker.claim_next_chunk(piece, peer(2), true).is_some());
+    }
+
+    #[test]
+    fn test_a_waited_piece_comes_before_own_work() {
+        let (chunks, file_infos) = make_multi_chunk_tracker(4, 32);
+        let mut tracker = PieceTracker::new(chunks);
+        let waited = match acquire_urgent(&mut tracker, peer(1), &file_infos, &[0]) {
+            AcquireResult::Reserved(p) => p,
+            other => panic!("expected Reserved, got {other:?}"),
+        };
+        tracker.claim_next_chunk(waited, peer(1), true).unwrap();
+        assert!(matches!(acquire_urgent(&mut tracker, peer(2), &file_infos, &[0]), AcquireResult::Helping(_)));
+        for _ in 0..WAITED_CLAIMS_PER_PEER {
+            tracker.claim_next_chunk(waited, peer(2), true).unwrap();
+        }
+        let own = match acquire_urgent(&mut tracker, peer(2), &file_infos, &[0, 1]) {
+            AcquireResult::Reserved(p) => p,
+            other => panic!("expected Reserved, got {other:?}"),
+        };
+        tracker.claim_next_chunk(own, peer(2), false).unwrap();
+        let first = tracker.get_inflight(waited).unwrap().cursors.iter().find(|(p, _)| *p == peer(2)).unwrap().1;
+        deliver(&mut tracker, 0, first);
+        let current = own;
+        assert!(tracker.waited_needs_help(&[waited], current, peer(2), |_| true));
+        for _ in 0..3 {
+            match acquire_urgent(&mut tracker, peer(2), &file_infos, &[0, 1]) {
+                AcquireResult::Resumed(p) => assert_eq!(p, waited),
+                other => panic!("expected the waited piece, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_a_peer_holds_few_chunks_of_a_waited_piece() {
+        let (chunks, file_infos) = make_multi_chunk_tracker(4, 32);
+        let mut tracker = PieceTracker::new(chunks);
+        let piece = match acquire_urgent(&mut tracker, peer(1), &file_infos, &[0]) {
+            AcquireResult::Reserved(p) => p,
+            other => panic!("expected Reserved, got {other:?}"),
+        };
+        for _ in 0..WAITED_CLAIMS_PER_PEER {
+            tracker.claim_next_chunk(piece, peer(1), true).unwrap();
+        }
+        assert!(tracker.claim_next_chunk(piece, peer(1), true).is_none());
+        deliver(&mut tracker, 0, 0);
+        assert_eq!(tracker.claim_next_chunk(piece, peer(1), true).unwrap().chunk_index, WAITED_CLAIMS_PER_PEER as u32);
+        assert!(tracker.claim_next_chunk(piece, peer(1), false).is_some());
+
+        assert!(tracker.has_waited_claims(&[piece], peer(1)));
+        assert!(!tracker.has_waited_claims(&[piece], peer(2)));
+        tracker.set_claim_limit(peer(1), 2);
+        assert!(tracker.claim_next_chunk(piece, peer(1), true).is_none());
+        tracker.set_claim_limit(peer(1), 32);
+        assert!(tracker.claim_next_chunk(piece, peer(1), true).is_some());
+    }
+
+    #[test]
+    fn test_queue_starts_at_the_stream() {
+        let (chunks, file_infos) = make_multi_chunk_tracker(10, 1);
+        let mut tracker = PieceTracker::new(chunks);
+        let file_priorities = make_default_file_priorities(&file_infos);
+        let lengths = *tracker.chunks().get_lengths();
+        let result = tracker.acquire_piece(AcquireRequest {
+            peer: peer(1),
+            peer_avg_time: None,
+            priority_pieces: std::iter::empty(),
+            file_priorities: &file_priorities,
+            file_infos: &file_infos,
+            peer_has_piece: |_| true,
+            can_steal: |_| true,
+            queue_from: lengths.validate_piece_index(6),
+            waited: &[],
+        });
+        match result {
+            AcquireResult::Reserved(p) => assert_eq!(p.get(), 9),
+            other => panic!("expected the last piece first, got {other:?}"),
+        }
+        let result = tracker.acquire_piece(AcquireRequest {
+            peer: peer(1),
+            peer_avg_time: None,
+            priority_pieces: std::iter::empty(),
+            file_priorities: &file_priorities,
+            file_infos: &file_infos,
+            peer_has_piece: |_| true,
+            can_steal: |_| true,
+            queue_from: lengths.validate_piece_index(6),
+            waited: &[],
+        });
+        match result {
+            AcquireResult::Reserved(p) => assert_eq!(p.get(), 6),
+            other => panic!("expected piece 6, got {other:?}"),
         }
     }
 }

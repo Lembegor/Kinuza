@@ -81,6 +81,7 @@ const OPTIONS: &[(&str, &str)] = &[
 ];
 
 const ALLOWED_PROPERTIES: &[&str] = &[
+    "cache-pause-wait",
     "volume",
     "mute",
     "speed",

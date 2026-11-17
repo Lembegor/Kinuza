@@ -5,6 +5,17 @@ export type ChangelogLine = string | { heading: string };
 export type Changelog = Record<AppLanguage, ChangelogLine[]>;
 
 export const changelog: Record<string, Changelog> = {
+  "0.6.6": {
+    ru: [
+      "Ускорил работу торрента, онлайн просмотр работает заметно лучше и быстрее.",
+    ],
+    en: [
+      "Sped up the torrent engine, online viewing works noticeably better and faster.",
+    ],
+    uk: [
+      "Пришвидшив роботу торрента, онлайн перегляд працює помітно краще і швидше.",
+    ],
+  },
   "0.6.5": {
     ru: [
       "Минорные исправления.",

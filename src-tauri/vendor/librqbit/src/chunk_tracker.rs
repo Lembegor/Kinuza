@@ -318,6 +318,45 @@ impl ChunkTracker {
                 .is_some_and(|status| status.not_any())
     }
 
+    pub(crate) fn is_piece_queued(&self, index: ValidPieceIndex) -> bool {
+        self.queue_pieces.get(index.get() as usize).map(|bit| *bit).unwrap_or(false)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn downloaded_chunks_of_missing_pieces(&self) -> u64 {
+        self.lengths
+            .iter_piece_infos()
+            .filter(|info| !self.have.as_slice()[info.piece_index.get() as usize])
+            .map(|info| {
+                self.chunk_status
+                    .get(self.lengths.chunk_range(info.piece_index))
+                    .map(|s| s.count_ones() as u64)
+                    .unwrap_or(0)
+            })
+            .sum()
+    }
+
+    pub(crate) fn is_chunk_index_downloaded(&self, piece: ValidPieceIndex, chunk: u32) -> bool {
+        let start = self.lengths.chunk_range(piece).start;
+        self.chunk_status
+            .get(start + chunk as usize)
+            .map(|bit| *bit)
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn requeue_piece_keeping_chunks(&mut self, index: ValidPieceIndex) {
+        let id = index.get() as usize;
+        if self.have.as_slice().get(id).map(|r| *r).unwrap_or_default() {
+            return;
+        }
+        self.queue_pieces.set(id, true);
+        if let Some(status) = self.chunk_status.get_mut(self.lengths.chunk_range(index))
+            && status.all()
+        {
+            status.fill(false);
+        }
+    }
+
     pub(crate) fn is_chunk_downloaded(&self, chunk: &ChunkInfo) -> bool {
         let start = self.lengths.chunk_range(chunk.piece_index).start;
         self.chunk_status

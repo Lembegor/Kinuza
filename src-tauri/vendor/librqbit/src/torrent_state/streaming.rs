@@ -154,6 +154,23 @@ impl TorrentStreams {
         Interleave { all: all.into() }
     }
 
+    pub(crate) fn waited_pieces(&self, lengths: &Lengths) -> Vec<ValidPieceIndex> {
+        self.streams
+            .iter()
+            .filter(|s| s.value().waker.is_some())
+            .filter_map(|s| s.value().current_piece(lengths).map(|p| p.id))
+            .collect()
+    }
+
+    pub(crate) fn queue_start(&self, lengths: &Lengths) -> Option<ValidPieceIndex> {
+        let dpl = lengths.default_piece_length() as u64;
+        self.streams
+            .iter()
+            .map(|s| (s.value().file_abs_offset + s.value().position) / dpl)
+            .min()
+            .and_then(|piece| lengths.validate_piece_index(piece.try_into().ok()?))
+    }
+
     pub(crate) fn wake_streams_on_piece_completed(
         &self,
         piece_id: ValidPieceIndex,
