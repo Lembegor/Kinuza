@@ -16,7 +16,7 @@ import { useAsync } from "../lib/useAsync";
 import { useLibrary } from "../state/library";
 import { addActivity, pruneActivity, readActivity, type ActivityEvent } from "../state/activity";
 import { useProfile, type HistoryRetention } from "../state/profile";
-import { useSettings, type AudioMode, type SpoilerMode, type SubtitleBackground, type SubtitleColor, type SubtitleFont, type VideoQuality } from "../state/settings";
+import { useSettings, type AnimeUpscale, type AudioMode, type SpoilerMode, type SubtitleBackground, type SubtitleColor, type SubtitleFont, type VideoQuality } from "../state/settings";
 import { accentColors } from "../lib/appearance";
 import { useUi } from "../state/ui";
 import { hasHistory, openHistory } from "../components/WhatsNew";
@@ -484,6 +484,24 @@ export default function Settings() {
               <option value="high">{t("settings.player.picture.high")}</option>
               <option value="balanced">{t("settings.player.picture.balanced")}</option>
               <option value="fast">{t("settings.player.picture.fast")}</option>
+            </select>
+          </div>
+        )}
+        {mpv.supported && (
+          <div className="setting">
+            <div>
+              <strong>{t("settings.player.upscale")}</strong>
+              <p>{t("settings.player.upscale.note")}</p>
+            </div>
+            <select
+              className="select select--large"
+              aria-label={t("settings.player.upscale")}
+              value={settings.animeUpscale}
+              onChange={(event) => settings.patch({ animeUpscale: event.target.value as AnimeUpscale })}
+            >
+              <option value="off">{t("settings.player.upscale.off")}</option>
+              <option value="normal">{t("settings.player.upscale.normal")}</option>
+              <option value="max">{t("settings.player.upscale.max")}</option>
             </select>
           </div>
         )}

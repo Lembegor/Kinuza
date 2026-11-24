@@ -12,6 +12,16 @@ HISTORY_KEPT = 3
 SESSION_TOUCH_SECONDS = 3600
 
 SCHEMA = """
+create table if not exists cards (
+  user_id integer primary key references users(id) on delete cascade,
+  updated integer not null,
+  data text not null
+);
+create table if not exists active_days (
+  day text not null,
+  user_id integer not null references users(id) on delete cascade,
+  primary key (day, user_id)
+);
 create table if not exists users (
   id integer primary key,
   sub text unique not null,
@@ -96,6 +106,7 @@ class Store:
         self.db.execute("pragma foreign_keys = on")
         self.db.execute("pragma synchronous = normal")
         self.db.executescript(SCHEMA)
+        self.db.create_function("fold", 1, lambda text: (text or "").casefold(), deterministic=True)
 
     def user_by_sub(self, sub: str):
         return self.db.execute("select * from users where sub = ?", (sub,)).fetchone()
@@ -252,6 +263,60 @@ class Store:
 
     def requests_from(self, user_id: int) -> list:
         return self.db.execute("select to_id as id, created from requests where from_id = ? order by created desc", (user_id,)).fetchall()
+
+    def search_people(self, user_id: int, query: str, limit: int) -> list:
+        needle = query.casefold()
+        rows = self.db.execute(
+            "select *, case when fold(name) = ? then 0 when fold(name) like ? escape '\\' then 1 else 2 end as rank "
+            "from users where id != ? and instr(fold(name), ?) > 0 order by rank, length(name), id limit ?",
+            (needle, needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%", user_id, needle, limit),
+        ).fetchall()
+        return rows
+
+    def save_card(self, user_id: int, data: str, at: int) -> None:
+        self.db.execute(
+            "insert into cards (user_id, updated, data) values (?, ?, ?) on conflict(user_id) do update set updated = excluded.updated, data = excluded.data",
+            (user_id, at, data),
+        )
+
+    def card(self, user_id: int):
+        return self.db.execute("select updated, data from cards where user_id = ?", (user_id,)).fetchone()
+
+    def cards(self, ids: list) -> dict:
+        if not ids:
+            return {}
+        marks = ",".join("?" for _ in ids)
+        rows = self.db.execute(f"select user_id, updated, data from cards where user_id in ({marks})", ids).fetchall()
+        return {row["user_id"]: row for row in rows}
+
+    def note_active(self, user_id: int, at: int) -> None:
+        self.db.execute("insert or ignore into active_days (day, user_id) values (?, ?)", (time.strftime("%Y-%m-%d", time.gmtime(at)), user_id))
+
+    def account_stats(self, now: int, online_ids: set) -> dict:
+        def seen_since(since: int) -> int:
+            rows = self.db.execute("select id from users where last_seen >= ?", (since,)).fetchall()
+            return len({row["id"] for row in rows} | online_ids)
+
+        days = self.db.execute(
+            "select day, count(*) as n from active_days where day >= ? group by day order by day",
+            (time.strftime("%Y-%m-%d", time.gmtime(now - 29 * 86400)),),
+        ).fetchall()
+        return {
+            "online": len(online_ids),
+            "day": seen_since(now - 86400),
+            "week": seen_since(now - 7 * 86400),
+            "month": seen_since(now - 30 * 86400),
+            "total": self.db.execute("select count(*) from users").fetchone()[0],
+            "newWeek": self.db.execute("select count(*) from users where created >= ?", (now - 7 * 86400,)).fetchone()[0],
+            "friendships": self.db.execute("select count(*) from friends").fetchone()[0],
+            "days": [[row["day"], row["n"]] for row in days],
+        }
+
+    def request_friend_by_id(self, user_id: int, other_id: int) -> tuple:
+        other = self.user(other_id)
+        if not other:
+            raise StoreError("friend_not_found")
+        return self.request_friend(user_id, other["code"])
 
     def request_friend(self, user_id: int, code: str) -> tuple:
         other = self.user_by_code(code)

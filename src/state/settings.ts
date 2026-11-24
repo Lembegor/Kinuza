@@ -26,6 +26,7 @@ export type SubtitleFont = "sans" | "serif" | "rounded" | "condensed";
 export type SubtitleColor = "white" | "yellow" | "cyan" | "green";
 export type SubtitleBackground = "outline" | "shadow" | "box";
 export type VideoQuality = "high" | "balanced" | "fast";
+export type AnimeUpscale = "off" | "normal" | "max";
 export type SpoilerMode = "show" | "blur" | "hide";
 export type GridDensity = "compact" | "normal" | "large";
 
@@ -69,6 +70,7 @@ export interface Settings {
   subtitleBackground: SubtitleBackground;
   subtitlePosition: number;
   videoQuality: VideoQuality;
+  animeUpscale: AnimeUpscale;
   autoSimplify: boolean;
   spoilerDescriptions: SpoilerMode;
   spoilerStills: boolean;
@@ -122,6 +124,7 @@ const defaults: Settings = {
   subtitleBackground: "outline",
   subtitlePosition: 0,
   videoQuality: "high",
+  animeUpscale: "off",
   autoSimplify: true,
   spoilerDescriptions: "blur",
   spoilerStills: true,
@@ -180,7 +183,27 @@ interface SettingsState extends Settings {
   patch: (change: Partial<Settings>) => void;
 }
 
+export const machineKeys = [
+  "downloadDir",
+  "downloadLimit",
+  "uploadLimit",
+  "maxActiveDownloads",
+  "seedRatio",
+  "uploadByDefault",
+  "cacheLimitGb",
+  "handleLinks",
+  "linksPrompted",
+  "closeToTray",
+  "autoUpdate",
+  "autoDeleteWatched",
+  "notifyDownloads",
+  "tmdbKey",
+] as const satisfies readonly (keyof Settings)[];
+
+const freshProfileSkips = ["continueHidden", "homeOrder", "homeHidden", "lastVoice", "lastSubtitles"] as const;
+
 let earlyChanges: Partial<Settings> = {};
+let inMainProfile = true;
 let savingBlocked = false;
 let saveFailureShown = false;
 let waitingForStore = false;
@@ -206,6 +229,37 @@ function persist(settings: Settings): void {
   );
 }
 
+function pick(source: Partial<Settings>, keys: readonly (keyof Settings)[]): Partial<Settings> {
+  return Object.fromEntries(keys.filter((key) => key in source).map((key) => [key, source[key]])) as Partial<Settings>;
+}
+
+function parseSettings(text: string | undefined): Partial<Settings> | null {
+  if (text === undefined) return null;
+  const parsed: unknown = JSON.parse(text);
+  return upgrade(typeof parsed === "object" && parsed !== null ? (parsed as Partial<Settings>) : {});
+}
+
+let machineWrites: Promise<void> = Promise.resolve();
+
+function persistMachine(settings: Settings): void {
+  const shared = pick(settings, machineKeys);
+  machineWrites = machineWrites
+    .then(async () => {
+      const document = await backend.storeGet(storeName, true);
+      const main = parseSettings(document?.text) ?? {};
+      await backend.storeSet(storeName, JSON.stringify({ ...main, ...shared }), false, true);
+    })
+    .catch((error) => report("settings", "journal.settings.save", error));
+}
+
+async function readMainSettings(): Promise<Partial<Settings> | null> {
+  const book = await backend.profilesList().catch(() => null);
+  inMainProfile = !book || book.active === "main";
+  if (inMainProfile) return null;
+  const document = await backend.storeGet(storeName, true);
+  return parseSettings(document?.text) ?? {};
+}
+
 function currentSettings(state: SettingsState): Settings {
   const { loaded: _loaded, load: _load, patch: _patch, ...settings } = state;
   return settings;
@@ -217,14 +271,16 @@ export const useSettings = create<SettingsState>((set, get) => ({
 
   async load(attempt = 0) {
     try {
+      const main = await readMainSettings();
       const document = await backend.storeGet(storeName);
-      const parsed: unknown = document ? JSON.parse(document.text) : {};
-      const stored: Partial<Settings> = upgrade(typeof parsed === "object" && parsed !== null ? (parsed as Partial<Settings>) : {});
+      const own = parseSettings(document?.text);
+      const start = own ?? (main ? Object.fromEntries(Object.entries(main).filter(([key]) => !(freshProfileSkips as readonly string[]).includes(key))) : {});
+      const stored: Partial<Settings> = main ? { ...start, ...pick(main, machineKeys) } : start;
       const recovering = waitingForStore;
       waitingForStore = false;
       savingBlocked = false;
       set({ ...defaults, ...stored, ...earlyChanges, loaded: true });
-      if (Object.keys(earlyChanges).length > 0) persist(currentSettings(get()));
+      if (Object.keys(earlyChanges).length > 0 || (own === null && main !== null)) persist(currentSettings(get()));
       if (recovering) void backend.appLog("settings: read after the store was busy");
     } catch (error) {
       savingBlocked = true;
@@ -257,5 +313,6 @@ export const useSettings = create<SettingsState>((set, get) => ({
     if (policyKeys.some((key) => key in change)) applyDownloadPolicy(get());
     savingBlocked = false;
     persist(currentSettings(get()));
+    if (!inMainProfile && machineKeys.some((key) => key in change)) persistMachine(currentSettings(get()));
   },
 }));

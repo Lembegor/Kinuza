@@ -515,37 +515,84 @@ label.file-row,
 .tracker-route {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 10px;
-  padding: 8px 8px 8px 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-s);
-  background: rgba(255, 255, 255, 0.03);
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 10px 10px 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-m);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02));
 }
 
-.tracker-route__icon {
+.tracker-route__badge,
+.tracker-alert__icon {
+  display: grid;
+  place-items: center;
   flex: none;
-  color: var(--faint);
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--muted);
 }
 
-.tracker-route__text {
+.tracker-route__text,
+.tracker-alert__text {
+  display: flex;
   flex: 1;
+  flex-direction: column;
+  gap: 2px;
   min-width: 0;
-  font-size: 13px;
+}
+
+.tracker-route__text b,
+.tracker-alert__text b {
+  color: var(--text);
+  font-size: 13.5px;
+}
+
+.tracker-route__text small {
   color: var(--muted);
+  font-size: 12px;
+  line-height: 1.3;
 }
 
 .tracker-route__login {
   flex: none;
-  background: var(--accent-soft);
-  border-color: transparent;
-  color: var(--text);
 }
 
-.tracker-route__login:hover:not(:disabled) {
-  background: var(--accent);
-  border-color: transparent;
-  color: #fff;
+.tracker-alert {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-radius: var(--radius-m);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.tracker-alert__icon {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: #ff9a9d;
+}
+
+.tracker-alert__text {
+  flex-basis: 260px;
+}
+
+.tracker-alert__text p {
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.tracker-alert__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+  padding-left: 46px;
 }
 
 .tracker-form {

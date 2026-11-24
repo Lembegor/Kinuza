@@ -1,4 +1,4 @@
-import { isDesktop } from "./backend";
+import { isDesktop, personalWritesAllowed } from "./backend";
 
 export interface Account {
   id: number;
@@ -30,6 +30,35 @@ export interface Friend {
   room?: { code: string; title: string | null; count: number } | null;
 }
 
+export interface FeedWatching {
+  key: string;
+  name: string;
+  poster: string | null;
+  movie: boolean;
+  share: number;
+  watched: number;
+  total: number;
+}
+
+export interface FeedRecent {
+  key: string;
+  name: string;
+  poster: string | null;
+  at: number | null;
+  movie: boolean;
+  finished: boolean;
+  rating: number | null;
+  episodes: number;
+  last: { season: number | null; episode: number | null } | null;
+}
+
+export interface FeedEntry {
+  friend: Friend;
+  updated: number;
+  watching: FeedWatching[];
+  recent: FeedRecent[];
+}
+
 export interface PartyInvite {
   code: string;
   from: number;
@@ -51,6 +80,23 @@ export interface Social {
   incoming: Person[];
   outgoing: Person[];
   backupRevision: number;
+  online?: number;
+}
+
+export type Relation = "none" | "friend" | "incoming" | "outgoing" | "self";
+
+export interface FoundPerson {
+  id: number;
+  name: string;
+  avatar: string | null;
+  relation: Relation;
+}
+
+export interface FriendCardAnswer {
+  friend: Friend;
+  hidden: boolean;
+  card: unknown;
+  updated: number | null;
 }
 
 export interface AccountStatus {
@@ -71,6 +117,7 @@ export interface BackupPull {
 export type AccountChange = Partial<Pick<Account, "name" | "showActivity" | "invisible">> & { avatar?: string | null };
 
 async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+  if (!personalWritesAllowed() && command !== "account_online") throw new Error("profile_switching");
   if (isDesktop) {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke<T>(command, args);
@@ -79,12 +126,13 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
   return mockInvoke(command, args) as Promise<T>;
 }
 
-function request<T>(method: "GET" | "POST" | "PATCH" | "DELETE", path: string, body?: unknown, query?: [string, string][]): Promise<T> {
+function request<T>(method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE", path: string, body?: unknown, query?: [string, string][]): Promise<T> {
   return call<T>("account_call", { method, path, body: body ?? null, query: query ?? null });
 }
 
 export const accountApi = {
   status: () => call<AccountStatus>("account_status"),
+  online: () => call<number | null>("account_online"),
   signIn: () => call<SignInAnswer>("account_sign_in"),
   cancelSignIn: () => call<void>("account_cancel_sign_in"),
   forget: () => call<void>("account_forget"),
@@ -97,6 +145,11 @@ export const accountApi = {
   offline: () => request<{ ok: boolean }>("POST", "presence", { state: "offline" }),
   lookup: (code: string) => request<{ id: number; name: string; avatar: string | null; self: boolean }>("GET", "friends/lookup", undefined, [["code", code]]),
   addFriend: (code: string) => request<Social & { result: "sent" | "friends"; id: number }>("POST", "friends/request", { code }),
+  addFriendById: (id: number) => request<Social & { result: "sent" | "friends"; id: number }>("POST", "friends/request", { id }),
+  search: (query: string) => request<{ people: FoundPerson[] }>("GET", "friends/search", undefined, [["q", query]]),
+  friendCard: (id: number) => request<FriendCardAnswer>("GET", "friends/card", undefined, [["id", String(id)]]),
+  friendsFeed: () => request<{ friends: FeedEntry[] }>("GET", "friends/feed"),
+  putCard: (card: unknown) => request<{ ok: boolean }>("PUT", "me/card", card),
   accept: (id: number) => request<Social>("POST", "friends/accept", { id }),
   decline: (id: number) => request<Social>("POST", "friends/decline", { id }),
   cancel: (id: number) => request<Social>("POST", "friends/cancel", { id }),

@@ -28,7 +28,8 @@ export type ActivityType =
   | "feed.open"
   | "search"
   | "tracker.search"
-  | "tracker.pick";
+  | "tracker.pick"
+  | "party";
 
 export interface ActivityEvent {
   id: string;

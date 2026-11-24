@@ -7,6 +7,7 @@ import { t } from "../lib/i18n";
 import { report } from "../lib/journal";
 import { beforeAppClose } from "../lib/lifecycle";
 import { addActivity, onActivityChange, readActivity, type ActivityEvent } from "./activity";
+import { forgetPublishedCard, publishCard } from "./friendCard";
 import { useInbox } from "./inbox";
 import { useLibrary } from "./library";
 import { useProfile } from "./profile";
@@ -23,6 +24,8 @@ const syncEveryMs = 10 * 60_000;
 const presenceEveryMs = 60_000;
 const presenceSoonMs = 2500;
 const profileDelayMs = 3000;
+const cardFirstMs = 30_000;
+const cardEveryMs = 10 * 60_000;
 const pushAttempts = 3;
 const serverAvatarSize = 160;
 const deviceSettings = ["downloadDir", "handleLinks", "linksPrompted", "loaded", "load", "patch", "version", "volume", "muted"];
@@ -66,6 +69,8 @@ let syncing = false;
 let syncAgain = false;
 let syncTimer: ReturnType<typeof setTimeout> | undefined;
 let syncInterval: ReturnType<typeof setInterval> | undefined;
+let cardTimer: ReturnType<typeof setTimeout> | undefined;
+let cardInterval: ReturnType<typeof setInterval> | undefined;
 let lastPushAt = 0;
 let syncDueAt = Infinity;
 let presenceTimer: ReturnType<typeof setTimeout> | undefined;
@@ -426,6 +431,9 @@ function stopLoops(): void {
   clearTimeout(presenceTimer);
   clearTimeout(profileTimer);
   clearInterval(syncInterval);
+  clearTimeout(cardTimer);
+  clearInterval(cardInterval);
+  forgetPublishedCard();
   while (stops.length > 0) stops.pop()?.();
 }
 
@@ -464,6 +472,8 @@ function startLoops(): void {
     }),
   );
   syncInterval = setInterval(() => scheduleSync(0), syncEveryMs);
+  cardTimer = setTimeout(() => void publishCard(), cardFirstMs);
+  cardInterval = setInterval(() => void publishCard(), cardEveryMs);
   schedulePresence(0);
   scheduleSync(1500, true);
   profileTimer = setTimeout(() => void pushProfile(), profileDelayMs);
@@ -564,6 +574,10 @@ export const useAccount = create<AccountState>((set, get) => ({
       const account = await accountApi.update(change);
       set({ account });
       if (change.invisible !== undefined || change.showActivity !== undefined) schedulePresence(500);
+      if (change.showActivity) {
+        forgetPublishedCard();
+        void publishCard();
+      }
     } catch (error) {
       useUi.getState().toast(describeError(error), "error");
     }

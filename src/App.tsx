@@ -28,6 +28,7 @@ import Home from "./pages/Home";
 import ForYou from "./pages/ForYou";
 import Library from "./pages/Library";
 import Profile from "./pages/Profile";
+import FriendProfile from "./pages/FriendProfile";
 import PersonPage from "./pages/Person";
 import Search from "./pages/Search";
 import Settings from "./pages/Settings";
@@ -44,6 +45,13 @@ import { useUi } from "./state/ui";
 import { notify } from "./state/notifications";
 import { useUpdater } from "./state/updater";
 import { warmRecentResume } from "./state/warmup";
+import { activeProfile, useProfiles } from "./state/profiles";
+import { WhoIsWatching } from "./components/ProfilesUi";
+import { AchievementCelebrations } from "./components/achievements/Achievements";
+import { startAchievements } from "./state/achievements";
+import { startServerNotice } from "./state/serverNotice";
+import { ServerNotice } from "./components/ServerNotice";
+import { startPartyLog } from "./state/partyLog";
 
 const startupWarmDelayMs = 5000;
 const retentionDelayMs = 15000;
@@ -190,6 +198,7 @@ const pageRoutes = (
     <Route path="/library" element={<Library />} />
     <Route path="/profile" element={<Profile />} />
     <Route path="/profile/:tab" element={<Profile />} />
+    <Route path="/friend/:id" element={<FriendProfile />} />
     <Route path="/calendar" element={<CalendarPage />} />
     <Route path="/downloads" element={<Downloads />} />
     <Route path="/settings" element={<Settings />} />
@@ -225,6 +234,13 @@ export default function App() {
   }, [libraryLoaded, settingsLoaded]);
 
   const profileLoaded = useProfile((state) => state.loaded);
+  const profileName = useProfile((state) => state.name);
+  const profilesView = useProfiles((state) => state.view);
+  useEffect(() => {
+    const entry = activeProfile(profilesView);
+    if (!profileLoaded || !entry || entry.main || profileName || !entry.name) return;
+    useProfile.getState().patch({ name: entry.name });
+  }, [profileLoaded, profileName, profilesView]);
   const retention = useProfile((state) => state.retention);
   useEffect(() => {
     if (!libraryLoaded || !profileLoaded || retention === "forever") return;
@@ -237,6 +253,7 @@ export default function App() {
     void useLibrary.getState().load();
     void useProfile.getState().load();
     void useInbox.getState().load();
+    void useProfiles.getState().load();
     void getAppInfo().then((info) => {
       if (info.sessionReset) useUi.getState().toast(t("shell.sessionReset"), "info");
     });
@@ -284,6 +301,9 @@ export default function App() {
     if (!ready) return;
     void useAccount.getState().init();
     startInviteLoop();
+    startPartyLog();
+    startAchievements();
+    startServerNotice();
   }, [ready]);
   useLinkHandling(ready && !introducing);
 
@@ -301,6 +321,7 @@ export default function App() {
     return (
       <div className="app">
         <Onboarding />
+        <WhoIsWatching />
       </div>
     );
   }
@@ -325,7 +346,10 @@ export default function App() {
         <AppHotkeys />
         <WhatsNew ready={!introducing} />
         <UpdateNotice />
+        <ServerNotice />
         <Toasts />
+        <AchievementCelebrations />
+        <WhoIsWatching />
         {dragging && (
           <div className="drop-overlay">
             <FileDown size={44} />

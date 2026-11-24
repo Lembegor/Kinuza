@@ -6,7 +6,6 @@ import { useT } from "../../lib/i18n";
 import { useAccount } from "../../state/account";
 import { useUi } from "../../state/ui";
 import { CopyInvite, useAddFriend } from "./AddFriendDialog";
-import { titlePathOf } from "./FriendsButton";
 import { FriendRow, GoogleMark, PersonAvatar } from "./SocialBits";
 import { FriendPartyAction } from "../party/FriendPartyAction";
 
@@ -198,9 +197,8 @@ function FriendsCard() {
           <p className="friends-card__empty">{t("friends.emptyLong")}</p>
         ) : (
           friends.map((friend) => {
-            const path = titlePathOf(friend);
             return (
-              <FriendRow key={friend.id} friend={friend} onOpen={path ? () => navigate(path) : undefined}>
+              <FriendRow key={friend.id} friend={friend} onOpen={() => navigate(`/friend/${friend.id}`)}>
                 <FriendPartyAction friend={friend} />
                 <button
                   className="icon-button friend-row__remove"

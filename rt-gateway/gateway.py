@@ -52,6 +52,7 @@ DOWN_EXIT_AFTER = 3
 WATCHDOG_EVERY = 20
 SEARCH_ORDER = "o=10&s=2"
 PAGE_MARK = "kinuza-gateway"
+PROBE_QUERY = "Матрица"
 
 log = logging.getLogger("gateway")
 
@@ -101,6 +102,10 @@ TORRENT_EXTRACTOR = r"""() => {
     (async () => {
       try {
         const response = await fetch("dl.php?t=__ID__", { credentials: "same-origin", signal: AbortSignal.timeout(20000) });
+        if (response.status === 403 && response.headers.get("cf-mitigated") === "challenge") {
+          job.error = "challenge";
+          return;
+        }
         const bytes = new Uint8Array(await response.arrayBuffer());
         if (!response.ok || bytes.length === 0 || bytes[0] !== 0x64) {
           job.error = "not_a_torrent:" + response.status;
@@ -157,7 +162,6 @@ SIZES_EXTRACTOR = r"""() => {
   return job.done ? { pending: false, sizes: job.sizes } : { pending: true };
 }"""
 
-INDEX_EXTRACTOR = "() => true"
 
 
 class GatewayError(Exception):
@@ -276,10 +280,19 @@ class Tracker:
             self.notified = False
         elif previous in ("ready", "starting") and state in ("login_required", "challenge"):
             self.notified = True
+            if state == "challenge" and self.page is not None:
+                try:
+                    await self.page.bring_to_front()
+                except Exception:
+                    pass
             await notify(
                 "Kinuza: поиск RuTracker через сервер остановился - "
-                + ("RuTracker просит войти в аккаунт." if state == "login_required" else "Cloudflare просит пройти проверку.")
-                + " Открой «RuTracker на сервере.bat» в C:\\Projects\\kinuza-tools и пройди вход или проверку."
+                + (
+                    "RuTracker просит войти в аккаунт. Открой «RuTracker на сервере.bat» в C:\\Projects\\kinuza-tools и войди."
+                    if state == "login_required"
+                    else "Cloudflare просит подтвердить, что ты человек. Открой «RuTracker на сервере.bat» в C:\\Projects\\kinuza-tools"
+                    " и нажми галочку на открытой странице поиска."
+                )
             )
 
     async def drop_page(self) -> None:
@@ -379,9 +392,11 @@ class Tracker:
         self.down_streak = 0
         self.count("tracker_request")
         script = PROBE.replace("__HOST__", HOST).replace("__EXTRACT__", job.extractor)
-        on_forum = urllib.parse.urlparse(self.page.url).hostname == HOST and self.state == "ready"
+        on_host = urllib.parse.urlparse(self.page.url).hostname == HOST
+        on_forum = on_host and self.state == "ready"
         expected = urllib.parse.urlparse(job.url).query
-        if job.navigate or not on_forum:
+        stay = job.probe and not job.navigate and on_host
+        if not stay and (job.navigate or not on_forum):
             try:
                 await self.page.goto(job.url, wait_until="domcontentloaded", timeout=NAVIGATION_TIMEOUT * 1000)
             except Exception as error:
@@ -428,10 +443,12 @@ class Tracker:
 
     async def recheck(self) -> None:
         await asyncio.sleep(5)
+        probe_url = forum_url(f"tracker.php?nm={cp1251(PROBE_QUERY)}&{SEARCH_ORDER}")
         while True:
             if self.state != "ready":
+                waiting = self.state == "challenge" and self.page is not None and "tracker.php" in self.page.url
                 try:
-                    await self.submit(2, forum_url("index.php"), INDEX_EXTRACTOR, lambda data: True if data else None, probe=True)
+                    await self.submit(2, probe_url, SEARCH_EXTRACTOR, search_accept, navigate=not waiting, probe=True)
                 except GatewayError:
                     pass
             await asyncio.sleep(RECHECK_EVERY)
@@ -680,6 +697,9 @@ async def torrent(request: web.Request) -> web.Response:
         extractor = TORRENT_EXTRACTOR.replace("__ID__", tid).replace("__JOB__", str(next(tracker.counter)))
         result = await tracker.submit(PRIORITY[kind], forum_url(f"viewtopic.php?t={tid}"), extractor, pending_accept("*"),
                                       navigate=False)
+        if result.get("error") == "challenge":
+            await tracker.set_state("challenge")
+            raise GatewayError("gateway_challenge")
         if not result.get("data"):
             log.warning("torrent %s unavailable: %s", tid, str(result.get("error"))[:80])
             raise GatewayError("torrent_file_unavailable", 502)
@@ -756,6 +776,7 @@ async def start(app: web.Application) -> None:
 def main() -> None:
     logging.basicConfig(level=os.environ.get("GATEWAY_LOG", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
     logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     if not KEY:
         raise SystemExit("GATEWAY_KEY is not set")
     app = web.Application(middlewares=[guard], client_max_size=64 * 1024)

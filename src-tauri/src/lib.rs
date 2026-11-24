@@ -25,6 +25,7 @@ mod media_keys;
 mod metadata;
 mod mpv;
 mod online_subtitles;
+mod profiles;
 mod report;
 mod rutracker;
 mod server;
@@ -160,6 +161,13 @@ pub fn run() {
             commands::associations_set,
             commands::open_default_apps_settings,
             store::store_get,
+            profiles::profiles_list,
+            profiles::profiles_create,
+            profiles::profiles_switch,
+            profiles::profiles_update,
+            profiles::profiles_remove,
+            profiles::profiles_set_ask,
+            profiles::profiles_other_sources,
             store::store_set,
             activity::activity_append,
             activity::activity_read,
@@ -196,6 +204,7 @@ pub fn run() {
             mpv::mpv_quit,
             mpv::mpv_add_subtitle_text,
             mpv::mpv_audio_filter,
+            mpv::mpv_upscale,
             mpv::mpv_stats,
             mpv::mpv_screenshot,
             files::save_screenshot,
@@ -223,6 +232,7 @@ pub fn run() {
             account::account_sign_in_dev,
             account::account_cancel_sign_in,
             account::account_call,
+            account::account_online,
             account::account_forget,
             account::account_sync_pull,
             account::account_sync_push,
@@ -299,6 +309,7 @@ async fn build_state(app: &tauri::AppHandle) -> anyhow::Result<AppState> {
     machine::raise_open_files();
     machine::describe_in_background();
     let updated_from = store::snapshot_on_version_change(&data_dir, &app.package_info().version.to_string());
+    profiles::start(&data_dir);
 
     let engine = Engine::start(
         default_download_dir.clone(),

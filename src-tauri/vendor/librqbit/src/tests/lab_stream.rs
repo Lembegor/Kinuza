@@ -46,6 +46,7 @@ async fn lab_stream_order() -> anyhow::Result<()> {
     let bytes = torrent.as_bytes()?;
 
     let mut seeds = Vec::new();
+    let mut seed_handles = Vec::new();
     let mut addrs: Vec<SocketAddr> = Vec::new();
     for (index, speed) in speeds.iter().enumerate() {
         let port = 17100 + index as u16;
@@ -79,6 +80,7 @@ async fn lab_stream_order() -> anyhow::Result<()> {
             .into_handle()
             .unwrap();
         handle.wait_until_completed().await?;
+        seed_handles.push(handle.clone());
         addrs.push((Ipv4Addr::LOCALHOST, port).into());
         seeds.push(session);
     }
@@ -112,6 +114,18 @@ async fn lab_stream_order() -> anyhow::Result<()> {
         .into_handle()
         .unwrap();
     handle.wait_until_initialized().await?;
+    let silent = env_u64("LAB_SILENT", 0) as usize;
+    if silent > 0 {
+        let at = env_u64("LAB_SILENT_MS", 800);
+        let quiet: Vec<_> = seed_handles.iter().take(silent).cloned().collect();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(at)).await;
+            for seed in &quiet {
+                seed.set_upload_enabled(false);
+            }
+            println!("lab: {} seeds went silent", quiet.len());
+        });
+    }
     let drop = (drop_at > 0).then(|| (drop_at, seeds.remove(0)));
     play(handle, size, piece, drop).await
 }
@@ -138,6 +152,33 @@ async fn play(
     let head = Arc::new(AtomicU64::new(start_offset));
     let done = Arc::new(AtomicBool::new(false));
     let cache_limit = (rate * cache_secs).min(1500 << 20);
+
+    let mut idle = handle.clone().stream(0).await?;
+    idle.seek(std::io::SeekFrom::End(0)).await?;
+    let tails = env_u64("LAB_TAILS", 0);
+    let tail_bytes = env_u64("LAB_TAIL_KB", 1024) << 10;
+    for index in 0..tails {
+        let handle = handle.clone();
+        tokio::spawn(async move {
+            let started = Instant::now();
+            let mut stream = handle.stream(0).await.unwrap();
+            stream.seek(std::io::SeekFrom::Start(size - tail_bytes)).await.unwrap();
+            let mut buf = vec![0u8; 64 * 1024];
+            let mut got = 0u64;
+            while got < tail_bytes {
+                match stream.read(&mut buf).await {
+                    Ok(0) => break,
+                    Ok(n) => got += n as u64,
+                    Err(e) => panic!("tail read error {e}"),
+                }
+            }
+            println!("lab: tail reader {index} got {got} bytes in {:.1}s", started.elapsed().as_secs_f64());
+        });
+    }
+    if env_u64("LAB_WINDOW", 0) == 1 {
+        let session = handle.shared.session.upgrade().unwrap();
+        session.update_only_files(&handle, &Default::default()).await?;
+    }
 
     let reader = {
         let (front, head, done, handle) = (front.clone(), head.clone(), done.clone(), handle.clone());

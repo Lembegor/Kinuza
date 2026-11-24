@@ -1,3 +1,4 @@
+import { AchievementsTab } from "../components/achievements/Achievements";
 import { useEffect, useMemo, useState } from "react";
 import { Link, NavLink, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ChevronDown, Clock, FileUp, Info, Pause, Pencil, X } from "lucide-react";
@@ -27,7 +28,7 @@ import { useProfile } from "../state/profile";
 import { fillRuntimes, useLedger } from "../state/stats";
 import { useSettings } from "../state/settings";
 
-type PeriodId = "all" | "year" | "month";
+export type PeriodId = "all" | "year" | "month";
 
 function capitalize(text: string): string {
   return text.charAt(0).toLocaleUpperCase() + text.slice(1);
@@ -84,7 +85,7 @@ function ProfileHeader({ ledger, onEdit }: { ledger: Ledger | null; onEdit: () =
   );
 }
 
-function TimeCard({ data, kind, onKind }: { data: Overview; kind: Kind | null; onKind: (kind: Kind | null) => void }) {
+export function TimeCard({ data, kind, onKind }: { data: Overview; kind: Kind | null; onKind?: (kind: Kind | null) => void }) {
   const { t, tn } = useT();
   const total = Math.max(1, kinds.reduce((sum, item) => sum + data.byKind[item].seconds, 0));
   const days = formatDaysHours(data.seconds);
@@ -117,8 +118,9 @@ function TimeCard({ data, kind, onKind }: { data: Overview; kind: Kind | null; o
             key={item}
             className={`profile-time__kind ${kind === item ? "is-active" : ""} ${kind !== null && kind !== item ? "is-dim" : ""}`}
             aria-pressed={kind === item}
-            title={kind === item ? t("profile.kind.clear") : t("profile.kind.only", { kind: t(kindLabels[item]) })}
-            onClick={() => onKind(kind === item ? null : item)}
+            title={onKind ? (kind === item ? t("profile.kind.clear") : t("profile.kind.only", { kind: t(kindLabels[item]) })) : undefined}
+            disabled={!onKind}
+            onClick={() => onKind?.(kind === item ? null : item)}
           >
             <i className={`dot kind-${item}`} />
             <span>{t(kindLabels[item])}</span>
@@ -133,21 +135,24 @@ function TimeCard({ data, kind, onKind }: { data: Overview; kind: Kind | null; o
   );
 }
 
-function Counters({ data, period }: { data: Overview; period: PeriodId }) {
+export function Counters({ data, period, friendSeries }: { data: Overview; period: PeriodId; friendSeries?: number }) {
   const { t, tn } = useT();
   const navigate = useNavigate();
   const status = useLibrary((state) => state.tracked);
-  const completedSeries = useMemo(
+  const ownSeries = useMemo(
     () => Object.entries(status).filter(([key, entry]) => key.startsWith("tv:") && entry.status === "completed").length,
     [status],
   );
+  const readOnly = friendSeries !== undefined;
+  const completedSeries = friendSeries ?? ownSeries;
+  const go = (path: string) => (readOnly ? undefined : () => navigate(path));
   return (
-    <section className="profile-counters">
-      <button className="profile-card profile-counter" onClick={() => navigate("/library?status=completed")}>
+    <section className={`profile-counters ${readOnly ? "is-read-only" : ""}`}>
+      <button className="profile-card profile-counter" disabled={readOnly} onClick={go("/library?status=completed")}>
         <strong>{formatNumber(data.movies)}</strong>
         <span>{tn("profile.count.moviesWord", data.movies)}</span>
       </button>
-      <button className="profile-card profile-counter" onClick={() => navigate("/profile/history")}>
+      <button className="profile-card profile-counter" disabled={readOnly} onClick={go("/profile/history")}>
         <strong>{formatNumber(data.episodes)}</strong>
         <span>
           {tn("profile.count.episodesWord", data.episodes)}
@@ -158,7 +163,7 @@ function Counters({ data, period }: { data: Overview; period: PeriodId }) {
         <strong>{data.rating.count > 0 ? formatNumber(data.rating.mean, 1) : "-"}</strong>
         <span>{data.rating.count > 0 ? tn("profile.count.rating", data.rating.count) : t("profile.count.noRatings")}</span>
       </div>
-      <button className="profile-card profile-counter" onClick={() => navigate("/library?status=planned")}>
+      <button className="profile-card profile-counter" disabled={readOnly} onClick={go("/library?status=planned")}>
         <strong>{data.plannedSeconds > 0 ? formatHoursShort(data.plannedSeconds) : "-"}</strong>
         <span>
           {t("profile.count.planned")}
@@ -169,7 +174,7 @@ function Counters({ data, period }: { data: Overview; period: PeriodId }) {
   );
 }
 
-function Heatmap({ data, now }: { data: Overview; now: number }) {
+export function Heatmap({ data, now, readOnly = false }: { data: Overview; now: number; readOnly?: boolean }) {
   const { t, tn, locale } = useT();
   const navigate = useNavigate();
   const cells = useMemo(() => {
@@ -221,9 +226,9 @@ function Heatmap({ data, now }: { data: Overview; now: number }) {
             className={`profile-heat__cell level-${cell.level} ${cell.future ? "is-future" : ""}`}
             style={{ gridColumn: Math.floor(index / 7) + 2, gridRow: (index % 7) + 2 }}
             title={`${new Intl.DateTimeFormat(locale, { day: "numeric", month: "long", year: "numeric" }).format(parseDay(cell.day))}${cell.level > 0 ? ` · ${formatSeconds(cell.seconds)}` : ""}`}
-            tabIndex={cell.level > 0 ? 0 : -1}
+            tabIndex={cell.level > 0 && !readOnly ? 0 : -1}
             disabled={cell.level === 0}
-            onClick={() => navigate(`/profile/history?day=${cell.day}`)}
+            onClick={readOnly ? undefined : () => navigate(`/profile/history?day=${cell.day}`)}
           />
         ))}
       </div>
@@ -231,7 +236,7 @@ function Heatmap({ data, now }: { data: Overview; now: number }) {
   );
 }
 
-function MonthChart({ data }: { data: Overview }) {
+export function MonthChart({ data }: { data: Overview }) {
   const { t } = useT();
   const peak = Math.max(1, ...data.months.map(({ totals }) => totals.movie + totals.tv + totals.anime));
   const empty = data.months.every(({ totals }) => totals.movie + totals.tv + totals.anime === 0);
@@ -264,7 +269,7 @@ function MonthChart({ data }: { data: Overview }) {
   );
 }
 
-function Ratings({ data }: { data: Overview }) {
+export function Ratings({ data, friend = false }: { data: Overview; friend?: boolean }) {
   const { t } = useT();
   const peak = Math.max(1, ...data.rating.histogram);
   const top = data.rating.histogram.indexOf(Math.max(...data.rating.histogram));
@@ -274,7 +279,11 @@ function Ratings({ data }: { data: Overview }) {
       <div className="profile-card__head">
         <h2>{t("profile.ratings.title")}</h2>
         {versus !== null && Math.abs(versus) >= 0.1 && (
-          <span>{versus > 0 ? t("profile.ratings.kinder", { value: formatNumber(versus, 1) }) : t("profile.ratings.stricter", { value: formatNumber(-versus, 1) })}</span>
+          <span>
+            {versus > 0
+              ? t(friend ? "profile.ratings.friendKinder" : "profile.ratings.kinder", { value: formatNumber(versus, 1) })
+              : t(friend ? "profile.ratings.friendStricter" : "profile.ratings.stricter", { value: formatNumber(-versus, 1) })}
+          </span>
         )}
       </div>
       {data.rating.count < 5 ? (
@@ -295,7 +304,7 @@ function Ratings({ data }: { data: Overview }) {
   );
 }
 
-function Genres({ data }: { data: Overview }) {
+export function Genres({ data }: { data: Overview }) {
   const { t } = useT();
   const language = useSettings((state) => state.language);
   const names = useAsync(() => tmdb.genreNames(), [language], `genre-names:${language}`);
@@ -320,7 +329,7 @@ function Genres({ data }: { data: Overview }) {
   );
 }
 
-function Habits({ data }: { data: Overview }) {
+export function Habits({ data, friend = false }: { data: Overview; friend?: boolean }) {
   const { t, tn } = useT();
   const habits = data.habits;
   const lines: string[] = [];
@@ -328,7 +337,8 @@ function Habits({ data }: { data: Overview }) {
     const part = habits.parts.indexOf(Math.max(...habits.parts));
     const weekdays = habits.weekdays.slice(0, 5).reduce((sum, value) => sum + value, 0) / 5;
     const weekend = (habits.weekdays[5] + habits.weekdays[6]) / 2;
-    lines.push(t(`profile.habits.part.${part}` as "profile.habits.part.0", { when: weekend > weekdays * 1.3 ? t("profile.habits.weekend") : t("profile.habits.weekdays") }));
+    const partKey = (friend ? `profile.habits.friendPart.${part}` : `profile.habits.part.${part}`) as "profile.habits.part.0";
+    lines.push(t(partKey, { when: weekend > weekdays * 1.3 ? t("profile.habits.weekend") : t("profile.habits.weekdays") }));
   }
   if (data.recordDay) lines.push(t("profile.habits.record", { count: tn("common.episodes", data.recordDay.episodes), title: data.recordDay.name }));
   if (habits?.audio) {
@@ -342,7 +352,7 @@ function Habits({ data }: { data: Overview }) {
   }
   if (habits && habits.voices.length > 0) lines.push(t("profile.habits.voice", { name: habits.voices[0].name }));
   if (habits && habits.intro >= 60) lines.push(t("profile.habits.intro", { time: formatSeconds(habits.intro) }));
-  if (data.longestStreak > 1 && data.currentStreak > 1) lines.push(tn("profile.habits.current", data.currentStreak));
+  if (data.longestStreak > 1 && data.currentStreak > 1) lines.push(tn(friend ? "profile.habits.friendCurrent" : "profile.habits.current", data.currentStreak));
   return (
     <section className="profile-card">
       <div className="profile-card__head">
@@ -361,7 +371,7 @@ function Habits({ data }: { data: Overview }) {
   );
 }
 
-function Details({ data }: { data: Overview }) {
+export function Details({ data }: { data: Overview }) {
   const { t, tn, locale } = useT();
   const [open, setOpen] = useState(false);
   const decadePeak = Math.max(1, ...data.decades.map((item) => item.seconds));
@@ -534,11 +544,11 @@ function ProfileOverview({ ledger }: { ledger: Ledger }) {
   );
 }
 
-function SidePoster({ path }: { path: string | null }) {
+export function SidePoster({ path }: { path: string | null }) {
   return <span className="side-item__poster">{path && <img src={imageUrl(path, "w185") ?? undefined} alt="" loading="lazy" draggable={false} />}</span>;
 }
 
-function titlePath(key: string): string {
+export function titlePath(key: string): string {
   const [type, id] = key.split(":");
   return `/title/${type}/${id}`;
 }
@@ -628,7 +638,7 @@ function TopCard({ data }: { data: Overview }) {
   );
 }
 
-function shortDay(at: number, locale: string, t: ReturnType<typeof useT>["t"]): string {
+export function shortDay(at: number, locale: string, t: ReturnType<typeof useT>["t"]): string {
   const day = dayKey(at);
   const today = new Date();
   if (day === dayKey(today.getTime())) return t("profile.side.today");
@@ -696,10 +706,13 @@ export default function Profile() {
         </NavLink>
         <NavLink to="/profile/history">{t("profile.tab.history")}</NavLink>
         {years.length > 0 && <NavLink to={`/profile/year?y=${year}`}>{t("profile.tab.year", { year })}</NavLink>}
+        <NavLink to="/profile/achievements">{t("profile.tab.achievements")}</NavLink>
         <NavLink to="/profile/friends">{t("profile.tab.friends")}</NavLink>
       </nav>
       {tab === "friends" ? (
         <FriendsTab />
+      ) : tab === "achievements" ? (
+        <AchievementsTab />
       ) : !ledger ? (
         <div className="profile-skeleton">
           <div className="profile-card" />

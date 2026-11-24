@@ -801,7 +801,7 @@ impl Engine {
                 .collect::<Vec<_>>()
                 .join(",");
             tracing::info!(
-                "swarm {} state={:?} paused={} only_files={:?} have={}MB selected_total={}MB speed={:.2}MiB/s peers_by_state={:?} aggregate={} attempts={} connections={} errors={} incoming={} fetched={}MB trackers={} watching={} streams=[{}]",
+                "swarm {} state={:?} paused={} only_files={:?} have={}MB selected_total={}MB speed={:.2}MiB/s peers_by_state={:?} aggregate={} attempts={} connections={} errors={} incoming={} fetched={}MB trackers={} watching={} streams=[{}] work={}",
                 &info_hash[..8],
                 stats.state,
                 handle.is_paused(),
@@ -819,6 +819,7 @@ impl Engine {
                 handle.shared().trackers.len(),
                 self.watching.lock().unwrap().get(&info_hash).map(|watch| watch.file).map_or("-".to_owned(), |file| file.to_string()),
                 streams,
+                handle.stream_diagnostics().unwrap_or_default(),
             );
         }
     }

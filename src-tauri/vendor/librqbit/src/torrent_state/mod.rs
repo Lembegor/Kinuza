@@ -298,6 +298,10 @@ impl ManagedTorrent {
         }
     }
 
+    pub fn stream_diagnostics(&self) -> Option<String> {
+        self.live().map(|live| live.stream_diagnostics())
+    }
+
     pub fn live(&self) -> Option<Arc<TorrentStateLive>> {
         let g = self.locked.read();
         match &g.state {

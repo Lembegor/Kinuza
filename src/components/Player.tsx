@@ -76,7 +76,7 @@ import { useSoundSegments } from "./useSoundSegments";
 import { PlayerEpisodes } from "./PlayerEpisodes";
 import { episodeLayout, inLayout } from "../lib/episodeLayout";
 import { isWatched, titleKey, unitKey, useLibrary, type Source } from "../state/library";
-import { useSettings, type SubtitleBackground, type SubtitleColor, type SubtitleFont, type VideoQuality } from "../state/settings";
+import { useSettings, type AnimeUpscale, type SubtitleBackground, type SubtitleColor, type SubtitleFont, type VideoQuality } from "../state/settings";
 import { fileProgress, useTorrents } from "../state/torrents";
 import { useUi, type PlayerSession } from "../state/ui";
 import { report } from "../lib/journal";
@@ -149,6 +149,8 @@ const healthCheckMs = 5000;
 const droppedFramesPerCheck = 25;
 const badChecksToSimplify = 2;
 const qualitySteps: VideoQuality[] = ["high", "balanced", "fast"];
+const upscaleMaxHeight = 1100;
+const upscaleLevels: AnimeUpscale[] = ["off", "normal", "max"];
 const qualityProperties: Record<VideoQuality, [string, unknown][]> = {
   high: [["scale", "ewa_lanczossharp"], ["dscale", "mitchell"], ["cscale", "spline36"], ["deband", true]],
   balanced: [["scale", "spline36"], ["dscale", "mitchell"], ["cscale", "spline36"], ["deband", false]],
@@ -1165,6 +1167,17 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
     if (!usingMpv) return;
     for (const [name, value] of qualityProperties[sessionQuality]) void mpv.set(name, value).catch(() => undefined);
   }, [usingMpv, sessionQuality, generation]);
+
+  const [upscaleDropped, setUpscaleDropped] = useState(false);
+  const videoHeight = Number(resolution.split("×")[1] ?? 0);
+  const animeTitle = titleDetails.data?.isAnime ?? false;
+  const upscaleLevel: AnimeUpscale =
+    usingMpv && animeTitle && !upscaleDropped && (videoHeight === 0 || videoHeight <= upscaleMaxHeight) ? settings.animeUpscale : "off";
+
+  useEffect(() => {
+    if (!usingMpv) return;
+    void mpv.upscale(upscaleLevel).catch(() => undefined);
+  }, [usingMpv, upscaleLevel, generation]);
 
   useEffect(() => {
     if (usingMpv) void mpv.audioFilter(settings.audioMode, filterStretch).catch(() => undefined);
@@ -2895,10 +2908,10 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
   const dropCheck = useRef({ last: -1, bad: 0 });
   useEffect(() => {
     dropCheck.current = { last: -1, bad: 0 };
-  }, [source?.id, sessionQuality]);
+  }, [source?.id, sessionQuality, upscaleLevel]);
 
   useEffect(() => {
-    if (!usingMpv || !settings.autoSimplify || !playing || buffering || sessionQuality === "fast") return;
+    if (!usingMpv || !settings.autoSimplify || !playing || buffering || (sessionQuality === "fast" && upscaleLevel === "off")) return;
     const timer = setInterval(() => {
       void mpv
         .stats(["frame-drop-count", "decoder-frame-drop-count"])
@@ -2909,6 +2922,11 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
           check.last = dropped;
           if (check.bad < badChecksToSimplify) return;
           check.bad = 0;
+          if (upscaleLevel !== "off") {
+            setUpscaleDropped(true);
+            toast(t("player.upscale.dropped"), "info", { label: t("player.quality.restore"), run: () => setUpscaleDropped(false) });
+            return;
+          }
           const next = qualitySteps[Math.min(qualitySteps.length - 1, qualitySteps.indexOf(sessionQuality) + 1)];
           setSessionQuality(next);
           toast(t("player.quality.simplified"), "info", {
@@ -2919,7 +2937,7 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
         .catch(() => undefined);
     }, healthCheckMs);
     return () => clearInterval(timer);
-  }, [usingMpv, settings.autoSimplify, playing, buffering, sessionQuality]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [usingMpv, settings.autoSimplify, playing, buffering, sessionQuality, upscaleLevel]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const diagnosticsDrops = useRef(-1);
   useEffect(() => {
@@ -2947,7 +2965,7 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
             return Number.isFinite(value) ? value.toFixed(digits) : "-";
           };
           void backend.appLog(
-            `player: health at ${Math.round(filmTime())}s ${stats["video-codec"] ?? "-"} ${number("width")}x${number("height")} hwdec=${stats["hwdec-current"] ?? "-"} vo=${stats["current-vo"] ?? "-"} fps=${number("estimated-vf-fps", 1)}/${number("container-fps", 1)} display=${number("display-fps", 1)}/${number("estimated-display-fps", 1)} jitter=${number("vsync-jitter", 3)} sync=${stats["video-sync"] ?? "-"} ao=${stats["current-ao"] ?? "-"} bitrate=${Math.round(Number(stats["video-bitrate"] ?? 0) / 1000)}kbps cache_ahead=${number("demuxer-cache-duration", 1)}s dropped_last_30s=${fresh} dropped_total=${dropped} speed=${number("speed", 2)} quality=${sessionQuality}`,
+            `player: health at ${Math.round(filmTime())}s ${stats["video-codec"] ?? "-"} ${number("width")}x${number("height")} hwdec=${stats["hwdec-current"] ?? "-"} vo=${stats["current-vo"] ?? "-"} fps=${number("estimated-vf-fps", 1)}/${number("container-fps", 1)} display=${number("display-fps", 1)}/${number("estimated-display-fps", 1)} jitter=${number("vsync-jitter", 3)} sync=${stats["video-sync"] ?? "-"} ao=${stats["current-ao"] ?? "-"} bitrate=${Math.round(Number(stats["video-bitrate"] ?? 0) / 1000)}kbps cache_ahead=${number("demuxer-cache-duration", 1)}s dropped_last_30s=${fresh} dropped_total=${dropped} speed=${number("speed", 2)} quality=${sessionQuality} upscale=${upscaleLevel}`,
           );
         })
         .catch(() => undefined);
@@ -3858,6 +3876,25 @@ function PlayerView({ session, placement, onReturn }: { session: PlayerSession; 
                 onPick={() => switchSource(item)}
               />
             ))}
+            {usingMpv && animeTitle && (
+              <>
+                <h3>{t("player.upscale")}</h3>
+                {upscaleLevels.map((level) => (
+                  <button
+                    key={level}
+                    className="player__menu-item"
+                    onClick={() => {
+                      setUpscaleDropped(false);
+                      settings.patch({ animeUpscale: level });
+                    }}
+                  >
+                    {settings.animeUpscale === level ? <Check size={15} /> : <i />}
+                    <span>{t(`settings.player.upscale.${level}`)}</span>
+                  </button>
+                ))}
+                {settings.animeUpscale !== "off" && upscaleLevel === "off" && <p className="player__menu-note">{upscaleDropped ? t("player.upscale.droppedNote") : t("player.upscale.sharpNote")}</p>}
+              </>
+            )}
             {pickTarget && (
               <>
                 <h3>{t("player.release.others")}</h3>

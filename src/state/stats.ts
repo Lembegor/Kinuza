@@ -109,6 +109,34 @@ export function useActivityEvents(): { events: ActivityEvent[]; loaded: boolean 
   return state;
 }
 
+function ledgerKeys(tracked: object, progress: object, events: ActivityEvent[]): string[] {
+  const set = new Set<string>(Object.keys(tracked));
+  for (const unit of Object.keys(progress)) set.add(keyOfUnit(unit));
+  for (const event of events) {
+    const title = event.title as { type?: string; id?: number } | undefined;
+    if (title && typeof title.id === "number" && (title.type === "movie" || title.type === "tv")) set.add(titleKey(title.type, title.id));
+  }
+  return [...set];
+}
+
+export async function buildLedgerNow(): Promise<Ledger | null> {
+  const library = useLibrary.getState();
+  const profile = useProfile.getState();
+  if (!library.loaded || !profile.loaded) return null;
+  const events = await readActivity();
+  await loadInfo(ledgerKeys(library.tracked, library.progress, events));
+  return buildLedger({
+    tracked: library.tracked,
+    progress: library.progress,
+    preferences: library.preferences,
+    events,
+    info: infoMap(),
+    hidden: profile.hidden,
+    archive: profile.archive,
+    journalSince: profile.journalSince,
+  });
+}
+
 export function useLedger(): { ledger: Ledger | null; events: ActivityEvent[] } {
   const { events, loaded } = useActivityEvents();
   const tracked = useLibrary((state) => state.tracked);
@@ -121,15 +149,7 @@ export function useLedger(): { ledger: Ledger | null; events: ActivityEvent[] } 
   const profileLoaded = useProfile((state) => state.loaded);
   const [infoVersion, setInfoVersion] = useState(0);
 
-  const keys = useMemo(() => {
-    const set = new Set<string>(Object.keys(tracked));
-    for (const unit of Object.keys(progress)) set.add(keyOfUnit(unit));
-    for (const event of events) {
-      const title = event.title as { type?: string; id?: number } | undefined;
-      if (title && typeof title.id === "number" && (title.type === "movie" || title.type === "tv")) set.add(titleKey(title.type, title.id));
-    }
-    return [...set];
-  }, [tracked, progress, events]);
+  const keys = useMemo(() => ledgerKeys(tracked, progress, events), [tracked, progress, events]);
 
   useEffect(() => {
     let alive = true;

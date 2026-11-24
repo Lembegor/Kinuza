@@ -456,13 +456,68 @@ button.friend-row__main:disabled {
   margin: 0;
 }
 
+.add-friend__field {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.add-friend__field > svg {
+  position: absolute;
+  left: 14px;
+  color: var(--muted);
+  pointer-events: none;
+}
+
+.add-friend__field > svg.spin {
+  left: auto;
+  right: 14px;
+}
+
 .add-friend__input {
+  width: 100%;
   height: 44px;
-  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
-  font-size: 20px;
-  letter-spacing: 0.12em;
-  text-align: center;
-  text-transform: uppercase;
+  padding-left: 40px;
+  padding-right: 40px;
+  font-size: 16px;
+}
+
+.add-friend__results {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.add-friend__person {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border-radius: var(--radius-s);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.add-friend__person b,
+.add-friend__found b {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.add-friend__person small {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.add-friend__nobody {
+  margin: 0;
+  padding: 10px 4px;
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .add-friend__found {
@@ -514,4 +569,42 @@ button.friend-row__main:disabled {
 
 .sign-in-wait .dialog__actions {
   justify-content: center;
+}
+
+.friend-profile__back {
+  align-self: flex-start;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.friend-profile .profile-head__text p a {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: rgba(255, 255, 255, 0.35);
+}
+
+.friend-profile__note {
+  margin-top: 18px;
+}
+
+.friend-profile__problem {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.friend-profile__problem p {
+  flex: 1;
+  margin: 0;
+  color: #ff8a8d;
+}
+
+.profile-counters.is-read-only .profile-counter:disabled {
+  cursor: default;
+  opacity: 1;
+}
+
+.profile-time__kind:disabled {
+  cursor: default;
+  opacity: 1;
 }

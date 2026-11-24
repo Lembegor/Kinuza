@@ -77,7 +77,7 @@ fn random_text(bytes: usize) -> String {
 }
 
 fn token_path(data_dir: &Path) -> PathBuf {
-    data_dir.join(TOKEN_FILE)
+    crate::profiles::personal_dir(data_dir).join(TOKEN_FILE)
 }
 
 #[cfg(windows)]
@@ -164,6 +164,12 @@ fn save_token(data_dir: &Path, token: &str) -> Result<(), String> {
         *known = Some(token.to_owned());
     }
     Ok(())
+}
+
+pub fn forget_cached_token() {
+    if let Ok(mut known) = TOKEN.lock() {
+        *known = None;
+    }
 }
 
 fn forget_token(data_dir: &Path) {
@@ -399,7 +405,8 @@ fn allowed(method: &str, path: &str) -> bool {
         ("GET" | "PATCH" | "DELETE", "me")
             | ("POST", "presence" | "auth/signout" | "auth/signout-all")
             | ("POST", "friends/request" | "friends/accept" | "friends/decline" | "friends/cancel" | "friends/remove")
-            | ("GET", "friends/lookup")
+            | ("GET", "friends/lookup" | "friends/search" | "friends/card" | "friends/feed")
+            | ("PUT", "me/card")
             | ("POST", "party/ticket")
             | ("GET", "party/wait")
     )
@@ -432,6 +439,16 @@ pub async fn account_call(state: State<'_, AppState>, method: String, path: Stri
         forget_token(&state.data_dir);
     }
     Ok(value)
+}
+
+#[tauri::command]
+pub async fn account_online() -> Result<Option<u64>, String> {
+    let response = send(|base| client().get(format!("{base}online"))).await?;
+    if !response.status().is_success() {
+        return Ok(None);
+    }
+    let value = response.json::<Value>().await.unwrap_or(Value::Null);
+    Ok(value.get("online").and_then(Value::as_u64))
 }
 
 #[tauri::command]
@@ -517,6 +534,9 @@ mod tests {
     fn only_known_paths_go_out() {
         assert!(allowed("GET", "me"));
         assert!(allowed("POST", "friends/request"));
+        assert!(allowed("GET", "friends/search"));
+        assert!(allowed("PUT", "me/card"));
+        assert!(!allowed("PUT", "me"));
         assert!(!allowed("POST", "sync"));
         assert!(!allowed("GET", "auth/dev"));
         assert!(!allowed("POST", "../admin"));

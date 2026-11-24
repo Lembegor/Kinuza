@@ -8,8 +8,9 @@ import { useUi } from "./ui";
 
 const checkDelayMs = 4000;
 
-function deleteWatchedDownloads(): void {
+async function deleteWatchedDownloads(): Promise<void> {
   if (!useSettings.getState().autoDeleteWatched) return;
+  const others = new Set((await backend.profilesOtherSources().catch(() => null)) ?? []);
   const { sources, progress } = useLibrary.getState();
   const { byHash } = useTorrents.getState();
   const playing = useUi.getState().player?.unitKey;
@@ -22,7 +23,7 @@ function deleteWatchedDownloads(): void {
   for (const [infoHash, units] of unitsByTorrent) {
     const torrent = byHash[infoHash];
     const downloaded = torrent !== undefined && torrent.finished && torrent.totalBytes > 0;
-    if (!downloaded || units.includes(playing ?? "") || !units.every((unit) => isWatched(progress[unit]))) continue;
+    if (!downloaded || others.has(infoHash.toLowerCase()) || units.includes(playing ?? "") || !units.every((unit) => isWatched(progress[unit]))) continue;
 
     void backend
       .remove(infoHash, true)
@@ -39,7 +40,7 @@ export function startWatchedCleanup(): () => void {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const schedule = () => {
     clearTimeout(timer);
-    timer = setTimeout(deleteWatchedDownloads, checkDelayMs);
+    timer = setTimeout(() => void deleteWatchedDownloads(), checkDelayMs);
   };
   const stopLibrary = useLibrary.subscribe(schedule);
   const stopPlayer = useUi.subscribe(schedule);

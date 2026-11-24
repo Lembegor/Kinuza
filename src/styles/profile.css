@@ -1228,3 +1228,267 @@ a.button {
   color: var(--text);
   text-decoration: none;
 }
+
+.profile-chip {
+  --chip: #4f7cff;
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  overflow: hidden;
+  border-radius: 28%;
+  background: linear-gradient(145deg, color-mix(in srgb, var(--chip) 92%, #fff 8%), color-mix(in srgb, var(--chip) 62%, #000 38%));
+  color: #fff;
+  font-weight: 800;
+  line-height: 1;
+  user-select: none;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+
+.profile-chip img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.profile-chip.is-red, .profile-colors__dot.is-red { --chip: #e5484d; }
+.profile-chip.is-orange, .profile-colors__dot.is-orange { --chip: #f07a2b; }
+.profile-chip.is-yellow, .profile-colors__dot.is-yellow { --chip: #e0a91b; }
+.profile-chip.is-green, .profile-colors__dot.is-green { --chip: #2fa865; }
+.profile-chip.is-teal, .profile-colors__dot.is-teal { --chip: #1aa3a3; }
+.profile-chip.is-blue, .profile-colors__dot.is-blue { --chip: #4f7cff; }
+.profile-chip.is-violet, .profile-colors__dot.is-violet { --chip: #8e5cf0; }
+.profile-chip.is-pink, .profile-colors__dot.is-pink { --chip: #e0529c; }
+
+.profile-colors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.profile-colors__dot {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--chip);
+  color: #fff;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+  transition: transform 0.15s var(--ease);
+}
+
+.profile-colors__dot:hover {
+  transform: scale(1.08);
+}
+
+.profile-colors__dot.is-on {
+  box-shadow:
+    0 0 0 2px var(--bg),
+    0 0 0 4px var(--chip);
+}
+
+.profile-new {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.profile-new__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.profile-new__row .input {
+  flex: 1;
+  height: 42px;
+  font-size: 15px;
+}
+
+.profile-new__problem,
+.who-watches__problem {
+  color: #ff8d90;
+  font-size: 13px;
+}
+
+.profile-menu__person span:not(.profile-chip) {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-menu button.profile-menu__person svg {
+  color: var(--accent);
+}
+
+.profile-menu hr {
+  margin: 6px 4px;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+.who-watches {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  padding: 32px;
+  background:
+    radial-gradient(1200px 600px at 50% 20%, rgba(79, 124, 255, 0.12), transparent 70%),
+    rgba(8, 8, 11, 0.97);
+  animation: fade 0.25s;
+}
+
+.who-watches__inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 34px;
+  max-width: 960px;
+  animation: rise 0.45s var(--ease);
+}
+
+.who-watches h1 {
+  font-family: var(--font-display);
+  font-size: clamp(28px, 3.4vw, 44px);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.who-watches__grid {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 26px;
+}
+
+.who-watches__tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  width: 132px;
+  color: var(--muted);
+  font-size: 15px;
+  font-weight: 600;
+  transition: color 0.15s;
+}
+
+.who-watches__tile .profile-chip,
+.who-watches__plus {
+  transition:
+    transform 0.2s var(--ease),
+    box-shadow 0.2s;
+}
+
+.who-watches__tile:hover,
+.who-watches__tile:focus-visible {
+  color: var(--text);
+}
+
+.who-watches__tile:hover .profile-chip,
+.who-watches__tile:focus-visible .profile-chip {
+  transform: translateY(-4px);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.12),
+    0 0 0 3px var(--text),
+    0 18px 40px rgba(0, 0, 0, 0.5);
+}
+
+.who-watches__tile:disabled {
+  opacity: 0.6;
+}
+
+.who-watches__tile span:not(.profile-chip):not(.who-watches__plus) {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.who-watches__plus {
+  display: grid;
+  place-items: center;
+  width: 112px;
+  height: 112px;
+  border-radius: 28%;
+  border: 2px dashed var(--line-strong);
+  color: var(--muted);
+}
+
+.who-watches__tile.is-add:hover .who-watches__plus,
+.who-watches__tile.is-add:focus-visible .who-watches__plus {
+  transform: translateY(-4px);
+  border-color: var(--text);
+  color: var(--text);
+}
+
+.who-watches__new {
+  width: min(420px, 100%);
+}
+
+.who-watches__ask {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.who-watches__ask.is-inline {
+  margin-top: 16px;
+}
+
+.profiles-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 0 14px;
+  padding: 0;
+  list-style: none;
+}
+
+.profiles-list__item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px;
+  border-radius: var(--radius-m);
+}
+
+.profiles-list__item:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.profiles-list__item.is-editing {
+  flex-direction: column;
+  align-items: stretch;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.profiles-list__text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.profiles-list__text b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profiles-list__text small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.profiles-dialog__add {
+  align-self: flex-start;
+}

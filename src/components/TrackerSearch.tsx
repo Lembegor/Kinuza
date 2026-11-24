@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, ChevronDown, ExternalLink, HardDrive, LoaderCircle, LogIn, Monitor, Search, Server, Sparkles } from "lucide-react";
+import { ArrowUp, ChevronDown, ExternalLink, HardDrive, LoaderCircle, LogIn, Monitor, Search, Server, ShieldAlert, Sparkles } from "lucide-react";
 import { animeInfo } from "../lib/anilist";
 import { backend, isDesktop, type TorrentPreview } from "../lib/backend";
 import { t, useT, type MessageKey } from "../lib/i18n";
@@ -15,7 +15,7 @@ import {
   type TrackerRelease,
   type VoiceKind,
 } from "../lib/parse";
-import { isServerError, rutracker, rutrackerErrors, serverProblemOf, trackerRoute, type RutrackerItem, type ServerProblem, type TrackerRoute, type VideoSize } from "../lib/rutracker";
+import { isServerError, rutracker, rutrackerErrors, serverProblemOf, serverProblemOfState, trackerRoute, type RutrackerItem, type ServerProblem, type TrackerRoute, type VideoSize } from "../lib/rutracker";
 import { buildProfiles, matchSeasons, seasonQueries, taskKey, type SearchTask, type SeasonMatch, type SeasonProfile } from "../lib/seasonSearch";
 import { animeTrackerNames } from "../lib/localized";
 import { arcOf, episodeLayout, overlaps, releaseCoverage, type Coverage, type EpisodeLayout, type ReleaseCoverage } from "../lib/episodeLayout";
@@ -376,7 +376,7 @@ export function TrackerSearch({
         } catch (failure) {
           if (task.generation !== state.generation || task.quiet) continue;
           state.queue = [];
-          if (isServerError(failure)) setServerProblem(serverProblemOf(failure));
+          if (isServerError(failure)) serverUnavailable(serverProblemOf(failure));
           else if (failure === rutrackerErrors.authRequired) setNeedsAuth(true);
           else setError(searchErrorText(failure));
           setLoading(false);
@@ -386,6 +386,11 @@ export function TrackerSearch({
       state.busy = false;
       setExtraLeft(0);
     }
+  };
+
+  const serverUnavailable = (problem: ServerProblem) => {
+    setServerProblem(problem);
+    setItems((known) => known.filter((item) => !isRutrackerId(item.id)));
   };
 
   const enqueue = (tasks: SearchTask[]) => {
@@ -410,9 +415,17 @@ export function TrackerSearch({
     setAlternativesQueued(false);
     const generation = state.generation;
     const query = activeQuery.trim();
-    void trackerRoute().then((chosen) => {
+    void trackerRoute().then(async (chosen) => {
       if (state.generation !== generation) return;
       setRoute(chosen);
+      if (chosen === "server") {
+        const problem = serverProblemOfState((await rutracker.serverStatus()).state);
+        if (state.generation !== generation) return;
+        if (problem) {
+          serverUnavailable(problem);
+          return;
+        }
+      }
       enqueue([{ query, page: 0, quiet: false, season: null }]);
     });
     void searchOthers(query, generation);
@@ -666,7 +679,11 @@ export function TrackerSearch({
     });
     setResolvingId(row.item.id);
     const release = isRutrackerId(row.item.id) ? rutracker.inspectRelease(row.item.id) : inspectTracker(row.item.id);
-    release.catch(() => undefined).finally(() => setResolvingId(null));
+    release
+      .catch((failure) => {
+        if (isRutrackerId(row.item.id) && isServerError(failure)) serverUnavailable(serverProblemOf(failure));
+      })
+      .finally(() => setResolvingId(null));
     if (layout && row.coverage?.kind === "recut") {
       const arc = row.coverage.range ? arcOf(layout, row.coverage.range.first) : null;
       onPick(release, row.item.id, arc?.season ?? layout.arcs[0]?.season, false, null, true);
@@ -699,11 +716,16 @@ export function TrackerSearch({
 
       {route === "server" && !needsAuth && serverProblem === null && (
         <div className="tracker-route">
-          <Server size={15} className="tracker-route__icon" />
-          <span className="tracker-route__text">{t("tracker.server.via")}</span>
+          <span className="tracker-route__badge">
+            <Server size={16} />
+          </span>
+          <span className="tracker-route__text">
+            <b>{t("tracker.server.via")}</b>
+            <small>{t("tracker.server.viaHint")}</small>
+          </span>
           <button
             type="button"
-            className="button button--small tracker-route__login"
+            className="button button--primary button--small tracker-route__login"
             title={t("tracker.server.loginHint")}
             disabled={authBusy}
             onClick={() => void handleLogin()}
@@ -714,10 +736,16 @@ export function TrackerSearch({
         </div>
       )}
 
-      {serverProblem !== null ? (
-        <div className="tracker-auth">
-          <p className="archive__note">{t(`tracker.server.problem.${serverProblem}`)}</p>
-          <div className="tracker-auth__actions">
+      {serverProblem !== null && !needsAuth && (
+        <div className="tracker-alert" role="status">
+          <span className="tracker-alert__icon">
+            <ShieldAlert size={20} />
+          </span>
+          <div className="tracker-alert__text">
+            <b>{t(`tracker.server.problemTitle.${serverProblem}`)}</b>
+            <p>{t(`tracker.server.problem.${serverProblem}`)}</p>
+          </div>
+          <div className="tracker-alert__actions">
             <button type="button" className="button button--primary" disabled={authBusy} onClick={() => void handleLogin()}>
               {authBusy ? <LoaderCircle size={16} className="spin" /> : <LogIn size={16} />}
               {t("tracker.server.login")}
@@ -727,7 +755,9 @@ export function TrackerSearch({
             </button>
           </div>
         </div>
-      ) : needsAuth ? (
+      )}
+
+      {needsAuth ? (
         <div className="tracker-auth">
           <p className="archive__note">{t("tracker.auth.note")}</p>
           <button type="button" className="button button--primary" disabled={authBusy} onClick={() => void handleLogin()}>

@@ -1,4 +1,4 @@
-import type { AudioMode } from "../state/settings";
+import type { AnimeUpscale, AudioMode } from "../state/settings";
 import { isMac, isWindows } from "./platform";
 
 export interface MpvStatus {
@@ -54,6 +54,7 @@ export const mpv = {
   set: (name: string, value: unknown) => invoke<void>("mpv_set", { name, value }),
   place: (x: number, y: number, width: number, height: number) => invoke<void>("mpv_place", { x, y, width, height }),
   addSubtitleText: (text: string, title: string) => invoke<void>("mpv_add_subtitle_text", { text, title }),
+  upscale: (level: AnimeUpscale) => invoke<void>("mpv_upscale", { level }),
   audioFilter: (mode: AudioMode, stretch = 1) => invoke<void>("mpv_audio_filter", { mode, stretch: stretch === 1 ? null : stretch }),
   stats: (names?: string[]) => invoke<Record<string, unknown>>("mpv_stats", { names: names ?? null }),
   screenshot: (label: string) => invoke<string>("mpv_screenshot", { label }),

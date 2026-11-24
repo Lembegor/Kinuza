@@ -70,9 +70,19 @@ pub struct StoredDocument {
 
 static STORE_WRITES: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+const SHARED_STORES: &[&str] = &["catalog-cache", "imdb-ids", "availability", "journal"];
+
+fn store_folder(data_dir: &Path, name: &str, main: bool) -> PathBuf {
+    if main || SHARED_STORES.contains(&name) {
+        data_dir.join(STORE_FOLDER_NAME)
+    } else {
+        crate::profiles::personal_dir(data_dir).join(STORE_FOLDER_NAME)
+    }
+}
+
 #[tauri::command]
-pub async fn store_get(state: State<'_, AppState>, name: String) -> Result<Option<StoredDocument>, String> {
-    let folder = state.data_dir.join(STORE_FOLDER_NAME);
+pub async fn store_get(state: State<'_, AppState>, name: String, main: Option<bool>) -> Result<Option<StoredDocument>, String> {
+    let folder = store_folder(&state.data_dir, &name, main.unwrap_or(false));
     tauri::async_runtime::spawn_blocking(move || {
         let _writing = STORE_WRITES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         read_document(&folder, &name)
@@ -82,8 +92,8 @@ pub async fn store_get(state: State<'_, AppState>, name: String) -> Result<Optio
 }
 
 #[tauri::command]
-pub async fn store_set(state: State<'_, AppState>, name: String, value: String, allow_shrink: Option<bool>) -> Result<(), String> {
-    let folder = state.data_dir.join(STORE_FOLDER_NAME);
+pub async fn store_set(state: State<'_, AppState>, name: String, value: String, allow_shrink: Option<bool>, main: Option<bool>) -> Result<(), String> {
+    let folder = store_folder(&state.data_dir, &name, main.unwrap_or(false));
     tauri::async_runtime::spawn_blocking(move || {
         let _writing = STORE_WRITES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         save_document(&folder, &name, &value, allow_shrink.unwrap_or(false))

@@ -5,6 +5,7 @@ import { CustomizeHome } from "../components/home/CustomizeHome";
 import { DownloadedRow, HomeEnd, HomeStarter, OfflineBanner } from "../components/home/HomeBits";
 import { HomePick, type PickSlide } from "../components/home/HomePick";
 import { MoodRecs } from "../components/home/MoodRecs";
+import { FriendsRow } from "../components/home/FriendsRow";
 import { DailyPick, PlannedRow } from "../components/home/PersonalRows";
 import { RowMenu } from "../components/home/RowMenu";
 import { BestRow, FreshRow, PopularRow } from "../components/home/TabbedRows";
@@ -14,6 +15,7 @@ import { t, useT } from "../lib/i18n";
 import { key } from "../lib/taste";
 import { useEpisodeCalendar } from "../state/calendar";
 import { useContinueItems } from "../state/continueItems";
+import { useFriendsItems } from "../state/friendsFeed";
 import { useFeed, usePersonalFeed, type FeedItem, type FeedRow } from "../state/feed";
 import { forgetMoodPicks, moods, plannedItems, surprisePick, useFreshList, usePopularList, type Mood } from "../state/homeFeed";
 import { useHomeLayout, type HomeBlockId } from "../state/homeLayout";
@@ -111,6 +113,7 @@ export default function Home() {
 
   const feed = usePersonalFeed();
   const continueItems = useContinueItems();
+  const friendsItems = useFriendsItems();
   const calendar = useEpisodeCalendar();
   const { order, hidden } = useHomeLayout();
   const popular = usePopularList("all", true);
@@ -238,6 +241,8 @@ export default function Home() {
             </>
           );
         return continueItems.length > 0 ? <ContinueRow items={continueItems} offline={false} menu={menu(id)} /> : null;
+      case "friends":
+        return friendsItems.length > 0 ? <FriendsRow items={friendsItems} menu={menu(id)} /> : null;
       case "month":
         return <MonthCard />;
       case "forYou":

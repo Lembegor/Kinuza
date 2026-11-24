@@ -154,6 +154,40 @@ export interface FileDialog {
   extensions: string[];
 }
 
+const sharedStoreNames = new Set(["catalog-cache", "imdb-ids", "availability", "journal"]);
+let personalWritesFrozen = false;
+
+export function freezePersonalWrites(): void {
+  personalWritesFrozen = true;
+}
+
+export function thawPersonalWrites(): void {
+  personalWritesFrozen = false;
+}
+
+export function personalWritesAllowed(): boolean {
+  return !personalWritesFrozen;
+}
+
+function personalWrite<T>(personal: boolean, run: () => Promise<T>): Promise<T> {
+  if (personal && personalWritesFrozen) return Promise.reject(new Error("profile_switching"));
+  return run();
+}
+
+export interface ProfileEntry {
+  id: string;
+  name: string;
+  color: string;
+  avatar: string | null;
+  main: boolean;
+}
+
+export interface ProfilesView {
+  active: string;
+  ask: boolean;
+  profiles: ProfileEntry[];
+}
+
 export interface StoredDocument {
   text: string;
   recovered: boolean;
@@ -514,15 +548,23 @@ export const backend = {
   openDefaultAppsSettings: () => call<void>("open_default_apps_settings"),
   imdbRating: (imdbId: string) => call<ImdbRating | null>("imdb_rating", { imdbId }),
   imdbRatings: (imdbIds: string[]) => call<Record<string, ImdbRating>>("imdb_ratings", { imdbIds }),
-  storeGet: (name: string) => call<StoredDocument | null>("store_get", { name }),
-  storeSet: (name: string, value: string, allowShrink = false) => call<void>("store_set", { name, value, allowShrink }),
+  storeGet: (name: string, main = false) => call<StoredDocument | null>("store_get", { name, main }),
+  storeSet: (name: string, value: string, allowShrink = false, main = false) =>
+    personalWrite(!main && !sharedStoreNames.has(name), () => call<void>("store_set", { name, value, allowShrink, main })),
+  profilesList: () => call<ProfilesView>("profiles_list"),
+  profilesCreate: (name: string, color: string) => call<string>("profiles_create", { name, color }),
+  profilesSwitch: (id: string) => call<void>("profiles_switch", { id }),
+  profilesUpdate: (id: string, change: { name?: string; color?: string }) => call<void>("profiles_update", { id, name: change.name ?? null, color: change.color ?? null }),
+  profilesRemove: (id: string) => call<void>("profiles_remove", { id }),
+  profilesSetAsk: (ask: boolean) => call<void>("profiles_set_ask", { ask }),
+  profilesOtherSources: () => call<string[]>("profiles_other_sources"),
   appLog: (message: string) => (isDesktop ? call<void>("app_log", { message }).catch(() => undefined) : Promise.resolve()),
   warm: (infoHash: string, fileIndex: number, full: boolean) => call<void>("torrent_warm", { infoHash, fileIndex, full }),
   stopEngine: () => call<void>("engine_stop"),
-  activityAppend: (events: object[]) => call<number>("activity_append", { events }),
+  activityAppend: (events: object[]) => personalWrite(true, () => call<number>("activity_append", { events })),
   activityRead: (since?: number) => call<object[]>("activity_read", { since: since ?? null }),
-  activityEdit: (remove: string[], upsert: object[]) => call<number>("activity_edit", { remove, upsert }),
-  activityPrune: (before: number) => call<number>("activity_prune", { before }),
+  activityEdit: (remove: string[], upsert: object[]) => personalWrite(true, () => call<number>("activity_edit", { remove, upsert })),
+  activityPrune: (before: number) => personalWrite(true, () => call<number>("activity_prune", { before })),
   tasteRecommend: (request: TasteRequest) => call<TasteResponse>("taste_recommend", { request }),
 };
 

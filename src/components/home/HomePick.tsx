@@ -3,10 +3,12 @@ import { useNavigate } from "react-router-dom";
 import { ChevronLeft, ChevronRight, Clapperboard, Clock, Dices, Play, ThumbsDown, X } from "lucide-react";
 import { DismissChoices, typeLabel, useDismissOutside, type DismissDetail } from "../Cards";
 import { CatalogRating } from "../CatalogRating";
+import { TitleLogoImage, type LogoFit } from "../TitleLogo";
 import { TrailerOverlay } from "../TrailerOverlay";
 import { t, useT } from "../../lib/i18n";
 import { cachedCatalog } from "../../lib/persistentCache";
 import { imageUrl, tmdb, type MediaItem } from "../../lib/tmdb";
+import { useTitleLogo, warmTitleLogo } from "../../lib/titleLogo";
 import { useAsync } from "../../lib/useAsync";
 import { recordActivity, titleOf } from "../../state/activity";
 import { titleKey, toTitleRef, useLibrary } from "../../state/library";
@@ -15,6 +17,7 @@ import { applyStatus } from "../../state/titleStatus";
 const detailsMaxAgeMs = 3 * 86_400_000;
 const minutesPerHour = 60;
 const shownGenres = 2;
+const logoFit: LogoFit = { area: 30_000, maxWidth: 440, maxHeight: 100 };
 
 export type PickMode = "pick" | "popular" | "surprise";
 
@@ -75,6 +78,12 @@ export function HomePick({
     if (index >= slides.length && slides.length > 0) setIndex(slides.length - 1);
   }, [index, slides.length]);
 
+  useEffect(() => {
+    for (const slide of slides) warmTitleLogo(slide.type, slide.id, slide.language);
+  }, [slides]);
+
+  const logo = useTitleLogo(current?.type ?? null, current?.id ?? null, current?.language ?? "");
+
   const details = useAsync(
     () => (current ? cachedCatalog(`details:${current.type}:${current.id}`, detailsMaxAgeMs, () => tmdb.details(current.type, current.id)) : Promise.resolve(null)),
     [current?.type, current?.id],
@@ -110,8 +119,10 @@ export function HomePick({
           <span className={`home-pick__pill ${mode === "pick" ? "" : "is-soft"}`}>{kicker}</span>
           {current.note && <span>{current.note}</span>}
         </div>
-        <h1>
-          <button onClick={open}>{current.title}</button>
+        <h1 className={logo ? "has-logo" : ""}>
+          <button onClick={open}>
+            {logo ? <TitleLogoImage key={logo.url} logo={logo} title={current.title} originalTitle={current.originalTitle} fit={logoFit} /> : current.title}
+          </button>
         </h1>
         <div className="home-pick__meta">
           <CatalogRating type={current.type} id={current.id} rating={current.rating} className="rating" size={12} />

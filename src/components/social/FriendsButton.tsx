@@ -123,14 +123,11 @@ export function FriendsButton() {
                 </div>
               ) : (
                 <div className="friends-panel__list">
-                  {friends.slice(0, shownFriends).map((friend) => {
-                    const path = titlePathOf(friend);
-                    return (
-                      <FriendRow key={friend.id} friend={friend} onOpen={path ? () => go(path) : undefined}>
-                        <FriendPartyAction friend={friend} />
-                      </FriendRow>
-                    );
-                  })}
+                  {friends.slice(0, shownFriends).map((friend) => (
+                    <FriendRow key={friend.id} friend={friend} onOpen={() => go(`/friend/${friend.id}`)}>
+                      <FriendPartyAction friend={friend} />
+                    </FriendRow>
+                  ))}
                 </div>
               )}
               <button className="friends-panel__all" onClick={() => go("/profile/friends")}>

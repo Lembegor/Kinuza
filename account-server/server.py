@@ -1,5 +1,8 @@
 import asyncio
 import base64
+import hmac
+import html
+import json
 import logging
 import os
 import re
@@ -18,6 +21,16 @@ HOST = os.environ.get("ACCOUNT_HOST", "0.0.0.0")
 CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 DEV_KEY = os.environ.get("ACCOUNT_DEV_KEY", "")
+STATS_KEY = os.environ.get("ACCOUNT_STATS_KEY", "")
+SEARCHES_PER_HOUR = 300
+SEARCH_LIMIT = 20
+SEARCH_MIN = 2
+CARD_LIMIT = 96 * 1024
+CARDS_PER_HOUR = 30
+CARD_READS_PER_HOUR = 600
+FEED_READS_PER_HOUR = 120
+FEED_WATCHING = 6
+FEED_RECENT = 12
 ONLINE_SECONDS = 150
 SEEN_WRITE_SECONDS = 600
 BACKUP_LIMIT = 12 * 1024 * 1024
@@ -38,6 +51,7 @@ class State:
         self.lock = asyncio.Lock()
         self.client = httpx.AsyncClient(timeout=15.0)
         self.presence: dict = {}
+        self.alive: dict = {}
         self.seen_written: dict = {}
         self.last_sync: dict = {}
         self.counters: dict = {}
@@ -289,6 +303,18 @@ def person_of(row, at: int) -> dict:
     return {"id": row["id"], "name": row["name"], "avatar": f"a/{row['avatar']}.jpg" if row["avatar"] else None, "at": at}
 
 
+def online_count(state: State, now: float) -> int:
+    stale = [user_id for user_id, at in state.alive.items() if now - at >= ONLINE_SECONDS]
+    for user_id in stale:
+        state.alive.pop(user_id, None)
+    return len(state.alive)
+
+
+async def online(request: web.Request) -> web.Response:
+    state: State = request.app["state"]
+    return web.json_response({"online": online_count(state, time.time())}, headers={"Cache-Control": "max-age=30"})
+
+
 def social(state: State, user_id: int) -> dict:
     now = time.time()
     store = state.store
@@ -302,6 +328,7 @@ def social(state: State, user_id: int) -> dict:
         "incoming": [person_of(people[row["id"]], row["created"]) for row in incoming if row["id"] in people],
         "outgoing": [person_of(people[row["id"]], row["created"]) for row in outgoing if row["id"] in people],
         "backupRevision": store.backup_revision(user_id),
+        "online": online_count(state, now),
     }
 
 
@@ -314,16 +341,19 @@ async def presence(request: web.Request) -> web.Response:
     user_id = user["id"]
     if data.get("state") == "offline":
         state.presence.pop(user_id, None)
+        state.alive.pop(user_id, None)
         async with state.lock:
             state.store.note_seen(user_id, int(now))
         state.seen_written[user_id] = now
         return web.json_response({"ok": True})
+    state.alive[user_id] = now
     if not user["invisible"]:
         state.presence[user_id] = {"at": now, "watching": watching_of(data.get("watching"))}
     if now - state.seen_written.get(user_id, 0) > SEEN_WRITE_SECONDS:
         state.seen_written[user_id] = now
         async with state.lock:
             state.store.note_seen(user_id, int(now))
+            state.store.note_active(user_id, int(now))
     return web.json_response(social(state, user_id))
 
 
@@ -341,6 +371,194 @@ async def lookup(request: web.Request) -> web.Response:
     )
 
 
+def relation_of(store: Store, user_id: int, other_id: int, incoming: set, outgoing: set) -> str:
+    if other_id == user_id:
+        return "self"
+    if other_id in incoming:
+        return "incoming"
+    if other_id in outgoing:
+        return "outgoing"
+    return "friend" if store.are_friends(user_id, other_id) else "none"
+
+
+@signed_in
+async def search_people(request: web.Request) -> web.Response:
+    state: State = request.app["state"]
+    user_id = request["user"]["id"]
+    query = clean_name(request.query.get("q", ""))
+    if len(query) < SEARCH_MIN:
+        return web.json_response({"people": []})
+    if not state.count(("search", user_id), SEARCHES_PER_HOUR, 3600):
+        return error("friend_too_often", 429)
+    store = state.store
+    incoming = {row["id"] for row in store.requests_to(user_id)}
+    outgoing = {row["id"] for row in store.requests_from(user_id)}
+    people = [
+        {
+            "id": row["id"],
+            "name": row["name"],
+            "avatar": f"a/{row['avatar']}.jpg" if row["avatar"] else None,
+            "relation": relation_of(store, user_id, row["id"], incoming, outgoing),
+        }
+        for row in store.search_people(user_id, query, SEARCH_LIMIT)
+    ]
+    return web.json_response({"people": people})
+
+
+@signed_in
+async def put_card(request: web.Request) -> web.Response:
+    state: State = request.app["state"]
+    user_id = request["user"]["id"]
+    if not state.count(("card", user_id), CARDS_PER_HOUR, 3600):
+        return error("card_too_often", 429)
+    data = await request.read()
+    if len(data) > CARD_LIMIT:
+        return error("card_too_big", 413)
+    try:
+        card = json.loads(data)
+    except ValueError:
+        return error("card_invalid")
+    if not isinstance(card, dict):
+        return error("card_invalid")
+    async with state.lock:
+        state.store.save_card(user_id, json.dumps(card, ensure_ascii=False, separators=(",", ":")), int(time.time()))
+    return web.json_response({"ok": True})
+
+
+@signed_in
+async def friend_card(request: web.Request) -> web.Response:
+    state: State = request.app["state"]
+    user_id = request["user"]["id"]
+    try:
+        other_id = int(request.query.get("id", ""))
+    except ValueError:
+        return error("friend_not_found", 404)
+    if not state.count(("card-read", user_id), CARD_READS_PER_HOUR, 3600):
+        return error("friend_too_often", 429)
+    store = state.store
+    rows = store.users([other_id])
+    if not rows or other_id == user_id or not store.are_friends(user_id, other_id):
+        return error("friend_not_found", 404)
+    row = rows[0]
+    view = friend_view(state, row, time.time())
+    if not row["show_activity"]:
+        return web.json_response({"friend": view, "hidden": True, "card": None, "updated": None})
+    saved = store.card(other_id)
+    return web.json_response(
+        {"friend": view, "hidden": False, "card": json.loads(saved["data"]) if saved else None, "updated": saved["updated"] if saved else None}
+    )
+
+
+def text_of(value, limit: int = 200):
+    return value[:limit] if isinstance(value, str) else None
+
+
+def number_of(value):
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def feed_watching(item) -> dict | None:
+    if not isinstance(item, dict) or not text_of(item.get("key")):
+        return None
+    return {
+        "key": text_of(item.get("key")),
+        "name": text_of(item.get("name")) or "",
+        "poster": text_of(item.get("poster")),
+        "movie": bool(item.get("movie")),
+        "share": number_of(item.get("share")) or 0,
+        "watched": number_of(item.get("watched")) or 0,
+        "total": number_of(item.get("total")) or 0,
+    }
+
+
+def feed_recent(item) -> dict | None:
+    if not isinstance(item, dict) or not text_of(item.get("key")):
+        return None
+    episodes = [episode for episode in item.get("episodes") or [] if isinstance(episode, dict)]
+    last = episodes[0] if episodes else None
+    return {
+        "key": text_of(item.get("key")),
+        "name": text_of(item.get("name")) or "",
+        "poster": text_of(item.get("poster")),
+        "at": number_of(item.get("at")),
+        "movie": bool(item.get("movie")),
+        "finished": bool(item.get("finished")),
+        "rating": number_of(item.get("rating")),
+        "episodes": len(episodes),
+        "last": {"season": number_of(last.get("season")), "episode": number_of(last.get("episode"))} if last else None,
+    }
+
+
+@signed_in
+async def friends_feed(request: web.Request) -> web.Response:
+    state: State = request.app["state"]
+    user_id = request["user"]["id"]
+    if not state.count(("feed-read", user_id), FEED_READS_PER_HOUR, 3600):
+        return error("friend_too_often", 429)
+    store = state.store
+    rows = [row for row in store.users(store.friend_ids(user_id)) if row["show_activity"]]
+    saved = store.cards([row["id"] for row in rows])
+    now = time.time()
+    friends = []
+    for row in rows:
+        card = saved.get(row["id"])
+        if not card:
+            continue
+        try:
+            data = json.loads(card["data"])
+        except ValueError:
+            continue
+        if not isinstance(data, dict):
+            continue
+        watching = [item for item in map(feed_watching, (data.get("watching") or [])[:FEED_WATCHING]) if item]
+        recent = [item for item in map(feed_recent, (data.get("recent") or [])[:FEED_RECENT]) if item]
+        friends.append({"friend": friend_view(state, row, now), "updated": card["updated"], "watching": watching, "recent": recent})
+    return web.json_response({"friends": friends})
+
+
+def stats_page(stats: dict) -> str:
+    peak = max([count for _, count in stats["days"]] or [1])
+    bars = "".join(
+        f'<div class="bar" title="{html.escape(day)}: {count}"><i style="height:{max(2, round(count / peak * 100))}%"></i><span>{html.escape(day[8:])}</span></div>'
+        for day, count in stats["days"]
+    )
+    tiles = [
+        ("Онлайн сейчас", stats["online"]),
+        ("За сутки", stats["day"]),
+        ("За неделю", stats["week"]),
+        ("За месяц", stats["month"]),
+        ("Всего аккаунтов", stats["total"]),
+        ("Новых за неделю", stats["newWeek"]),
+        ("Пар друзей", stats["friendships"]),
+    ]
+    tile_html = "".join(f'<div class="tile"><b>{value}</b><span>{label}</span></div>' for label, value in tiles)
+    return f"""<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="60"><title>Kinuza - аккаунты</title><style>
+body{{margin:0;padding:24px 16px;background:#0e0e12;color:#eee;font:15px system-ui,sans-serif}}
+main{{max-width:860px;margin:0 auto}}h1{{font-size:22px;margin:0 0 4px}}p{{color:#999;margin:0 0 20px}}
+.tiles{{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:24px}}
+.tile{{background:#1a1a22;border-radius:12px;padding:14px}}.tile b{{display:block;font-size:30px}}.tile span{{color:#aaa;font-size:13px}}
+.tile:first-child{{background:#3a1418}}.tile:first-child b{{color:#ff6b72}}
+h2{{font-size:16px;margin:24px 0 10px}}.chart{{display:flex;align-items:flex-end;gap:3px;height:140px;background:#1a1a22;border-radius:12px;padding:12px}}
+.bar{{flex:1;display:flex;flex-direction:column;justify-content:flex-end;height:100%;align-items:center}}.bar i{{display:block;width:100%;background:#e5484d;border-radius:3px 3px 0 0}}
+.bar span{{font-size:10px;color:#777;margin-top:4px}}
+</style></head><body><main><h1>Kinuza</h1><p>Считаются только пользователи с аккаунтом. Онлайн - кто сейчас с открытым приложением. Страница обновляется раз в минуту.</p>
+<div class="tiles">{tile_html}</div><h2>Активные аккаунты по дням</h2><div class="chart">{bars}</div></main></body></html>"""
+
+
+async def stats(request: web.Request) -> web.Response:
+    key = request.query.get("key", "")
+    if not STATS_KEY or not hmac.compare_digest(key.encode(), STATS_KEY.encode()):
+        raise web.HTTPNotFound()
+    state: State = request.app["state"]
+    now = time.time()
+    online = {user_id for user_id, seen in state.presence.items() if now - seen["at"] < ONLINE_SECONDS}
+    data = state.store.account_stats(int(now), online)
+    if request.query.get("format") == "json":
+        return web.json_response(data)
+    return web.Response(text=stats_page(data), content_type="text/html")
+
+
 @signed_in
 async def friend_request(request: web.Request) -> web.Response:
     state: State = request.app["state"]
@@ -350,7 +568,10 @@ async def friend_request(request: web.Request) -> web.Response:
         return error("friend_too_often", 429)
     try:
         async with state.lock:
-            result, other = state.store.request_friend(user_id, str(data.get("code", "")))
+            if isinstance(data.get("id"), int):
+                result, other = state.store.request_friend_by_id(user_id, data["id"])
+            else:
+                result, other = state.store.request_friend(user_id, str(data.get("code", "")))
     except StoreError as failure:
         return error(str(failure), 404 if str(failure) == "friend_not_found" else 400)
     return web.json_response({"result": result, "id": other, **social(state, user_id)})
@@ -430,6 +651,7 @@ def build() -> web.Application:
     app = web.Application(middlewares=[guard], client_max_size=BACKUP_LIMIT + 1024)
     app["state"] = State()
     app.router.add_get("/config", config)
+    app.router.add_get("/online", online)
     app.router.add_post("/auth/google", sign_in_google)
     app.router.add_post("/auth/dev", sign_in_dev)
     app.router.add_post("/auth/signout", sign_out)
@@ -442,6 +664,11 @@ def build() -> web.Application:
     app.router.add_put("/sync", put_backup)
     app.router.add_post("/presence", presence)
     app.router.add_get("/friends/lookup", lookup)
+    app.router.add_get("/friends/search", search_people)
+    app.router.add_get("/friends/card", friend_card)
+    app.router.add_get("/friends/feed", friends_feed)
+    app.router.add_put("/me/card", put_card)
+    app.router.add_get("/stats", stats)
     app.router.add_post("/friends/request", friend_request)
     for name in ("accept", "decline", "cancel", "remove"):
         app.router.add_post(f"/friends/{name}", friend_action(name))

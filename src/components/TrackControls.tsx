@@ -3,7 +3,7 @@ import { Ban, Check, ChevronDown, Clock, Eye, Heart, ListPlus, Minus, Pause, Plu
 import { t, useT, type MessageKey } from "../lib/i18n";
 import { maxRating, statusLabel, titleKey, useLibrary, watchStatuses, type TitleRef, type WatchStatus } from "../state/library";
 import { useUi } from "../state/ui";
-import { applyStatus } from "../state/titleStatus";
+import { applyRating, applyStatus } from "../state/titleStatus";
 
 export function removeTrackedWithUndo(key: string): void {
   const { tracked, removeTracked, restoreTracked } = useLibrary.getState();
@@ -118,7 +118,6 @@ const ratingBurstMs = 700;
 
 export function RatingStars({ title }: { title: TitleRef }) {
   const rating = useLibrary((state) => state.tracked[titleKey(title.type, title.id)]?.rating ?? null);
-  const setRating = useLibrary((state) => state.setRating);
   const { t } = useT();
   const [hover, setHover] = useState<number | null>(null);
   const [burst, setBurst] = useState(false);
@@ -127,7 +126,7 @@ export function RatingStars({ title }: { title: TitleRef }) {
   const shown = hover ?? rating ?? 0;
 
   const choose = (value: number | null) => {
-    setRating(title, value);
+    applyRating(title, value);
     clearTimeout(burstTimer.current);
     setBurst(value !== null);
     if (value !== null) burstTimer.current = setTimeout(() => setBurst(false), ratingBurstMs);

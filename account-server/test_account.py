@@ -16,6 +16,7 @@ import server
 from store import clean_code, clean_name
 
 server.DEV_KEY = "dev-test-key"
+server.STATS_KEY = "stats-test-key"
 PIXEL = "data:image/png;base64," + base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 40).decode()
 
 
@@ -136,6 +137,109 @@ class Flow(AioHTTPTestCase):
         await self.client.delete("/me", headers=auth)
         self.assertEqual((await self.client.get("/me", headers=auth)).status, 401)
         self.assertEqual((await self.client.get("/" + data["avatar"])).status, 404)
+
+    async def test_search_by_name_and_request_by_id(self):
+        me, me_account = await self.sign_in("7000000001", "Искатель")
+        await self.sign_in("7000000002", "Мария Кино")
+        maria, maria_account = await self.sign_in("7000000003", "мария")
+        await self.sign_in("7000000004", "Марат")
+        short = await (await self.client.get("/friends/search", params={"q": "м"}, headers=me)).json()
+        self.assertEqual(short["people"], [])
+        found = await (await self.client.get("/friends/search", params={"q": "МАРИЯ"}, headers=me)).json()
+        self.assertEqual([person["name"] for person in found["people"]], ["мария", "Мария Кино"])
+        self.assertEqual({person["relation"] for person in found["people"]}, {"none"})
+        self.assertNotIn("code", found["people"][0])
+        nobody = await (await self.client.get("/friends/search", params={"q": "%_"}, headers=me)).json()
+        self.assertEqual(nobody["people"], [])
+        response = await self.client.post("/friends/request", json={"id": maria_account["id"]}, headers=me)
+        self.assertEqual((await response.json())["result"], "sent")
+        found = await (await self.client.get("/friends/search", params={"q": "мария"}, headers=me)).json()
+        self.assertEqual(found["people"][0]["relation"], "outgoing")
+        seen = await (await self.client.get("/friends/search", params={"q": "иск"}, headers=maria)).json()
+        self.assertEqual(seen["people"][0]["relation"], "incoming")
+        missing = await self.client.post("/friends/request", json={"id": 999999}, headers=me)
+        self.assertEqual(missing.status, 404)
+        own = await (await self.client.get("/friends/search", params={"q": "иск"}, headers=me)).json()
+        self.assertEqual(own["people"], [])
+        self.assertEqual(me_account["name"], "Искатель")
+
+    async def test_profile_card_only_for_friends(self):
+        anna, anna_account = await self.sign_in("8000000001", "Card Anna")
+        boris, boris_account = await self.sign_in("8000000002", "Card Boris")
+        stranger, _ = await self.sign_in("8000000003", "Card Stranger")
+        card = {"v": 1, "seconds": 3600, "top": [{"key": "movie:1", "name": "Фильм"}]}
+        response = await self.client.put("/me/card", data=json.dumps(card), headers=anna)
+        self.assertEqual(response.status, 200)
+        bad = await self.client.put("/me/card", data=b"[1,2]", headers=anna)
+        self.assertEqual(bad.status, 400)
+        big = await self.client.put("/me/card", data=json.dumps({"x": "a" * (server.CARD_LIMIT + 10)}), headers=anna)
+        self.assertEqual(big.status, 413)
+        hidden = await self.client.get("/friends/card", params={"id": str(anna_account["id"])}, headers=stranger)
+        self.assertEqual(hidden.status, 404)
+        await self.client.post("/friends/request", json={"code": boris_account["code"]}, headers=anna)
+        await self.client.post("/friends/accept", json={"id": anna_account["id"]}, headers=boris)
+        data = await (await self.client.get("/friends/card", params={"id": str(anna_account["id"])}, headers=boris)).json()
+        self.assertEqual(data["card"], card)
+        self.assertEqual(data["friend"]["name"], "Card Anna")
+        self.assertFalse(data["hidden"])
+        await self.client.patch("/me", json={"showActivity": False}, headers=anna)
+        data = await (await self.client.get("/friends/card", params={"id": str(anna_account["id"])}, headers=boris)).json()
+        self.assertTrue(data["hidden"])
+        self.assertIsNone(data["card"])
+        none = await (await self.client.get("/friends/card", params={"id": str(boris_account["id"])}, headers=anna)).json()
+        self.assertIsNone(none["card"])
+
+    async def test_friends_feed_shows_only_visible_friends(self):
+        anna, anna_account = await self.sign_in("8100000001", "Feed Anna")
+        boris, boris_account = await self.sign_in("8100000002", "Feed Boris")
+        clara, clara_account = await self.sign_in("8100000003", "Feed Clara")
+        stranger, _ = await self.sign_in("8100000004", "Feed Stranger")
+        card = {
+            "v": 1,
+            "watching": [{"key": "tv:1", "name": "Сериал", "poster": "/p.jpg", "movie": False, "share": 0.5, "watched": 3, "total": 6}, "bad"],
+            "recent": [{"id": "x", "key": "movie:2", "name": "Фильм", "at": 1000, "movie": True, "finished": True, "rating": 9, "episodes": [], "poster": None}],
+        }
+        for auth in (boris, clara, stranger):
+            await self.client.put("/me/card", data=json.dumps(card), headers=auth)
+        for other in (boris_account, clara_account):
+            await self.client.post("/friends/request", json={"code": other["code"]}, headers=anna)
+        await self.client.post("/friends/accept", json={"id": anna_account["id"]}, headers=boris)
+        await self.client.post("/friends/accept", json={"id": anna_account["id"]}, headers=clara)
+        await self.client.patch("/me", json={"showActivity": False}, headers=clara)
+        data = await (await self.client.get("/friends/feed", headers=anna)).json()
+        self.assertEqual([entry["friend"]["name"] for entry in data["friends"]], ["Feed Boris"])
+        entry = data["friends"][0]
+        self.assertEqual(entry["watching"], [{"key": "tv:1", "name": "Сериал", "poster": "/p.jpg", "movie": False, "share": 0.5, "watched": 3, "total": 6}])
+        self.assertEqual(entry["recent"][0]["rating"], 9)
+        self.assertTrue(entry["recent"][0]["finished"])
+        self.assertIsNone(entry["recent"][0]["last"])
+        lonely = await (await self.client.get("/friends/feed", headers=stranger)).json()
+        self.assertEqual(lonely["friends"], [])
+
+    async def test_online_counts_everyone_without_names(self):
+        first, _ = await self.sign_in("8200000001", "Online One")
+        second, _ = await self.sign_in("8200000002", "Online Two")
+        await self.client.patch("/me", json={"invisible": True}, headers=second)
+        before = (await (await self.client.get("/online")).json())["online"]
+        await self.client.post("/presence", json={}, headers=first)
+        answer = await (await self.client.post("/presence", json={}, headers=second)).json()
+        self.assertEqual(answer["online"], before + 2)
+        public = await (await self.client.get("/online")).json()
+        self.assertEqual(public, {"online": before + 2})
+        await self.client.post("/presence", json={"state": "offline"}, headers=first)
+        self.assertEqual((await (await self.client.get("/online")).json())["online"], before + 1)
+
+    async def test_stats_page_needs_the_key(self):
+        auth, _ = await self.sign_in("9000000001", "Stats")
+        await self.client.post("/presence", json={}, headers=auth)
+        self.assertEqual((await self.client.get("/stats")).status, 404)
+        self.assertEqual((await self.client.get("/stats", params={"key": "wrong"})).status, 404)
+        data = await (await self.client.get("/stats", params={"key": "stats-test-key", "format": "json"})).json()
+        self.assertGreaterEqual(data["online"], 1)
+        self.assertGreaterEqual(data["day"], data["online"])
+        self.assertTrue(data["days"])
+        page = await (await self.client.get("/stats", params={"key": "stats-test-key"})).text()
+        self.assertIn("Онлайн сейчас", page)
 
     async def test_sign_out_everywhere(self):
         first, _ = await self.sign_in("6000000001", "Many")

@@ -18,7 +18,7 @@ const MILLIS_PER_DAY: i64 = 86_400_000;
 static WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 fn folder(data_dir: &Path) -> PathBuf {
-    data_dir.join(ACTIVITY_FOLDER_NAME)
+    crate::profiles::personal_dir(data_dir).join(ACTIVITY_FOLDER_NAME)
 }
 
 fn civil_from_days(days: i64) -> (i64, u32) {

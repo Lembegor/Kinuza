@@ -56,6 +56,28 @@ export function serverProblemOf(error: unknown): ServerProblem {
   return "failed";
 }
 
+export function serverProblemOfState(state: string): ServerProblem | null {
+  if (state === "challenge" || state === "login_required") return "login";
+  if (state === "down" || state === "browser_down") return "down";
+  return null;
+}
+
+const blockedListeners = new Set<() => void>();
+
+export function onServerBlocked(listener: () => void): () => void {
+  blockedListeners.add(listener);
+  return () => {
+    blockedListeners.delete(listener);
+  };
+}
+
+function noting<T>(task: Promise<T>): Promise<T> {
+  return task.catch((error) => {
+    if (isServerError(error) && serverProblemOf(error) === "login") blockedListeners.forEach((listener) => listener());
+    throw error;
+  });
+}
+
 type ServerKind = "interactive" | "secondary" | "background";
 
 const maybeSignedIn = () => call<boolean | null>("rutracker_maybe_signed_in").catch(() => null);
@@ -65,6 +87,12 @@ let ownSessionGone = false;
 export async function trackerRoute(): Promise<TrackerRoute> {
   if (ownSessionGone) return "server";
   return (await maybeSignedIn()) === true ? "own" : "server";
+}
+
+export async function hasOwnAccount(): Promise<boolean> {
+  if (ownSessionGone) return false;
+  const account = await call<{ signedIn: boolean } | null>("rutracker_account").catch(() => null);
+  return account?.signedIn === true;
 }
 
 const ownRouteFailures: string[] = [rutrackerErrors.timeout, rutrackerErrors.unexpectedPage];
@@ -82,9 +110,9 @@ function ownSessionLost(error: unknown): boolean {
 
 const viaServer = {
   search: (query: string, page: number, kindName: ServerKind) =>
-    call<RutrackerItem[]>("gateway_search", { query, page, kindName }),
+    noting(call<RutrackerItem[]>("gateway_search", { query, page, kindName })),
   inspect: (id: string, maxAgeSeconds: number | null, kindName: ServerKind) =>
-    call<TorrentPreview>("gateway_torrent_inspect", { id, maxAge: maxAgeSeconds, kindName }),
+    noting(call<TorrentPreview>("gateway_torrent_inspect", { id, maxAge: maxAgeSeconds, kindName })),
   videoSizes: (ids: string[], kindName: ServerKind) => call<Record<string, VideoSize>>("gateway_video_sizes", { ids, kindName }),
 };
 

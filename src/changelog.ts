@@ -5,6 +5,41 @@ export type ChangelogLine = string | { heading: string };
 export type Changelog = Record<AppLanguage, ChangelogLine[]>;
 
 export const changelog: Record<string, Changelog> = {
+  "0.6.7": {
+    ru: [
+      "RuTracker недавно ужесточил доступ к поиску торрентов на сайте. Теперь мой бот автоматически не может искать торренты со своего аккаунта. Пока я не придумаю, что с этим делать, лучше войти в свой аккаунт RuTracker через Kinuza, чтоб иметь доступ ко всем возможным торрентам. Без выполненного входа будут показываться в основном зарубежные трекеры без русских или украинских озвучек.",
+      "Возможность просмотреть профиль друга.",
+      "Названия фильмов и сериалов на главной и на странице тайтла теперь показываются фирменными логотипами.",
+      "Обновленная главная страница с учетом друзей.",
+      "Улучшение картинки для аниме: линии чётче, а старое аниме заметно резче. Включается в настройках плеера.",
+      "Несколько профилей на одном компьютере со своим списком, прогрессом, историей, рекомендациями и т.д.",
+      "Добавлены достижения.",
+      "Добавлен счетчик онлайна.",
+      "Минорные исправления.",
+    ],
+    en: [
+      "RuTracker has recently tightened access to torrent search on the site. My bot can no longer search for torrents automatically from its own account. Until I figure out what to do about it, it's best to sign in to your own RuTracker account through Kinuza to have access to every available torrent. Without signing in you will mostly see foreign trackers without Russian or Ukrainian dubs.",
+      "You can now view a friend's profile.",
+      "Movie and series titles on the home page and title pages now show as their official logos.",
+      "Updated home page that takes your friends into account.",
+      "Anime picture enhancement: crisper lines and noticeably sharper older anime. Turn it on in the player settings.",
+      "Several profiles on one computer, each with its own list, progress, history, recommendations and so on.",
+      "Added achievements.",
+      "Added an online counter.",
+      "Minor fixes.",
+    ],
+    uk: [
+      "RuTracker нещодавно посилив обмеження доступу до пошуку торрентів на сайті. Тепер мій бот не може автоматично шукати торренти зі свого акаунта. Поки я не придумаю, що з цим робити, краще увійти у свій акаунт RuTracker через Kinuza, щоб мати доступ до всіх можливих торрентів. Без входу показуватимуться здебільшого закордонні трекери без російських чи українських озвучок.",
+      "Можливість переглянути профіль друга.",
+      "Назви фільмів і серіалів на головній і на сторінці тайтлу тепер показуються фірмовими логотипами.",
+      "Оновлена головна сторінка з урахуванням друзів.",
+      "Покращення картинки для аніме: лінії чіткіші, а старе аніме помітно різкіше. Вмикається в налаштуваннях плеєра.",
+      "Кілька профілів на одному комп'ютері зі своїм списком, прогресом, історією, рекомендаціями тощо.",
+      "Додано досягнення.",
+      "Додано лічильник онлайну.",
+      "Мінорні виправлення.",
+    ],
+  },
   "0.6.6": {
     ru: [
       "Ускорил работу торрента, онлайн просмотр работает заметно лучше и быстрее.",

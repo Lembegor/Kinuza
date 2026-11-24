@@ -9,7 +9,7 @@ import { cachedCatalog } from "../lib/persistentCache";
 import { hasApiKey, imageUrl, tmdb, type MediaItem } from "../lib/tmdb";
 import { maxRating, titleKey, unitKey, useLibrary, type TitleRef, type WatchStatus } from "../state/library";
 import { TrackBadge } from "./TrackControls";
-import { applyStatus } from "../state/titleStatus";
+import { applyRating, applyStatus } from "../state/titleStatus";
 import { CatalogRating } from "./CatalogRating";
 
 export type CardItem = TitleRef & Partial<Pick<MediaItem, "rating" | "isAnime">> & { note?: string; noteAccent?: boolean };
@@ -63,7 +63,7 @@ export function QuickActions({ item }: { item: CardItem }) {
   }, [rating]);
 
   const rate = (value: number) => {
-    useLibrary.getState().setRating(refOf(item), value === entry?.rating ? null : value);
+    applyRating(refOf(item), value === entry?.rating ? null : value);
     setRating(false);
   };
 

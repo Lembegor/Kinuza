@@ -592,6 +592,74 @@ pub async fn mpv_audio_filter(
 
 const STRETCH_RATE: u32 = 48_000;
 
+const SHADERS_FOLDER_NAME: &str = "mpv-shaders";
+
+const ANIME4K: &[(&str, &str)] = &[
+    ("Anime4K_Clamp_Highlights.glsl", include_str!("anime4k/Anime4K_Clamp_Highlights.glsl")),
+    ("Anime4K_Restore_CNN_M.glsl", include_str!("anime4k/Anime4K_Restore_CNN_M.glsl")),
+    ("Anime4K_Restore_CNN_VL.glsl", include_str!("anime4k/Anime4K_Restore_CNN_VL.glsl")),
+    ("Anime4K_Upscale_CNN_x2_S.glsl", include_str!("anime4k/Anime4K_Upscale_CNN_x2_S.glsl")),
+    ("Anime4K_Upscale_CNN_x2_M.glsl", include_str!("anime4k/Anime4K_Upscale_CNN_x2_M.glsl")),
+    ("Anime4K_Upscale_CNN_x2_VL.glsl", include_str!("anime4k/Anime4K_Upscale_CNN_x2_VL.glsl")),
+    ("Anime4K_AutoDownscalePre_x2.glsl", include_str!("anime4k/Anime4K_AutoDownscalePre_x2.glsl")),
+    ("Anime4K_AutoDownscalePre_x4.glsl", include_str!("anime4k/Anime4K_AutoDownscalePre_x4.glsl")),
+];
+
+const UPSCALE_NORMAL: &[&str] = &[
+    "Anime4K_Clamp_Highlights.glsl",
+    "Anime4K_Restore_CNN_M.glsl",
+    "Anime4K_Upscale_CNN_x2_M.glsl",
+    "Anime4K_AutoDownscalePre_x2.glsl",
+    "Anime4K_AutoDownscalePre_x4.glsl",
+    "Anime4K_Upscale_CNN_x2_S.glsl",
+];
+
+const UPSCALE_MAX: &[&str] = &[
+    "Anime4K_Clamp_Highlights.glsl",
+    "Anime4K_Restore_CNN_VL.glsl",
+    "Anime4K_Upscale_CNN_x2_VL.glsl",
+    "Anime4K_AutoDownscalePre_x2.glsl",
+    "Anime4K_AutoDownscalePre_x4.glsl",
+    "Anime4K_Upscale_CNN_x2_M.glsl",
+];
+
+fn upscale_chain(level: &str) -> Option<&'static [&'static str]> {
+    match level {
+        "off" => Some(&[]),
+        "normal" => Some(UPSCALE_NORMAL),
+        "max" => Some(UPSCALE_MAX),
+        _ => None,
+    }
+}
+
+async fn shader_paths(data_dir: &Path, names: &[&str]) -> Result<Vec<PathBuf>, String> {
+    let folder = data_dir.join(SHADERS_FOLDER_NAME);
+    tokio::fs::create_dir_all(&folder).await.map_err(|error| format!("mpv_shaders_failed: {error}"))?;
+    let mut paths = Vec::with_capacity(names.len());
+    for name in names {
+        let (_, text) = ANIME4K.iter().find(|(file, _)| file == name).ok_or_else(|| "mpv_shaders_failed".to_owned())?;
+        let path = folder.join(name);
+        let current = tokio::fs::metadata(&path).await.map(|meta| meta.len()).ok();
+        if current != Some(text.len() as u64) {
+            tokio::fs::write(&path, text).await.map_err(|error| format!("mpv_shaders_failed: {error}"))?;
+        }
+        paths.push(path);
+    }
+    Ok(paths)
+}
+
+#[tauri::command]
+pub async fn mpv_upscale(app: AppHandle, state: State<'_, AppState>, mpv: State<'_, MpvState>, level: String) -> Result<(), String> {
+    let names = upscale_chain(&level).ok_or_else(|| "mpv_property_refused".to_owned())?;
+    let paths = shader_paths(&state.data_dir, names).await?;
+    send(&app, &mpv, &state.data_dir, json!(["change-list", "glsl-shaders", "clr", ""])).await?;
+    for path in paths {
+        send(&app, &mpv, &state.data_dir, json!(["change-list", "glsl-shaders", "append", path.to_string_lossy()])).await?;
+    }
+    tracing::info!("mpv: anime upscaling {level}");
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn mpv_stats(
     app: AppHandle,

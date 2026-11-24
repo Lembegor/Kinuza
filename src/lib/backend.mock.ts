@@ -4,6 +4,52 @@ export const mockStreamUrl = "https://interactive-examples.mdn.mozilla.net/media
 
 const GiB = 1024 ** 3;
 const storagePrefix = "kinuza-mock-store:";
+const profilesKey = "kinuza-mock-profiles";
+const sharedStores = new Set(["catalog-cache", "imdb-ids", "availability", "journal"]);
+
+interface MockProfiles {
+  active: string;
+  ask: boolean;
+  profiles: { id: string; name: string; color: string }[];
+}
+
+function mockProfiles(): MockProfiles {
+  try {
+    const saved = JSON.parse(localStorage.getItem(profilesKey) ?? "null") as MockProfiles | null;
+    if (saved && Array.isArray(saved.profiles)) return saved;
+  } catch {
+    return { active: "main", ask: true, profiles: [{ id: "main", name: "", color: "blue" }] };
+  }
+  return { active: "main", ask: true, profiles: [{ id: "main", name: "", color: "blue" }] };
+}
+
+function saveMockProfiles(book: MockProfiles): void {
+  localStorage.setItem(profilesKey, JSON.stringify(book));
+}
+
+function personalPrefix(id = mockProfiles().active): string {
+  return id === "main" ? storagePrefix : `${storagePrefix}p:${id}:`;
+}
+
+function storeKey(name: string, main = false): string {
+  return (main || sharedStores.has(name) ? storagePrefix : personalPrefix()) + name;
+}
+
+function profileView(book: MockProfiles) {
+  return {
+    active: book.active,
+    ask: book.ask,
+    profiles: book.profiles.map((entry) => {
+      let stored: { name?: string; avatar?: string | null } = {};
+      try {
+        stored = JSON.parse(localStorage.getItem(personalPrefix(entry.id) + "profile") ?? "{}");
+      } catch {
+        stored = {};
+      }
+      return { id: entry.id, name: stored.name?.trim() || entry.name, color: entry.color, avatar: stored.avatar || null, main: entry.id === "main" };
+    }),
+  };
+}
 
 const demoCatalog = [
   {
@@ -162,6 +208,13 @@ const mockAccount = {
   ] as unknown[],
   incoming: [{ id: 5, name: "Оля", avatar: null, at: Math.round(Date.now() / 1000) - 600 }] as { id: number; name: string; avatar: null; at: number }[],
   outgoing: [] as { id: number; name: string; avatar: null; at: number }[],
+  card: null as unknown,
+  people: [
+    { id: 9, name: "Маша", avatar: null },
+    { id: 10, name: "Мария Кино", avatar: null },
+    { id: 11, name: "Марат", avatar: null },
+    { id: 3, name: "Лиза", avatar: null },
+  ],
 };
 
 export async function mockInvoke(command: string, args: Record<string, unknown> = {}): Promise<unknown> {
@@ -251,6 +304,8 @@ export async function mockInvoke(command: string, args: Record<string, unknown> 
         sources: { yts: "ok", nnm: "ok" },
       };
     }
+    case "account_online":
+      return 37;
     case "account_status":
       return { signedIn: mockAccount.signedIn, base: "https://kinuza.channeluza.com/kinuza/account/" };
     case "account_sign_in":
@@ -304,8 +359,59 @@ export async function mockInvoke(command: string, args: Record<string, unknown> 
         return { id: 9, name: "Маша", avatar: null, self: false };
       }
       if (path === "friends/request") {
-        mockAccount.outgoing = [...mockAccount.outgoing, { id: 9, name: "Маша", avatar: null, at: Date.now() / 1000 }];
-        return { result: "sent", id: 9, ...social() };
+        const person = mockAccount.people.find((item) => item.id === (typeof body.id === "number" ? body.id : 9)) ?? mockAccount.people[0];
+        mockAccount.outgoing = [...mockAccount.outgoing, { id: person.id, name: person.name, avatar: null, at: Date.now() / 1000 }];
+        return { result: "sent", id: person.id, ...social() };
+      }
+      if (path === "friends/search") {
+        const query = String(((args.query as [string, string][] | null) ?? []).find(([key]) => key === "q")?.[1] ?? "").toLowerCase();
+        const friendIds = new Set(mockAccount.friends.map((item) => (item as { id: number }).id));
+        const outgoingIds = new Set(mockAccount.outgoing.map((item) => item.id));
+        return {
+          people: mockAccount.people
+            .filter((item) => item.name.toLowerCase().includes(query))
+            .map((item) => ({ ...item, relation: friendIds.has(item.id) ? "friend" : outgoingIds.has(item.id) ? "outgoing" : "none" })),
+        };
+      }
+      if (path === "me/card") {
+        mockAccount.card = body;
+        return { ok: true };
+      }
+      if (path === "friends/feed") {
+        const now = Date.now();
+        const byId = (id: number) => mockAccount.friends.find((item) => (item as { id: number }).id === id);
+        const recent = (key: string, name: string, poster: string, hoursAgo: number, extra: Record<string, unknown>) => ({
+          key, name, poster, at: now - hoursAgo * 3_600_000, movie: key.startsWith("movie:"), finished: false, rating: null, episodes: 0, last: null, ...extra,
+        });
+        return {
+          friends: [
+            {
+              friend: byId(2),
+              updated: now / 1000,
+              watching: [{ key: "tv:1396", name: "Во все тяжкие", poster: "/ztkUQFLlC19CCMYHW9o1zWhJRNq.jpg", movie: false, share: 0.4, watched: 25, total: 62 }],
+              recent: [
+                recent("movie:438631", "Дюна", "/d5NXSklXo0qyIYkgV94XAgMIckC.jpg", 20, { finished: true, rating: 9 }),
+                recent("tv:1429", "Атака титанов", "/hTP1DtLGFamjfu8WqjnuQdP1n4i.jpg", 50, { episodes: 3, last: { season: 4, episode: 12 } }),
+              ],
+            },
+            {
+              friend: byId(3),
+              updated: now / 1000,
+              watching: [],
+              recent: [
+                recent("movie:438631", "Дюна", "/d5NXSklXo0qyIYkgV94XAgMIckC.jpg", 5, { finished: true, rating: 8 }),
+                recent("movie:27205", "Начало", "/oYuLEt3zVCKq57qu2F8dT7NIa6f.jpg", 30, { finished: true }),
+                recent("tv:94605", "Аркейн", "/fqldf2t8ztc9aiwn3k6mlX3tvRT.jpg", 70, { episodes: 2, last: { season: 2, episode: 3 } }),
+              ],
+            },
+          ],
+        };
+      }
+      if (path === "friends/card") {
+        const id = Number(((args.query as [string, string][] | null) ?? []).find(([key]) => key === "id")?.[1]);
+        const friend = mockAccount.friends.find((item) => (item as { id: number }).id === id);
+        if (!friend) throw "friend_not_found";
+        return { friend, hidden: id === 4, card: id === 3 ? null : mockAccount.card, updated: 0 };
       }
       if (path === "friends/accept") {
         const person = mockAccount.incoming.find((item) => item.id === body.id);
@@ -524,11 +630,11 @@ export async function mockInvoke(command: string, args: Record<string, unknown> 
       return null;
     }
     case "store_get": {
-      const text = localStorage.getItem(storagePrefix + String(args.name));
+      const text = localStorage.getItem(storeKey(String(args.name), Boolean(args.main)));
       return text === null ? null : { text, recovered: false };
     }
     case "store_set":
-      localStorage.setItem(storagePrefix + String(args.name), String(args.value));
+      localStorage.setItem(storeKey(String(args.name), Boolean(args.main)), String(args.value));
       return null;
     case "torrent_warm":
     case "app_log":
@@ -539,27 +645,62 @@ export async function mockInvoke(command: string, args: Record<string, unknown> 
       return Array.from({ length: buckets }, (_, index) => (index / buckets < done || (index > buckets * 0.6 && index < buckets * 0.66) ? 255 : index % 7 === 0 ? 128 : 0));
     }
     case "activity_append": {
-      const saved = JSON.parse(localStorage.getItem(storagePrefix + "activity") ?? "[]") as object[];
+      const saved = JSON.parse(localStorage.getItem(personalPrefix() + "activity") ?? "[]") as object[];
       const events = args.events as object[];
-      localStorage.setItem(storagePrefix + "activity", JSON.stringify([...saved, ...events].slice(-20000)));
+      localStorage.setItem(personalPrefix() + "activity", JSON.stringify([...saved, ...events].slice(-20000)));
       return events.length;
     }
     case "activity_read":
-      return JSON.parse(localStorage.getItem(storagePrefix + "activity") ?? "[]");
+      return JSON.parse(localStorage.getItem(personalPrefix() + "activity") ?? "[]");
     case "activity_edit": {
-      const saved = JSON.parse(localStorage.getItem(storagePrefix + "activity") ?? "[]") as { id?: string }[];
+      const saved = JSON.parse(localStorage.getItem(personalPrefix() + "activity") ?? "[]") as { id?: string }[];
       const upsert = args.upsert as { id?: string }[];
       const gone = new Set([...(args.remove as string[]), ...upsert.map((event) => event.id ?? "")]);
       const kept = saved.filter((event) => !gone.has(event.id ?? ""));
-      localStorage.setItem(storagePrefix + "activity", JSON.stringify([...kept, ...upsert]));
+      localStorage.setItem(personalPrefix() + "activity", JSON.stringify([...kept, ...upsert]));
       return saved.length - kept.length;
     }
     case "activity_prune": {
-      const saved = JSON.parse(localStorage.getItem(storagePrefix + "activity") ?? "[]") as { at: number }[];
+      const saved = JSON.parse(localStorage.getItem(personalPrefix() + "activity") ?? "[]") as { at: number }[];
       const kept = saved.filter((event) => event.at >= Number(args.before));
-      localStorage.setItem(storagePrefix + "activity", JSON.stringify(kept));
+      localStorage.setItem(personalPrefix() + "activity", JSON.stringify(kept));
       return saved.length - kept.length;
     }
+    case "profiles_list":
+      return profileView(mockProfiles());
+    case "profiles_create": {
+      const book = mockProfiles();
+      const id = Math.random().toString(16).slice(2, 18).padEnd(16, "0");
+      book.profiles.push({ id, name: String(args.name).trim(), color: String(args.color) || "green" });
+      saveMockProfiles(book);
+      return id;
+    }
+    case "profiles_switch": {
+      const book = mockProfiles();
+      if (!book.profiles.some((entry) => entry.id === args.id)) throw "profiles_not_found";
+      saveMockProfiles({ ...book, active: String(args.id) });
+      return null;
+    }
+    case "profiles_update": {
+      const book = mockProfiles();
+      const entry = book.profiles.find((item) => item.id === args.id);
+      if (!entry) throw "profiles_not_found";
+      if (typeof args.name === "string") entry.name = args.name.trim();
+      if (typeof args.color === "string") entry.color = args.color;
+      saveMockProfiles(book);
+      return null;
+    }
+    case "profiles_remove": {
+      const book = mockProfiles();
+      if (args.id === "main" || args.id === book.active) throw "profiles_cannot_remove";
+      saveMockProfiles({ ...book, profiles: book.profiles.filter((entry) => entry.id !== args.id) });
+      return null;
+    }
+    case "profiles_set_ask":
+      saveMockProfiles({ ...mockProfiles(), ask: Boolean(args.ask) });
+      return null;
+    case "profiles_other_sources":
+      return [];
     case "taste_recommend": {
       const custom = (globalThis as { __kinuzaMockTaste?: (request: unknown) => unknown }).__kinuzaMockTaste;
       if (custom) return custom(args.request);

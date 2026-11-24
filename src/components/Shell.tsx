@@ -3,6 +3,7 @@ import { NavLink, useLocation, useNavigate, useSearchParams } from "react-router
 import { ArrowLeft, ArrowRight, CalendarDays, Copy, Download, House, LayoutGrid, ListVideo, Minus, Search, Settings, Square, X } from "lucide-react";
 import { isDesktop } from "../lib/backend";
 import { useT } from "../lib/i18n";
+import { useOnlineCount } from "../state/online";
 import { useBrowse } from "../state/browse";
 import { homeRefreshEvent, useUi } from "../state/ui";
 import { InboxButton } from "./InboxButton";
@@ -128,6 +129,18 @@ function SearchBox() {
   );
 }
 
+function OnlineCount() {
+  const { t, locale } = useT();
+  const count = useOnlineCount();
+  if (count === null || count <= 0) return null;
+  return (
+    <div className="online-count" title={t("shell.online.hint")} data-tauri-drag-region>
+      <i aria-hidden="true" />
+      {t("shell.online", { count: count.toLocaleString(locale) })}
+    </div>
+  );
+}
+
 export function Titlebar() {
   const { t } = useT();
   const navigate = useNavigate();
@@ -147,6 +160,7 @@ export function Titlebar() {
       </div>
       <SearchBox />
       <div className="titlebar__spacer" data-tauri-drag-region />
+      <OnlineCount />
       <RoomButton />
       <FriendsButton />
       <InboxButton />

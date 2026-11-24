@@ -39,6 +39,12 @@ struct ErrorBody {
 #[derive(Deserialize)]
 struct SearchBody {
     items: Vec<SearchItem>,
+    #[serde(default)]
+    stale: Option<String>,
+}
+
+fn blocked_stale(body: &SearchBody) -> Option<String> {
+    body.stale.as_deref().filter(|code| matches!(*code, "gateway_challenge" | "gateway_login" | "gateway_down")).map(str::to_owned)
 }
 
 #[derive(Deserialize)]
@@ -142,6 +148,9 @@ pub async fn gateway_search(query: String, page: Option<u32>, kind_name: Option<
     )
     .await?;
     let body = serde_json::from_slice::<SearchBody>(&response).map_err(|_| DOWN.to_owned())?;
+    if let Some(code) = blocked_stale(&body) {
+        return Err(code);
+    }
     Ok(items_of(body))
 }
 
@@ -206,9 +215,19 @@ mod tests {
                 SearchItem { id: "123".into(), title: "A".into(), size: "1 GB".into(), seeds: 3 },
                 SearchItem { id: "x1".into(), title: "B".into(), size: "".into(), seeds: 0 },
             ],
+            stale: None,
         });
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].page_url, "https://rutracker.org/forum/viewtopic.php?t=123");
+    }
+
+    #[test]
+    fn old_results_from_a_blocked_server_are_not_offered() {
+        let body = |stale: Option<&str>| SearchBody { items: Vec::new(), stale: stale.map(str::to_owned) };
+        assert_eq!(blocked_stale(&body(Some("gateway_challenge"))).as_deref(), Some("gateway_challenge"));
+        assert_eq!(blocked_stale(&body(Some("gateway_login"))).as_deref(), Some("gateway_login"));
+        assert_eq!(blocked_stale(&body(Some("gateway_busy"))), None);
+        assert_eq!(blocked_stale(&body(None)), None);
     }
 
     #[tokio::test]

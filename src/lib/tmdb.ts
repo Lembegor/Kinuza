@@ -178,6 +178,14 @@ export interface MediaItem {
   isAnime: boolean;
 }
 
+export interface TitleLogo {
+  path: string;
+  language: string | null;
+  aspect: number;
+  votes: number;
+  score: number;
+}
+
 export interface TitleKeyword {
   id: number;
   name: string;
@@ -339,6 +347,7 @@ export interface Details extends MediaItem {
   trailerKey: string | null;
   collection: { id: number; name: string } | null;
   imdbId: string | null;
+  ended: boolean;
 }
 
 export interface Episode {
@@ -776,6 +785,7 @@ export const tmdb = {
     return {
       ...base,
       tagline: raw.tagline ?? "",
+      ended: type === "movie" || raw.status === "Ended" || raw.status === "Canceled",
       genres: (raw.genres ?? []).map((genre: Raw) => genre.name),
       genreIds: (raw.genres ?? []).map((genre: Raw) => genre.id as number),
       keywords: ((raw.keywords?.keywords ?? raw.keywords?.results ?? []) as Raw[]).map((keyword) => ({
@@ -889,6 +899,22 @@ export const tmdb = {
       .sort((a, b) => Number(a.iso_639_1 !== null) - Number(b.iso_639_1 !== null) || (b.vote_average ?? 0) - (a.vote_average ?? 0))
       .slice(0, galleryLimit)
       .map((image) => image.file_path as string);
+  },
+
+  async logos(type: MediaType, id: number, original: string): Promise<TitleLogo[]> {
+    const language = catalog.language.slice(0, 2);
+    const languages = [...new Set([language, original, "en"].filter(Boolean)), "null"];
+    const raw = await request<Raw>(`/${type}/${id}/images`, { include_image_language: languages.join(",") });
+    const logos: Raw[] = Array.isArray(raw.logos) ? raw.logos : [];
+    return logos
+      .filter((logo) => typeof logo.file_path === "string" && (logo.aspect_ratio ?? 0) > 0)
+      .map((logo) => ({
+        path: logo.file_path as string,
+        language: typeof logo.iso_639_1 === "string" ? logo.iso_639_1 : null,
+        aspect: logo.aspect_ratio as number,
+        votes: logo.vote_count ?? 0,
+        score: logo.vote_average ?? 0,
+      }));
   },
 
   async collection(id: number): Promise<Collection> {

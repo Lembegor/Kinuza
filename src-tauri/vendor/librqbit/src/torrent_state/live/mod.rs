@@ -998,6 +998,30 @@ impl TorrentStateLive {
         self.new_pieces_notify.notify_waiters();
     }
 
+    pub fn stream_diagnostics(&self) -> String {
+        let (mut live, mut busy, mut requested) = (0, 0, 0);
+        for peer in self.peers.states.iter() {
+            if let Some(state) = peer.value().get_live() {
+                live += 1;
+                let count = state.requested_inflight_count();
+                if count > 0 {
+                    busy += 1;
+                    requested += count;
+                }
+            }
+        }
+        let mut waited = self.streams.waited_pieces(&self.lengths);
+        waited.dedup();
+        let g = self.lock_read("stream_diagnostics");
+        let Ok(pieces) = g.get_pieces() else { return String::new() };
+        let described: Vec<String> = waited.iter().map(|piece| pieces.describe_piece(*piece)).collect();
+        format!(
+            "requests={requested} on {busy}/{live} peers, pieces in work={}, waited=[{}]",
+            pieces.inflight_count(),
+            described.join(" ")
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn lab_partial_bytes(&self) -> u64 {
         let g = self.lock_read("lab_partial_bytes");
@@ -2110,6 +2134,13 @@ impl PeerHandler {
 
     fn on_i_am_choked(&self) {
         self.lock_flow_control("i_am_choked = true").i_am_choked = true;
+        let released = match self.state.lock_write("choked_claims").get_pieces_mut() {
+            Ok(pieces) => pieces.forget_peer_claims(self.addr),
+            Err(_) => false,
+        };
+        if released {
+            self.state.new_pieces_notify.notify_waiters();
+        }
         self.notify_request_slots_changed();
     }
 

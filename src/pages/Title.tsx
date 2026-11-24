@@ -47,6 +47,8 @@ import { useUi, type AddSourceTarget } from "../state/ui";
 import { recordActivity, titleOf } from "../state/activity";
 import { sortSources } from "../lib/sources";
 import { useHoverWarm, warmTitleResume } from "../state/warmup";
+import { TitleLogoImage, type LogoFit } from "../components/TitleLogo";
+import { useTitleLogo } from "../lib/titleLogo";
 import { PickNote, PlayerStage, StageEpisodes, playOnStage, useStagePick, useStageSession } from "../components/PlayerStage";
 import { autoPlay, commitPick, forgetPicks, preparePick, type PickEntry, type PickTarget } from "../state/autoPick";
 import { qualityRank } from "../lib/parse";
@@ -55,6 +57,7 @@ type EpisodePickBase = Omit<PickTarget, "season" | "episode">;
 
 const specialsSeason = 0;
 const shownTagLimit = 6;
+const titleLogoFit: LogoFit = { area: 50_000, maxWidth: 560, maxHeight: 160 };
 const minViewSeconds = 3;
 const namedDirectorCount = 4;
 
@@ -816,6 +819,7 @@ export default function TitlePage() {
   );
   const texts = localized.data && data && localized.data.id === data.id && localized.data.type === data.type ? localized.data : null;
   const shownTitle = texts?.title || data?.title || "";
+  const logo = useTitleLogo(data ? type : null, data ? id : null, data?.language ?? "");
   const shownOverview = texts?.overview || data?.overview || "";
   const shownGenres = texts?.genres ?? data?.genres ?? [];
   const genreIds = data && data.genreIds.length === shownGenres.length ? data.genreIds : [];
@@ -995,8 +999,10 @@ export default function TitlePage() {
         <div className="title-hero__body">
           <div className="title-hero__poster">{poster && <img src={poster} alt="" draggable={false} />}</div>
           <div className="title-hero__info">
-            <h1>{shownTitle}</h1>
-            {data.originalTitle && data.originalTitle !== shownTitle && <div className="title-hero__original">{data.originalTitle}</div>}
+            <h1 className={logo ? "has-logo" : ""}>
+              {logo ? <TitleLogoImage key={logo.url} logo={logo} title={shownTitle} originalTitle={data.originalTitle} fit={titleLogoFit} /> : shownTitle}
+            </h1>
+            {(!logo || logo.native) && data.originalTitle && data.originalTitle !== shownTitle && <div className="title-hero__original">{data.originalTitle}</div>}
             <div className="title-hero__meta">
               <TitleRating type={data.type} id={data.id} imdbId={data.imdbId} catalogRating={data.rating} />
               {meta.map((item) => (

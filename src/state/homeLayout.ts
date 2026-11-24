@@ -2,7 +2,7 @@ import type { MessageKey } from "../lib/i18n";
 import { useMemo } from "react";
 import { useSettings } from "./settings";
 
-export type HomeBlockId = "pick" | "continue" | "month" | "forYou" | "week" | "fresh" | "similar" | "planned" | "daily" | "popular";
+export type HomeBlockId = "pick" | "continue" | "friends" | "month" | "forYou" | "week" | "fresh" | "similar" | "planned" | "daily" | "popular";
 
 export interface HomeBlockInfo {
   id: HomeBlockId;
@@ -13,6 +13,7 @@ export interface HomeBlockInfo {
 export const homeBlocks: HomeBlockInfo[] = [
   { id: "pick", nameKey: "home.block.pick", hintKey: "home.block.pick.hint" },
   { id: "continue", nameKey: "home.block.continue", hintKey: "home.block.continue.hint" },
+  { id: "friends", nameKey: "home.block.friends", hintKey: "home.block.friends.hint" },
   { id: "month", nameKey: "home.block.month", hintKey: "home.block.month.hint" },
   { id: "forYou", nameKey: "home.block.forYou", hintKey: "home.block.forYou.hint" },
   { id: "week", nameKey: "home.block.week", hintKey: "home.block.week.hint" },
